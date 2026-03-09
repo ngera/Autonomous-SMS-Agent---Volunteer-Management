@@ -27,9 +27,11 @@ Thumbs.db
 backend/alembic/versions/*.py
 !backend/alembic/versions/.gitkeep
 
-# Node (for future frontend)
+# Node / Frontend
 node_modules/
 .next/
+frontend/dist/
+.env.local
 
 # Testing
 .pytest_cache/

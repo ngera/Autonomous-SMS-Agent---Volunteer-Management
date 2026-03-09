@@ -184,7 +184,14 @@ async def update_booking_status(
     db.add(history)
     await db.flush()
 
-    # TODO: Trigger pattern recalculation on COMPLETED in Phase 7
+    # Recalculate recurrence pattern when booking is completed
+    if body.status == BookingStatus.COMPLETED:
+        from app.modules.pattern import recalculate_pattern
+        await recalculate_pattern(
+            db,
+            booking.contact_phone,
+            str(booking.appointment_type_id),
+        )
 
     await db.refresh(booking)
     return booking
