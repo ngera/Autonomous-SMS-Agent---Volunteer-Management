@@ -1,0 +1,67 @@
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.api.admin_users import router as admin_users_router
+from app.api.calendar_ics import router as calendar_ics_router
+from app.api.analytics import router as analytics_router
+from app.api.appointment_types import router as appointment_types_router
+from app.api.auth import router as auth_router
+from app.api.availability import router as availability_router
+from app.api.bookings import router as bookings_router
+from app.api.customers import router as customers_router
+from app.api.dashboard import router as dashboard_router
+from app.api.reminders import router as reminders_router
+from app.api.settings import router as settings_router
+from app.api.suspensions import router as suspensions_router
+from app.api.webhook import router as webhook_router
+from app.core.config import settings
+from app.core.logging import setup_logging
+from app.middleware.auth import AuthLoggingMiddleware
+from app.middleware.ratelimit import setup_rate_limiting
+
+setup_logging()
+
+app = FastAPI(
+    title="AI Appointment Booking System",
+    version="1.0.0",
+    docs_url="/api/docs" if settings.environment == "development" else None,
+    redoc_url="/api/redoc" if settings.environment == "development" else None,
+)
+
+# Middleware (order matters — outermost first)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[settings.admin_panel_url],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+app.add_middleware(AuthLoggingMiddleware)
+
+# Rate limiting
+setup_rate_limiting(app)
+
+# Routers
+app.include_router(auth_router)
+app.include_router(dashboard_router)
+app.include_router(bookings_router)
+app.include_router(customers_router)
+app.include_router(appointment_types_router)
+app.include_router(availability_router)
+app.include_router(reminders_router)
+app.include_router(suspensions_router)
+app.include_router(analytics_router)
+app.include_router(settings_router)
+app.include_router(admin_users_router)
+app.include_router(calendar_ics_router)
+app.include_router(webhook_router)
+
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "environment": settings.environment}
+
+
+@app.get("/api/v1/health")
+async def api_health_check():
+    return {"status": "healthy", "version": "1.0.0"}

@@ -1,0 +1,239 @@
+"""AI conversation engine for SMS booking dialogue.
+
+Uses Claude claude-haiku-4-5 with dynamic context injection for natural-language
+appointment booking conversations.
+"""
+
+import asyncio
+import re
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+
+import httpx
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.config import settings
+from app.core.logging import get_logger
+from app.models.appointment_type import AppointmentType
+from app.models.booking import Booking, BookingStatus
+from app.models.contact import Contact
+from app.models.related_service import RelatedService
+from app.models.system_setting import SystemSetting
+from app.services.availability import compute_available_slots
+
+logger = get_logger("conversation")
+
+# Regex to extract booking confirmation signal from AI response
+BOOKING_SIGNAL_PATTERN = re.compile(
+    r"BOOKING_CONFIRMED:([a-f0-9\-]+):(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[^\s]*):(\d+\.?\d*)"
+)
+
+FALLBACK_MESSAGE = (
+    "I'm sorry, I'm having trouble understanding. "
+    "You can:\n"
+    "1. Book an appointment\n"
+    "2. Reschedule an existing appointment\n"
+    "3. Cancel an appointment\n\n"
+    "Or contact us directly for assistance."
+)
+
+TECHNICAL_ERROR_MESSAGE = (
+    "Sorry, I'm having a technical issue. Please try again shortly."
+)
+
+
+@dataclass
+class ConversationResponse:
+    """Result from the conversation AI."""
+    message_to_user: str
+    booking_confirmed: bool = False
+    appointment_type_id: uuid.UUID | None = None
+    slot_datetime: datetime | None = None
+    total_price: float | None = None
+
+
+async def build_system_prompt(db: AsyncSession, contact_phone: str) -> str:
+    """Build the dynamic system prompt with live data."""
+    # Business name
+    business_name = settings.business_name
+
+    # Custom instructions
+    custom_instructions = ""
+    setting_result = await db.execute(
+        select(SystemSetting).where(SystemSetting.key == "custom_ai_instructions")
+    )
+    setting = setting_result.scalar_one_or_none()
+    if setting:
+        custom_instructions = setting.value
+
+    # Active appointment types
+    types_result = await db.execute(
+        select(AppointmentType).where(AppointmentType.is_active.is_(True))
+    )
+    appt_types = types_result.scalars().all()
+    types_text = "\n".join(
+        f"- {t.name}: {t.duration_minutes} min, £{t.price:.2f}"
+        + (f" — {t.description}" if t.description else "")
+        for t in appt_types
+    )
+
+    # Related services
+    related_result = await db.execute(select(RelatedService))
+    related_services = related_result.scalars().all()
+    related_text = ""
+    if related_services:
+        lines = []
+        for rs in related_services:
+            # Look up type names
+            primary = next((t for t in appt_types if t.id == rs.appointment_type_id), None)
+            related = next((t for t in appt_types if t.id == rs.related_appointment_type_id), None)
+            if primary and related:
+                lines.append(
+                    f"- When customer selects '{primary.name}', suggest '{related.name}': "
+                    f"{rs.suggestion_message}"
+                )
+        related_text = "\n".join(lines)
+
+    # Available slots (next 14 days) — compute a summary
+    from datetime import date
+
+    today = date.today()
+    slots_summary_lines = []
+    for day_offset in range(14):
+        check_date = today + timedelta(days=day_offset)
+        for appt_type in appt_types[:3]:  # Limit to avoid excessive API calls
+            try:
+                slots = await compute_available_slots(
+                    db, check_date, str(appt_type.id), max_slots=3
+                )
+                if slots:
+                    for s in slots:
+                        slot_str = s["start"].strftime("%A %d %B at %I:%M%p")
+                        slots_summary_lines.append(f"- {appt_type.name}: {slot_str}")
+            except Exception:
+                pass
+        if len(slots_summary_lines) >= 9:
+            break
+
+    slots_text = "\n".join(slots_summary_lines[:9]) if slots_summary_lines else "No slots currently available."
+
+    # Customer history
+    history_text = "New customer — no previous bookings."
+    bookings_result = await db.execute(
+        select(Booking)
+        .where(Booking.contact_phone == contact_phone)
+        .order_by(Booking.scheduled_at.desc())
+        .limit(5)
+    )
+    bookings = bookings_result.scalars().all()
+    if bookings:
+        lines = []
+        for b in bookings:
+            appt = next((t for t in appt_types if t.id == b.appointment_type_id), None)
+            name = appt.name if appt else "Unknown"
+            lines.append(f"- {name} on {b.scheduled_at.strftime('%d %B %Y')} ({b.status.value})")
+        history_text = "Returning customer:\n" + "\n".join(lines)
+
+    return (
+        f"You are a friendly appointment booking assistant for {business_name}.\n\n"
+        f"APPOINTMENT TYPES:\n{types_text}\n\n"
+        f"RELATED SERVICES:\n{related_text or 'None configured.'}\n\n"
+        f"AVAILABLE SLOTS (next 14 days):\n{slots_text}\n\n"
+        f"CUSTOMER HISTORY:\n{history_text}\n\n"
+        f"CUSTOM INSTRUCTIONS:\n{custom_instructions or 'None.'}\n\n"
+        f"Rules:\n"
+        f"- Only discuss appointments and booking.\n"
+        f"- Be conversational and friendly.\n"
+        f"- Guide the customer through: type selection → related service suggestion → "
+        f"slot selection → price confirmation → final confirmation.\n"
+        f"- Present up to 3 available slots at a time.\n"
+        f"- When the customer confirms a booking, output exactly on its own line:\n"
+        f"BOOKING_CONFIRMED:{{appointment_type_id}}:{{slot_datetime_iso}}:{{total_price}}\n"
+        f"- The BOOKING_CONFIRMED line will be stripped before sending to the customer.\n"
+        f"- Never show the BOOKING_CONFIRMED signal to the customer.\n"
+    )
+
+
+async def get_ai_response(
+    db: AsyncSession,
+    contact_phone: str,
+    message_history: list[dict],
+    user_message: str,
+) -> ConversationResponse:
+    """Call Claude claude-haiku-4-5 for a conversation turn.
+
+    Retries once on failure, then returns a fallback message.
+    """
+    system_prompt = await build_system_prompt(db, contact_phone)
+
+    # Build messages for the API
+    api_messages = []
+    for msg in message_history:
+        api_messages.append({
+            "role": msg["role"],
+            "content": msg["content"],
+        })
+    api_messages.append({"role": "user", "content": user_message})
+
+    for attempt in range(2):
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    "https://api.anthropic.com/v1/messages",
+                    json={
+                        "model": "claude-haiku-4-5-20241022",
+                        "max_tokens": 500,
+                        "system": system_prompt,
+                        "messages": api_messages,
+                    },
+                    headers={
+                        "x-api-key": settings.anthropic_api_key,
+                        "anthropic-version": "2023-06-01",
+                        "Content-Type": "application/json",
+                    },
+                    timeout=15.0,
+                )
+
+            if response.status_code == 200:
+                data = response.json()
+                ai_text = data["content"][0]["text"]
+                return _parse_ai_response(ai_text)
+
+            logger.warning(
+                "Anthropic conversation API error (attempt %d): %d",
+                attempt + 1, response.status_code,
+            )
+
+        except Exception as e:
+            logger.error("Conversation AI error (attempt %d): %s", attempt + 1, str(e))
+
+        if attempt == 0:
+            await asyncio.sleep(1)
+
+    # Both attempts failed
+    return ConversationResponse(message_to_user=TECHNICAL_ERROR_MESSAGE)
+
+
+def _parse_ai_response(ai_text: str) -> ConversationResponse:
+    """Parse the AI response, extracting any booking confirmation signal."""
+    match = BOOKING_SIGNAL_PATTERN.search(ai_text)
+
+    if match:
+        type_id = uuid.UUID(match.group(1))
+        slot_dt = datetime.fromisoformat(match.group(2))
+        price = float(match.group(3))
+
+        # Remove the signal from the user-facing message
+        clean_message = BOOKING_SIGNAL_PATTERN.sub("", ai_text).strip()
+
+        return ConversationResponse(
+            message_to_user=clean_message,
+            booking_confirmed=True,
+            appointment_type_id=type_id,
+            slot_datetime=slot_dt,
+            total_price=price,
+        )
+
+    return ConversationResponse(message_to_user=ai_text)
