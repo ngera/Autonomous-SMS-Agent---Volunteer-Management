@@ -1,7 +1,6 @@
 import { formatDateTime } from "@/lib/utils";
 import { StatusBadge } from "@/components/shared/status-badge";
 import type { BookingHistoryResponse } from "@/types/api";
-import { BOOKING_STATUS_LABELS } from "@/lib/constants";
 
 interface BookingHistoryTimelineProps {
   history: BookingHistoryResponse[];

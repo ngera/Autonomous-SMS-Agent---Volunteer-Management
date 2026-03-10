@@ -27,7 +27,7 @@ export function Header({ title }: HeaderProps) {
       <div className="flex items-center gap-3">
         <NotificationPanel />
         <DropdownMenu>
-          <DropdownMenuTrigger asChild>
+          <DropdownMenuTrigger>
             <Button variant="ghost" size="sm" className="gap-2">
               <User className="h-4 w-4" />
               <span className="hidden sm:inline">{user?.email}</span>

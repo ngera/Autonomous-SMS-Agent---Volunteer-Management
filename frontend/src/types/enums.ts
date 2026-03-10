@@ -1,74 +1,85 @@
-export enum BookingStatus {
-  SCHEDULED = "scheduled",
-  RESCHEDULED = "rescheduled",
-  COMPLETED = "completed",
-  CANCELLED = "cancelled",
-  NO_SHOW = "no_show",
-}
+export const BookingStatus = {
+  SCHEDULED: "scheduled",
+  RESCHEDULED: "rescheduled",
+  COMPLETED: "completed",
+  CANCELLED: "cancelled",
+  NO_SHOW: "no_show",
+} as const;
+export type BookingStatus = (typeof BookingStatus)[keyof typeof BookingStatus];
 
-export enum ContactStatus {
-  ACTIVE = "active",
-  SUSPENDED = "suspended",
-  BANNED = "banned",
-}
+export const ContactStatus = {
+  ACTIVE: "active",
+  SUSPENDED: "suspended",
+  BANNED: "banned",
+} as const;
+export type ContactStatus = (typeof ContactStatus)[keyof typeof ContactStatus];
 
-export enum ConsentStatus {
-  UNCONTACTED = "uncontacted",
-  PENDING = "pending",
-  OPTED_IN = "opted_in",
-  OPTED_OUT = "opted_out",
-  BLOCKED = "blocked",
-}
+export const ConsentStatus = {
+  UNCONTACTED: "uncontacted",
+  PENDING: "pending",
+  OPTED_IN: "opted_in",
+  OPTED_OUT: "opted_out",
+  BLOCKED: "blocked",
+} as const;
+export type ConsentStatus = (typeof ConsentStatus)[keyof typeof ConsentStatus];
 
-export enum ReminderStatus {
-  PENDING = "pending",
-  SENT = "sent",
-  BOOKED = "booked",
-  SKIPPED = "skipped",
-  NO_RESPONSE = "no_response",
-  CANCELLED = "cancelled",
-}
+export const ReminderStatus = {
+  PENDING: "pending",
+  SENT: "sent",
+  BOOKED: "booked",
+  SKIPPED: "skipped",
+  NO_RESPONSE: "no_response",
+  CANCELLED: "cancelled",
+} as const;
+export type ReminderStatus = (typeof ReminderStatus)[keyof typeof ReminderStatus];
 
-export enum AdminRole {
-  STAFF = "staff",
-  MANAGER = "manager",
-  OWNER = "owner",
-}
+export const AdminRole = {
+  STAFF: "staff",
+  MANAGER: "manager",
+  OWNER: "owner",
+} as const;
+export type AdminRole = (typeof AdminRole)[keyof typeof AdminRole];
 
-export enum SuspensionType {
-  AUTO_STRIKE = "auto_strike",
-  AUTO_ABUSIVE = "auto_abusive",
-  MANUAL = "manual",
-}
+export const SuspensionType = {
+  AUTO_STRIKE: "auto_strike",
+  AUTO_ABUSIVE: "auto_abusive",
+  MANUAL: "manual",
+} as const;
+export type SuspensionType = (typeof SuspensionType)[keyof typeof SuspensionType];
 
-export enum ReviewDecision {
-  LIFTED = "lifted",
-  CONFIRMED = "confirmed",
-  BANNED = "banned",
-}
+export const ReviewDecision = {
+  LIFTED: "lifted",
+  CONFIRMED: "confirmed",
+  BANNED: "banned",
+} as const;
+export type ReviewDecision = (typeof ReviewDecision)[keyof typeof ReviewDecision];
 
-export enum ConversationStatus {
-  ACTIVE = "active",
-  COMPLETED = "completed",
-  SUSPENDED = "suspended",
-  EXPIRED = "expired",
-}
+export const ConversationStatus = {
+  ACTIVE: "active",
+  COMPLETED: "completed",
+  SUSPENDED: "suspended",
+  EXPIRED: "expired",
+} as const;
+export type ConversationStatus = (typeof ConversationStatus)[keyof typeof ConversationStatus];
 
-export enum PatternConfidence {
-  DEFAULT = "default",
-  EMERGING = "emerging",
-  PERSONAL = "personal",
-}
+export const PatternConfidence = {
+  DEFAULT: "default",
+  EMERGING: "emerging",
+  PERSONAL: "personal",
+} as const;
+export type PatternConfidence = (typeof PatternConfidence)[keyof typeof PatternConfidence];
 
-export enum BookingEventType {
-  CREATED = "created",
-  RESCHEDULED = "rescheduled",
-  STATUS_CHANGED = "status_changed",
-  CANCELLED = "cancelled",
-}
+export const BookingEventType = {
+  CREATED: "created",
+  RESCHEDULED: "rescheduled",
+  STATUS_CHANGED: "status_changed",
+  CANCELLED: "cancelled",
+} as const;
+export type BookingEventType = (typeof BookingEventType)[keyof typeof BookingEventType];
 
-export enum ChangedBy {
-  ADMIN = "admin",
-  SMS = "sms",
-  SYSTEM = "system",
-}
+export const ChangedBy = {
+  ADMIN: "admin",
+  SMS: "sms",
+  SYSTEM: "system",
+} as const;
+export type ChangedBy = (typeof ChangedBy)[keyof typeof ChangedBy];

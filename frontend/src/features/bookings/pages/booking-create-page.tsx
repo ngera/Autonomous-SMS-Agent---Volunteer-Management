@@ -75,7 +75,7 @@ export function BookingCreatePage() {
             <Select
               value={typeId}
               onValueChange={(v) => {
-                setTypeId(v);
+                setTypeId(v ?? "");
                 setSelectedSlot("");
               }}
             >

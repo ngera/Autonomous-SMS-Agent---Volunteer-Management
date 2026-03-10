@@ -3,7 +3,6 @@ import { ProtectedRoute } from "@/components/guards/protected-route";
 import { RoleGate } from "@/components/guards/role-gate";
 import { AppLayout } from "@/components/layout/app-layout";
 import { LoginPage } from "@/pages/login-page";
-import { PlaceholderPage } from "@/pages/placeholder";
 import { DashboardPage } from "@/features/dashboard/pages/dashboard-page";
 import { BookingsPage } from "@/features/bookings/pages/bookings-page";
 import { BookingDetailPage } from "@/features/bookings/pages/booking-detail-page";
@@ -11,6 +10,12 @@ import { BookingCreatePage } from "@/features/bookings/pages/booking-create-page
 import { CustomersPage } from "@/features/customers/pages/customers-page";
 import { CustomerDetailPage } from "@/features/customers/pages/customer-detail-page";
 import { AppointmentTypesPage } from "@/features/appointment-types/pages/appointment-types-page";
+import { AvailabilityPage } from "@/features/availability/pages/availability-page";
+import { RemindersPage } from "@/features/reminders/pages/reminders-page";
+import { ConversationsPage } from "@/features/conversations/pages/conversations-page";
+import { SuspensionsPage } from "@/features/suspensions/pages/suspensions-page";
+import { AnalyticsPage } from "@/features/analytics/pages/analytics-page";
+import { SettingsPage } from "@/features/settings/pages/settings-page";
 import { AdminRole } from "@/types/enums";
 
 export default function App() {
@@ -29,18 +34,16 @@ export default function App() {
             <Route path="/customers" element={<CustomersPage />} />
             <Route path="/customers/:phone" element={<CustomerDetailPage />} />
             <Route path="/appointment-types" element={<AppointmentTypesPage />} />
-            <Route path="/availability" element={<PlaceholderPage />} />
-            <Route path="/reminders" element={<PlaceholderPage />} />
-            <Route path="/conversations" element={<PlaceholderPage />} />
-            <Route path="/conversations/:id" element={<PlaceholderPage />} />
-            <Route path="/suspensions" element={<PlaceholderPage />} />
-            <Route path="/suspensions/:id" element={<PlaceholderPage />} />
-            <Route path="/analytics" element={<PlaceholderPage />} />
+            <Route path="/availability" element={<AvailabilityPage />} />
+            <Route path="/reminders" element={<RemindersPage />} />
+            <Route path="/conversations" element={<ConversationsPage />} />
+            <Route path="/suspensions" element={<SuspensionsPage />} />
+            <Route path="/analytics" element={<AnalyticsPage />} />
             <Route
               path="/settings"
               element={
                 <RoleGate minimum={AdminRole.OWNER}>
-                  <PlaceholderPage />
+                  <SettingsPage />
                 </RoleGate>
               }
             />

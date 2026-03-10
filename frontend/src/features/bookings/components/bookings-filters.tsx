@@ -34,7 +34,7 @@ export function BookingsFilters({
   return (
     <div className="flex flex-wrap items-center gap-3 mb-4">
       <div className="w-48">
-        <Select value={status} onValueChange={onStatusChange}>
+        <Select value={status} onValueChange={(v) => onStatusChange(v ?? "")}>
           <SelectTrigger>
             <SelectValue placeholder="All statuses" />
           </SelectTrigger>

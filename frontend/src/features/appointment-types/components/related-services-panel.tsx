@@ -69,7 +69,7 @@ export function RelatedServicesPanel({
           <div className="space-y-2 rounded-md border p-3">
             <div className="space-y-1">
               <Label className="text-xs">Related Type</Label>
-              <Select value={relatedTypeId} onValueChange={setRelatedTypeId}>
+              <Select value={relatedTypeId} onValueChange={(v) => setRelatedTypeId(v ?? "")}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select type" />
                 </SelectTrigger>
