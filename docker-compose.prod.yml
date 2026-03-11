@@ -1,0 +1,26 @@
+# Production overrides — use with:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# In production, you typically use an external database (Supabase)
+# so the db service is removed and DATABASE_URL points externally.
+
+services:
+  db:
+    # Disable local DB in production
+    profiles: ["dev-only"]
+
+  backend:
+    restart: always
+    environment:
+      # Override DATABASE_URL to use external Supabase PostgreSQL
+      DATABASE_URL: ${DATABASE_URL}
+      ENVIRONMENT: production
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+    depends_on:
+      # Remove db dependency in production
+      db:
+        condition: service_started
+        required: false
+
+  frontend:
+    restart: always
