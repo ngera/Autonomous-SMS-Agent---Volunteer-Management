@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   getSettings,
   updateSettings,
+  getPrompts,
   listAdminUsers,
   createAdminUser,
   updateAdminUser,
@@ -26,6 +27,13 @@ export function useUpdateSettings() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["settings"] });
     },
+  });
+}
+
+export function usePrompts() {
+  return useQuery({
+    queryKey: ["prompts"],
+    queryFn: getPrompts,
   });
 }
 

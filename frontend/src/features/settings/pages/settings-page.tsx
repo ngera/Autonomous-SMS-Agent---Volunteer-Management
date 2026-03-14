@@ -2,6 +2,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PageHeader } from "@/components/shared/page-header";
 import { SettingsForm } from "../components/settings-form";
 import { AdminUsersTable } from "../components/admin-users-table";
+import { PromptEditor } from "../components/prompt-editor";
 
 export function SettingsPage() {
   return (
@@ -15,6 +16,7 @@ export function SettingsPage() {
         <TabsList>
           <TabsTrigger value="settings">System Settings</TabsTrigger>
           <TabsTrigger value="users">Admin Users</TabsTrigger>
+          <TabsTrigger value="prompts">AI Prompts</TabsTrigger>
         </TabsList>
 
         <TabsContent value="settings" className="mt-4">
@@ -23,6 +25,9 @@ export function SettingsPage() {
 
         <TabsContent value="users" className="mt-4">
           <AdminUsersTable />
+        </TabsContent>
+        <TabsContent value="prompts" className="mt-4">
+          <PromptEditor />
         </TabsContent>
       </Tabs>
     </div>

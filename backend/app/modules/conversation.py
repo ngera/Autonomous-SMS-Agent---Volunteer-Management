@@ -22,9 +22,9 @@ from app.models.contact import Contact
 from app.models.related_service import RelatedService
 from app.models.system_setting import SystemSetting
 from app.prompts.conversation import (
-    CONVERSATION_SYSTEM_PROMPT,
-    FALLBACK_MESSAGE,
-    TECHNICAL_ERROR_MESSAGE,
+    get_conversation_prompt,
+    get_error_message,
+    get_fallback_message,
 )
 from app.services.availability import compute_available_slots
 
@@ -128,7 +128,8 @@ async def build_system_prompt(db: AsyncSession, contact_phone: str) -> str:
             lines.append(f"- {name} on {b.scheduled_at.strftime('%d %B %Y')} ({b.status.value})")
         history_text = "Returning customer:\n" + "\n".join(lines)
 
-    return CONVERSATION_SYSTEM_PROMPT.format(
+    prompt_template = await get_conversation_prompt(db)
+    return prompt_template.format(
         business_name=business_name,
         types_text=types_text,
         related_text=related_text or "None configured.",
@@ -195,7 +196,8 @@ async def get_ai_response(
             await asyncio.sleep(1)
 
     # Both attempts failed
-    return ConversationResponse(message_to_user=TECHNICAL_ERROR_MESSAGE)
+    error_msg = await get_error_message(db)
+    return ConversationResponse(message_to_user=error_msg)
 
 
 def _parse_ai_response(ai_text: str) -> ConversationResponse:

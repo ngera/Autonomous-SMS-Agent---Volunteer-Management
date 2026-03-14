@@ -22,6 +22,19 @@ export async function updateSettings(
   return data;
 }
 
+// ── Prompts ──
+
+export interface PromptResponse {
+  key: string;
+  value: string;
+  is_default: boolean;
+}
+
+export async function getPrompts(): Promise<PromptResponse[]> {
+  const { data } = await api.get<PromptResponse[]>("/settings/prompts");
+  return data;
+}
+
 // ── Admin Users ──
 
 export async function listAdminUsers(): Promise<AdminUserResponse[]> {

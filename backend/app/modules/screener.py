@@ -53,7 +53,9 @@ INJECTION_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
-from app.prompts.screener import SCREENER_SYSTEM_PROMPT
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.prompts.screener import SCREENER_SYSTEM_PROMPT, get_screener_prompt
 
 
 def stage1_rule_based(message: str) -> ScreenerResult | None:
@@ -99,12 +101,13 @@ def stage1_rule_based(message: str) -> ScreenerResult | None:
     return None
 
 
-async def stage2_ai_classify(message: str) -> ScreenerResult:
+async def stage2_ai_classify(message: str, db: AsyncSession | None = None) -> ScreenerResult:
     """Stage 2: AI micro-prompt classification (~60-100 tokens).
 
     On API error, defaults to RELEVANT to avoid blocking legitimate users.
     """
     try:
+        prompt = await get_screener_prompt(db) if db else SCREENER_SYSTEM_PROMPT
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 "https://api.anthropic.com/v1/messages",
@@ -112,7 +115,7 @@ async def stage2_ai_classify(message: str) -> ScreenerResult:
                     "model": "claude-haiku-4-5-20241022",
                     "max_tokens": 10,
                     "messages": [{"role": "user", "content": message}],
-                    "system": SCREENER_SYSTEM_PROMPT,
+                    "system": prompt,
                 },
                 headers={
                     "x-api-key": settings.anthropic_api_key,
@@ -153,7 +156,7 @@ async def stage2_ai_classify(message: str) -> ScreenerResult:
         )
 
 
-async def screen_message(message: str) -> ScreenerResult:
+async def screen_message(message: str, db: AsyncSession | None = None) -> ScreenerResult:
     """Run the full two-stage screening pipeline."""
     # Stage 1
     result = stage1_rule_based(message)
@@ -161,4 +164,4 @@ async def screen_message(message: str) -> ScreenerResult:
         return result
 
     # Stage 2
-    return await stage2_ai_classify(message)
+    return await stage2_ai_classify(message, db)

@@ -1,5 +1,10 @@
 """Prompts for the AI conversation booking engine."""
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+# ── Default prompts (used when no DB override exists) ──
+
 CONVERSATION_SYSTEM_PROMPT = (
     "You are a friendly appointment booking assistant for {business_name}.\n\n"
     "APPOINTMENT TYPES:\n{types_text}\n\n"
@@ -31,3 +36,36 @@ FALLBACK_MESSAGE = (
 TECHNICAL_ERROR_MESSAGE = (
     "Sorry, I'm having a technical issue. Please try again shortly."
 )
+
+# ── Setting keys ──
+
+PROMPT_KEYS = {
+    "prompt_conversation_system": CONVERSATION_SYSTEM_PROMPT,
+    "prompt_screener_system": None,  # default lives in screener.py
+    "prompt_fallback_message": FALLBACK_MESSAGE,
+    "prompt_error_message": TECHNICAL_ERROR_MESSAGE,
+}
+
+
+# ── DB-aware getters ──
+
+async def _get_prompt(db: AsyncSession, key: str, default: str) -> str:
+    from app.models.system_setting import SystemSetting
+
+    result = await db.execute(
+        select(SystemSetting).where(SystemSetting.key == key)
+    )
+    setting = result.scalar_one_or_none()
+    return setting.value if setting else default
+
+
+async def get_conversation_prompt(db: AsyncSession) -> str:
+    return await _get_prompt(db, "prompt_conversation_system", CONVERSATION_SYSTEM_PROMPT)
+
+
+async def get_fallback_message(db: AsyncSession) -> str:
+    return await _get_prompt(db, "prompt_fallback_message", FALLBACK_MESSAGE)
+
+
+async def get_error_message(db: AsyncSession) -> str:
+    return await _get_prompt(db, "prompt_error_message", TECHNICAL_ERROR_MESSAGE)

@@ -91,7 +91,7 @@ async def process_inbound_message(
         return
 
     # Steps 9-10: Pre-screener (Stage 1 rule-based + Stage 2 AI)
-    screener_result = await screen_message(message_body)
+    screener_result = await screen_message(message_body, db)
 
     if screener_result.is_opt_out:
         await _process_opt_out(db, contact)
