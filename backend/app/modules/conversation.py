@@ -21,6 +21,11 @@ from app.models.booking import Booking, BookingStatus
 from app.models.contact import Contact
 from app.models.related_service import RelatedService
 from app.models.system_setting import SystemSetting
+from app.prompts.conversation import (
+    CONVERSATION_SYSTEM_PROMPT,
+    FALLBACK_MESSAGE,
+    TECHNICAL_ERROR_MESSAGE,
+)
 from app.services.availability import compute_available_slots
 
 logger = get_logger("conversation")
@@ -28,19 +33,6 @@ logger = get_logger("conversation")
 # Regex to extract booking confirmation signal from AI response
 BOOKING_SIGNAL_PATTERN = re.compile(
     r"BOOKING_CONFIRMED:([a-f0-9\-]+):(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[^\s]*):(\d+\.?\d*)"
-)
-
-FALLBACK_MESSAGE = (
-    "I'm sorry, I'm having trouble understanding. "
-    "You can:\n"
-    "1. Book an appointment\n"
-    "2. Reschedule an existing appointment\n"
-    "3. Cancel an appointment\n\n"
-    "Or contact us directly for assistance."
-)
-
-TECHNICAL_ERROR_MESSAGE = (
-    "Sorry, I'm having a technical issue. Please try again shortly."
 )
 
 
@@ -136,23 +128,13 @@ async def build_system_prompt(db: AsyncSession, contact_phone: str) -> str:
             lines.append(f"- {name} on {b.scheduled_at.strftime('%d %B %Y')} ({b.status.value})")
         history_text = "Returning customer:\n" + "\n".join(lines)
 
-    return (
-        f"You are a friendly appointment booking assistant for {business_name}.\n\n"
-        f"APPOINTMENT TYPES:\n{types_text}\n\n"
-        f"RELATED SERVICES:\n{related_text or 'None configured.'}\n\n"
-        f"AVAILABLE SLOTS (next 14 days):\n{slots_text}\n\n"
-        f"CUSTOMER HISTORY:\n{history_text}\n\n"
-        f"CUSTOM INSTRUCTIONS:\n{custom_instructions or 'None.'}\n\n"
-        f"Rules:\n"
-        f"- Only discuss appointments and booking.\n"
-        f"- Be conversational and friendly.\n"
-        f"- Guide the customer through: type selection → related service suggestion → "
-        f"slot selection → price confirmation → final confirmation.\n"
-        f"- Present up to 3 available slots at a time.\n"
-        f"- When the customer confirms a booking, output exactly on its own line:\n"
-        f"BOOKING_CONFIRMED:{{appointment_type_id}}:{{slot_datetime_iso}}:{{total_price}}\n"
-        f"- The BOOKING_CONFIRMED line will be stripped before sending to the customer.\n"
-        f"- Never show the BOOKING_CONFIRMED signal to the customer.\n"
+    return CONVERSATION_SYSTEM_PROMPT.format(
+        business_name=business_name,
+        types_text=types_text,
+        related_text=related_text or "None configured.",
+        slots_text=slots_text,
+        custom_instructions=custom_instructions or "None.",
+        history_text=history_text,
     )
 
 
