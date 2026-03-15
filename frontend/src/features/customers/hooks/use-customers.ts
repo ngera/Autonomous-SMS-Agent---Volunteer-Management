@@ -2,6 +2,8 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   listCustomers,
   getCustomer,
+  createCustomer,
+  deleteCustomer,
   updateCustomer,
   importCustomersCsv,
   getCustomerBookings,
@@ -13,7 +15,7 @@ import {
   manualOptout,
   type CustomerFilters,
 } from "../api";
-import type { CustomerUpdate, PatternOverrideRequest, OptOutRequest } from "@/types/api";
+import type { CustomerCreate, CustomerUpdate, PatternOverrideRequest, OptOutRequest } from "@/types/api";
 
 export function useCustomers(filters: CustomerFilters) {
   return useQuery({
@@ -62,6 +64,26 @@ export function useUpdateCustomer() {
       updateCustomer(phone, body),
     onSuccess: (_d, v) => {
       void qc.invalidateQueries({ queryKey: ["customers", v.phone] });
+      void qc.invalidateQueries({ queryKey: ["customers"] });
+    },
+  });
+}
+
+export function useCreateCustomer() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: CustomerCreate) => createCustomer(body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["customers"] });
+    },
+  });
+}
+
+export function useDeleteCustomer() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: deleteCustomer,
+    onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["customers"] });
     },
   });

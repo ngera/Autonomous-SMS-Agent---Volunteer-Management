@@ -3,10 +3,11 @@ import {
   getUpcomingReminders,
   getReminderHistory,
   triggerReminder,
+  updateReminder,
   cancelReminder,
   getReminderAnalytics,
 } from "../api";
-import type { ReminderTriggerRequest, ReminderCancelRequest } from "@/types/api";
+import type { ReminderTriggerRequest, ReminderUpdate, ReminderCancelRequest } from "@/types/api";
 
 export function useUpcomingReminders() {
   return useQuery({
@@ -26,6 +27,17 @@ export function useTriggerReminder() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: ReminderTriggerRequest) => triggerReminder(body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["reminders"] });
+    },
+  });
+}
+
+export function useUpdateReminder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: ReminderUpdate }) =>
+      updateReminder(id, body),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["reminders"] });
     },

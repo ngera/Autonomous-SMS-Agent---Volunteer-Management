@@ -1,5 +1,6 @@
 import api from "@/lib/api";
 import type {
+  CustomerCreate,
   CustomerListResponse,
   CustomerResponse,
   CustomerUpdate,
@@ -31,6 +32,17 @@ export async function getCustomer(phone: string): Promise<CustomerResponse> {
     `/customers/${encodeURIComponent(phone)}`
   );
   return data;
+}
+
+export async function createCustomer(
+  body: CustomerCreate
+): Promise<CustomerResponse> {
+  const { data } = await api.post<CustomerResponse>("/customers", body);
+  return data;
+}
+
+export async function deleteCustomer(phone: string): Promise<void> {
+  await api.delete(`/customers/${encodeURIComponent(phone)}`);
 }
 
 export async function updateCustomer(

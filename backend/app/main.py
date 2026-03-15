@@ -12,6 +12,7 @@ from app.api.auth import router as auth_router
 from app.api.availability import router as availability_router
 from app.api.bookings import router as bookings_router
 from app.api.calendar_ics import router as calendar_ics_router
+from app.api.conversations import router as conversations_router
 from app.api.customers import router as customers_router
 from app.api.dashboard import router as dashboard_router
 from app.api.reminders import router as reminders_router
@@ -105,6 +106,7 @@ app.include_router(suspensions_router)
 app.include_router(analytics_router)
 app.include_router(settings_router)
 app.include_router(admin_users_router)
+app.include_router(conversations_router)
 app.include_router(calendar_ics_router)
 app.include_router(webhook_router)
 

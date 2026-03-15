@@ -18,9 +18,11 @@ from app.models.contact_consent import (
 )
 from app.models.conversation import Conversation
 from app.models.pattern import CustomerAppointmentPattern
+from app.models.booking import BookingStatus
 from app.schemas.customer import (
     ConsentHistoryResponse,
     CsvImportResponse,
+    CustomerCreate,
     CustomerListResponse,
     CustomerResponse,
     CustomerUpdate,
@@ -95,6 +97,62 @@ async def get_customer(phone: str, db: DbSession, current_user: CurrentUser):
         created_at=contact.created_at,
         updated_at=contact.updated_at,
     )
+
+
+@router.post("", response_model=CustomerResponse, status_code=status.HTTP_201_CREATED)
+async def create_customer(
+    body: CustomerCreate, db: DbSession, current_user: ManagerUser
+):
+    existing = await db.execute(select(Contact).where(Contact.phone == body.phone))
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="Customer with this phone already exists")
+
+    contact = Contact(
+        phone=body.phone,
+        name=body.name,
+        email=body.email,
+        reminder_preference_days=body.reminder_preference_days,
+    )
+    db.add(contact)
+
+    consent = ContactConsent(
+        contact_phone=body.phone,
+        status=ConsentStatus.UNCONTACTED,
+    )
+    db.add(consent)
+    await db.flush()
+    await db.refresh(contact)
+
+    return CustomerResponse(
+        phone=contact.phone,
+        name=contact.name,
+        email=contact.email,
+        status=contact.status,
+        reminder_preference_days=contact.reminder_preference_days,
+        consent_status=ConsentStatus.UNCONTACTED,
+        created_at=contact.created_at,
+        updated_at=contact.updated_at,
+    )
+
+
+@router.delete("/{phone}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_customer(phone: str, db: DbSession, current_user: ManagerUser):
+    result = await db.execute(select(Contact).where(Contact.phone == phone))
+    contact = result.scalar_one_or_none()
+    if not contact:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    active_count = await db.execute(
+        select(func.count()).select_from(Booking).where(
+            Booking.contact_phone == phone,
+            Booking.status.in_([BookingStatus.SCHEDULED, BookingStatus.RESCHEDULED]),
+        )
+    )
+    if (active_count.scalar() or 0) > 0:
+        raise HTTPException(status_code=400, detail="Cannot delete customer with active bookings")
+
+    await db.delete(contact)
+    await db.flush()
 
 
 @router.put("/{phone}", response_model=CustomerResponse)

@@ -4,21 +4,28 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/shared/page-header";
-import { useCustomerConversations } from "@/features/customers/hooks/use-customers";
+import { Pagination } from "@/components/shared/pagination";
 import type { ConversationResponse } from "@/types/api";
+import { useConversations } from "../hooks/use-conversations";
 import { ConversationsList } from "../components/conversations-list";
 import { ConversationMessageViewer } from "../components/conversation-message-viewer";
 
 export function ConversationsPage() {
-  const [phone, setPhone] = useState("");
-  const [searchPhone, setSearchPhone] = useState("");
+  const [searchInput, setSearchInput] = useState("");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<ConversationResponse | null>(null);
 
-  const conversations = useCustomerConversations(searchPhone);
+  const conversations = useConversations({
+    search: searchTerm || undefined,
+    page,
+    page_size: 20,
+  });
 
   function handleSearch() {
-    if (phone.trim()) {
-      setSearchPhone(phone.trim());
+    if (searchInput.trim()) {
+      setSearchTerm(searchInput.trim());
+      setPage(1);
       setSelected(null);
     }
   }
@@ -43,31 +50,42 @@ export function ConversationsPage() {
     <div className="space-y-6">
       <PageHeader
         title="Conversations"
-        description="View AI conversation threads by customer phone number."
+        description="View AI conversation threads."
       />
 
       <div className="flex items-end gap-3">
         <div className="space-y-1">
-          <Label className="text-xs">Customer Phone</Label>
+          <Label className="text-xs">Search by phone or name</Label>
           <Input
-            value={phone}
-            onChange={(e) => setPhone(e.target.value)}
-            placeholder="+447..."
-            className="w-56"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            placeholder="Phone number or customer name..."
+            className="w-72"
             onKeyDown={(e) => e.key === "Enter" && handleSearch()}
           />
         </div>
-        <Button size="sm" onClick={handleSearch} disabled={!phone.trim()}>
+        <Button size="sm" onClick={handleSearch} disabled={!searchInput.trim()}>
           Search
         </Button>
       </div>
 
-      {searchPhone && (
-        <ConversationsList
-          conversations={conversations.data ?? []}
-          isLoading={conversations.isLoading}
-          onSelect={setSelected}
-        />
+      {searchTerm && (
+        <>
+          <ConversationsList
+            conversations={conversations.data?.items ?? []}
+            isLoading={conversations.isLoading}
+            onSelect={setSelected}
+          />
+
+          {conversations.data && conversations.data.total > 20 && (
+            <Pagination
+              page={page}
+              pageSize={20}
+              total={conversations.data.total}
+              onPageChange={setPage}
+            />
+          )}
+        </>
       )}
     </div>
   );

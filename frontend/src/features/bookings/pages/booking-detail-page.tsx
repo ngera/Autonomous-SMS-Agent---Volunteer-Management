@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/shared/page-header";
 import { StatusBadge } from "@/components/shared/status-badge";
+import { Badge } from "@/components/ui/badge";
 import { LoadingState } from "@/components/shared/loading-state";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import {
@@ -61,7 +62,12 @@ export function BookingDetailPage() {
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle>Booking Information</CardTitle>
-          <StatusBadge type="booking" value={b.status} />
+          <div className="flex items-center gap-2">
+            <StatusBadge type="booking" value={b.status} />
+            {!b.conversation_id && (
+              <Badge variant="secondary">Manual</Badge>
+            )}
+          </div>
         </CardHeader>
         <CardContent className="grid gap-4 sm:grid-cols-2">
           <div>

@@ -10,6 +10,7 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str
+    supabase_url: str = ""  # e.g., https://xyz.supabase.co
     supabase_jwt_secret: str
     supabase_service_key: str = ""
 

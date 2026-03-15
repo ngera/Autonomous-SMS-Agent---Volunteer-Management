@@ -20,6 +20,13 @@ class CustomerResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class CustomerCreate(BaseModel):
+    phone: str
+    name: str | None = None
+    email: str | None = None
+    reminder_preference_days: int = 7
+
+
 class CustomerUpdate(BaseModel):
     name: str | None = None
     email: str | None = None

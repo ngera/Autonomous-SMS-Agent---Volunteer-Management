@@ -146,6 +146,13 @@ export interface CustomerResponse {
 
 export type CustomerListResponse = PaginatedResponse<CustomerResponse>;
 
+export interface CustomerCreate {
+  phone: string;
+  name?: string;
+  email?: string;
+  reminder_preference_days?: number;
+}
+
 export interface CustomerUpdate {
   name?: string;
   email?: string;
@@ -298,6 +305,10 @@ export interface ReminderTriggerRequest {
   appointment_type_id: string;
 }
 
+export interface ReminderUpdate {
+  scheduled_for: string;
+}
+
 export interface ReminderCancelRequest {
   reason: string;
 }
@@ -313,6 +324,11 @@ export interface ConversationResponse {
   consent_verified_at: string | null;
   created_at: string;
   last_message_at: string;
+}
+
+export interface ConversationListResponse {
+  items: ConversationResponse[];
+  total: number;
 }
 
 // ── Suspensions ──

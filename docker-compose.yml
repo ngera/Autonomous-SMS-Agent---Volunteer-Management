@@ -21,7 +21,11 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-booking}:${POSTGRES_PASSWORD:-booking_secret}@db:5432/${POSTGRES_DB:-booking_system}
+      # Use local Docker database (Supabase pooler has connectivity issues)
+      DATABASE_URL: "postgresql+asyncpg://booking:booking_secret@db:5432/booking_system"
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     ports:
       - "8000:8000"
     depends_on:

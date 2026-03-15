@@ -123,8 +123,12 @@ async def logout_user(db: AsyncSession, user: AdminUser) -> None:
 
 
 def _get_supabase_url() -> str:
-    """Extract Supabase project URL from DATABASE_URL or env."""
-    # DATABASE_URL format: postgresql+asyncpg://user:pass@db.xyz.supabase.co:5432/postgres
+    """Get Supabase project URL from settings or extract from DATABASE_URL."""
+    # Prefer explicit SUPABASE_URL setting
+    if settings.supabase_url:
+        return settings.supabase_url
+
+    # Fallback: extract from DATABASE_URL format: postgresql+asyncpg://user:pass@db.xyz.supabase.co:5432/postgres
     try:
         host = settings.database_url.split("@")[1].split(":")[0]
         project_ref = host.replace("db.", "").replace(".supabase.co", "")

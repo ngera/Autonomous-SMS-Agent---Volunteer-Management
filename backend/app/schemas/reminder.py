@@ -32,5 +32,9 @@ class ReminderTriggerRequest(BaseModel):
     appointment_type_id: uuid.UUID
 
 
+class ReminderUpdate(BaseModel):
+    scheduled_for: date
+
+
 class ReminderCancelRequest(BaseModel):
     reason: str

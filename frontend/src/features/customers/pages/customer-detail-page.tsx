@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { ArrowLeft, Send, Ban } from "lucide-react";
+import { ArrowLeft, Send, Ban, Pencil, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/dialog";
 import { PageHeader } from "@/components/shared/page-header";
 import { LoadingState } from "@/components/shared/loading-state";
+import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { DataTable, type Column } from "@/components/shared/data-table";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { formatDateTime, formatPhone, formatCurrency } from "@/lib/utils";
@@ -21,11 +22,14 @@ import { AdminRole } from "@/types/enums";
 import type { BookingResponse, ConversationResponse } from "@/types/api";
 import { CustomerInfoCard } from "../components/customer-info-card";
 import { CustomerPatternCard } from "../components/customer-pattern-card";
+import { CustomerForm } from "../components/customer-form";
 import {
   useCustomer,
   useCustomerBookings,
   useCustomerConversations,
   useCustomerPattern,
+  useUpdateCustomer,
+  useDeleteCustomer,
   useSendOptinOutreach,
   useManualOptout,
 } from "../hooks/use-customers";
@@ -54,11 +58,15 @@ export function CustomerDetailPage() {
   const bookings = useCustomerBookings(phone);
   const conversations = useCustomerConversations(phone);
   const patterns = useCustomerPattern(phone);
+  const updateCustomer = useUpdateCustomer();
+  const deleteCustomer = useDeleteCustomer();
   const optinOutreach = useSendOptinOutreach();
   const manualOptout = useManualOptout();
 
   const [showOptout, setShowOptout] = useState(false);
   const [optoutReason, setOptoutReason] = useState("");
+  const [showEdit, setShowEdit] = useState(false);
+  const [showDelete, setShowDelete] = useState(false);
 
   if (customer.isLoading) return <LoadingState />;
   if (!customer.data) return <p>Customer not found.</p>;
@@ -77,6 +85,14 @@ export function CustomerDetailPage() {
                 <Button
                   size="sm"
                   variant="outline"
+                  onClick={() => setShowEdit(true)}
+                >
+                  <Pencil className="mr-1 h-3 w-3" />
+                  Edit
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
                   onClick={() => optinOutreach.mutate(phone)}
                   disabled={optinOutreach.isPending}
                 >
@@ -91,6 +107,15 @@ export function CustomerDetailPage() {
                 >
                   <Ban className="mr-1 h-3 w-3" />
                   Opt Out
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="text-destructive"
+                  onClick={() => setShowDelete(true)}
+                >
+                  <Trash2 className="mr-1 h-3 w-3" />
+                  Delete
                 </Button>
               </>
             )}
@@ -145,6 +170,46 @@ export function CustomerDetailPage() {
           </Tabs>
         </div>
       </div>
+
+      <CustomerForm
+        open={showEdit}
+        onOpenChange={setShowEdit}
+        editItem={c}
+        onSubmit={(data) => {
+          updateCustomer.mutate(
+            {
+              phone,
+              body: {
+                name: data.name,
+                email: data.email,
+                reminder_preference_days: data.reminder_preference_days,
+              },
+            },
+            {
+              onSuccess: () => {
+                setShowEdit(false);
+                void customer.refetch();
+              },
+            }
+          );
+        }}
+        isLoading={updateCustomer.isPending}
+      />
+
+      <ConfirmDialog
+        open={showDelete}
+        onOpenChange={setShowDelete}
+        title="Delete Customer"
+        description={`Are you sure you want to delete ${c.name || formatPhone(c.phone)}? This cannot be undone. Customers with active bookings cannot be deleted.`}
+        confirmLabel="Delete"
+        variant="destructive"
+        onConfirm={() => {
+          deleteCustomer.mutate(phone, {
+            onSuccess: () => navigate("/customers"),
+          });
+        }}
+        isLoading={deleteCustomer.isPending}
+      />
 
       <Dialog open={showOptout} onOpenChange={setShowOptout}>
         <DialogContent>

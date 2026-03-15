@@ -11,6 +11,7 @@ from app.schemas.reminder import (
     ReminderListResponse,
     ReminderResponse,
     ReminderTriggerRequest,
+    ReminderUpdate,
 )
 
 router = APIRouter(prefix="/api/v1/reminders", tags=["reminders"])
@@ -68,6 +69,29 @@ async def trigger_reminder(
     reminder.sent_at = datetime.now(timezone.utc)
     await db.flush()
 
+    await db.refresh(reminder)
+    return reminder
+
+
+@router.put("/{reminder_id}", response_model=ReminderResponse)
+async def update_reminder(
+    reminder_id: uuid.UUID,
+    body: ReminderUpdate,
+    db: DbSession,
+    current_user: ManagerUser,
+):
+    result = await db.execute(
+        select(Reminder).where(Reminder.id == reminder_id)
+    )
+    reminder = result.scalar_one_or_none()
+    if not reminder:
+        raise HTTPException(status_code=404, detail="Reminder not found")
+
+    if reminder.status != ReminderStatus.PENDING:
+        raise HTTPException(status_code=400, detail="Can only edit pending reminders")
+
+    reminder.scheduled_for = body.scheduled_for
+    await db.flush()
     await db.refresh(reminder)
     return reminder
 

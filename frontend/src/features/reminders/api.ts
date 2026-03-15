@@ -3,6 +3,7 @@ import type {
   ReminderResponse,
   ReminderListResponse,
   ReminderTriggerRequest,
+  ReminderUpdate,
   ReminderCancelRequest,
   ReminderAnalytics,
 } from "@/types/api";
@@ -26,6 +27,14 @@ export async function triggerReminder(
   body: ReminderTriggerRequest
 ): Promise<ReminderResponse> {
   const { data } = await api.post<ReminderResponse>("/reminders/trigger", body);
+  return data;
+}
+
+export async function updateReminder(
+  id: string,
+  body: ReminderUpdate
+): Promise<ReminderResponse> {
+  const { data } = await api.put<ReminderResponse>(`/reminders/${id}`, body);
   return data;
 }
 
