@@ -18,6 +18,30 @@ from app.schemas.suspension import (
 router = APIRouter(prefix="/api/v1/suspensions", tags=["suspensions"])
 
 
+async def _enrich_suspension(db: DbSession, suspension: ContactSuspension) -> SuspensionResponse:
+    """Add contact_name to a suspension response."""
+    contact_result = await db.execute(
+        select(Contact.name).where(Contact.phone == suspension.contact_phone)
+    )
+    contact_name = contact_result.scalar_one_or_none()
+    return SuspensionResponse(
+        id=suspension.id,
+        contact_phone=suspension.contact_phone,
+        contact_name=contact_name,
+        suspended_at=suspension.suspended_at,
+        suspension_type=suspension.suspension_type,
+        reason=suspension.reason,
+        strike_ids=suspension.strike_ids,
+        conversation_id=suspension.conversation_id,
+        notification_sent_at=suspension.notification_sent_at,
+        reviewed_by_admin_id=suspension.reviewed_by_admin_id,
+        reviewed_at=suspension.reviewed_at,
+        review_decision=suspension.review_decision,
+        review_notes=suspension.review_notes,
+        lifted_at=suspension.lifted_at,
+    )
+
+
 @router.get("", response_model=SuspensionListResponse)
 async def list_suspensions(db: DbSession, current_user: CurrentUser):
     # Unreviewed first, then by date
@@ -26,7 +50,8 @@ async def list_suspensions(db: DbSession, current_user: CurrentUser):
         ContactSuspension.suspended_at.desc(),
     )
     result = await db.execute(query)
-    items = result.scalars().all()
+    suspensions = result.scalars().all()
+    items = [await _enrich_suspension(db, s) for s in suspensions]
     return SuspensionListResponse(items=items, total=len(items))
 
 
@@ -40,7 +65,7 @@ async def get_suspension(
     suspension = result.scalar_one_or_none()
     if not suspension:
         raise HTTPException(status_code=404, detail="Suspension not found")
-    return suspension
+    return await _enrich_suspension(db, suspension)
 
 
 @router.post("/{suspension_id}/lift", response_model=SuspensionResponse)
@@ -85,7 +110,7 @@ async def lift_suspension(
 
     await db.flush()
     await db.refresh(suspension)
-    return suspension
+    return await _enrich_suspension(db, suspension)
 
 
 @router.post("/{suspension_id}/confirm", response_model=SuspensionResponse)
@@ -109,7 +134,7 @@ async def confirm_suspension(
 
     await db.flush()
     await db.refresh(suspension)
-    return suspension
+    return await _enrich_suspension(db, suspension)
 
 
 @router.post("/{suspension_id}/ban", response_model=SuspensionResponse)
@@ -142,7 +167,7 @@ async def ban_user(
 
     await db.flush()
     await db.refresh(suspension)
-    return suspension
+    return await _enrich_suspension(db, suspension)
 
 
 @router.post("/customers/{phone}/suspend", response_model=SuspensionResponse, status_code=status.HTTP_201_CREATED)
@@ -178,4 +203,4 @@ async def manual_suspend(
 
     await db.flush()
     await db.refresh(suspension)
-    return suspension
+    return await _enrich_suspension(db, suspension)

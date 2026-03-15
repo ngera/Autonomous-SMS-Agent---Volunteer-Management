@@ -9,6 +9,7 @@ from app.models.suspension import ReviewDecision, SuspensionType
 class SuspensionResponse(BaseModel):
     id: uuid.UUID
     contact_phone: str
+    contact_name: str | None = None
     suspended_at: datetime
     suspension_type: SuspensionType
     reason: str

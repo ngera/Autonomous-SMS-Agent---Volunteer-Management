@@ -49,6 +49,15 @@ export function Header({ title }: HeaderProps) {
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => void logout()}
+          className="text-muted-foreground"
+        >
+          <LogOut className="mr-1 h-4 w-4" />
+          <span className="hidden sm:inline">Logout</span>
+        </Button>
       </div>
     </header>
   );

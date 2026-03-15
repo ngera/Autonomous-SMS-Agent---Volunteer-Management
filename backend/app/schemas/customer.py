@@ -22,7 +22,7 @@ class CustomerResponse(BaseModel):
 
 class CustomerCreate(BaseModel):
     phone: str
-    name: str | None = None
+    name: str
     email: str | None = None
     reminder_preference_days: int = 7
 

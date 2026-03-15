@@ -33,6 +33,16 @@ async def login(request: Request, body: LoginRequest, db: DbSession):
     return tokens
 
 
+@router.get("/me")
+async def get_me(current_user: CurrentUser):
+    """Return the current authenticated admin user's profile."""
+    return {
+        "id": str(current_user.id),
+        "email": current_user.email,
+        "role": current_user.role,
+    }
+
+
 @router.post("/logout", response_model=MessageResponse)
 async def logout(db: DbSession, current_user: CurrentUser):
     """Invalidate the current admin session."""

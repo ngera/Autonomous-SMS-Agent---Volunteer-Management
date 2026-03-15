@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { ArrowLeft, Send, Ban, Pencil, Trash2 } from "lucide-react";
+import { ArrowLeft, Send, Ban, Pencil, Trash2, ShieldAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
@@ -33,6 +33,7 @@ import {
   useSendOptinOutreach,
   useManualOptout,
 } from "../hooks/use-customers";
+import { useManualSuspend } from "@/features/suspensions/hooks/use-suspensions";
 
 const bookingColumns: Column<BookingResponse>[] = [
   { key: "date", header: "Date", render: (b) => formatDateTime(b.scheduled_at) },
@@ -62,11 +63,14 @@ export function CustomerDetailPage() {
   const deleteCustomer = useDeleteCustomer();
   const optinOutreach = useSendOptinOutreach();
   const manualOptout = useManualOptout();
+  const manualSuspend = useManualSuspend();
 
   const [showOptout, setShowOptout] = useState(false);
   const [optoutReason, setOptoutReason] = useState("");
   const [showEdit, setShowEdit] = useState(false);
   const [showDelete, setShowDelete] = useState(false);
+  const [showSuspend, setShowSuspend] = useState(false);
+  const [suspendReason, setSuspendReason] = useState("");
 
   if (customer.isLoading) return <LoadingState />;
   if (!customer.data) return <p>Customer not found.</p>;
@@ -107,6 +111,15 @@ export function CustomerDetailPage() {
                 >
                   <Ban className="mr-1 h-3 w-3" />
                   Opt Out
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="text-destructive"
+                  onClick={() => setShowSuspend(true)}
+                >
+                  <ShieldAlert className="mr-1 h-3 w-3" />
+                  Suspend
                 </Button>
                 <Button
                   size="sm"
@@ -247,6 +260,47 @@ export function CustomerDetailPage() {
               }}
             >
               {manualOptout.isPending ? "Processing..." : "Confirm Opt-Out"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showSuspend} onOpenChange={setShowSuspend}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Suspend Customer</DialogTitle>
+          </DialogHeader>
+          <div className="py-2 space-y-2">
+            <p className="text-sm text-muted-foreground">
+              This will suspend {c.name || formatPhone(phone)} and block them from booking.
+            </p>
+            <Textarea
+              placeholder="Reason for suspension (required)"
+              value={suspendReason}
+              onChange={(e) => setSuspendReason(e.target.value)}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowSuspend(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={!suspendReason || manualSuspend.isPending}
+              onClick={() => {
+                manualSuspend.mutate(
+                  { phone, body: { reason: suspendReason } },
+                  {
+                    onSuccess: () => {
+                      setShowSuspend(false);
+                      setSuspendReason("");
+                      void customer.refetch();
+                    },
+                  }
+                );
+              }}
+            >
+              {manualSuspend.isPending ? "Suspending..." : "Confirm Suspend"}
             </Button>
           </DialogFooter>
         </DialogContent>

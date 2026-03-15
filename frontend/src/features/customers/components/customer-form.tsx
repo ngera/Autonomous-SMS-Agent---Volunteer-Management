@@ -17,7 +17,7 @@ interface CustomerFormProps {
   editItem?: CustomerResponse | null;
   onSubmit: (data: {
     phone: string;
-    name?: string;
+    name: string;
     email?: string;
     reminder_preference_days?: number;
   }) => void;
@@ -60,16 +60,16 @@ export function CustomerForm({
         </DialogHeader>
         <div className="space-y-4 py-2">
           <div className="space-y-2">
-            <Label>Phone</Label>
+            <Label>Phone *</Label>
             <Input
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
-              placeholder="+447..."
+              placeholder="+1..."
               disabled={!!editItem}
             />
           </div>
           <div className="space-y-2">
-            <Label>Name</Label>
+            <Label>Name *</Label>
             <Input
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -107,12 +107,12 @@ export function CustomerForm({
             onClick={() =>
               onSubmit({
                 phone,
-                name: name || undefined,
+                name,
                 email: email || undefined,
                 reminder_preference_days: reminderDays,
               })
             }
-            disabled={!phone || isLoading}
+            disabled={!phone || !name || isLoading}
           >
             {isLoading ? "Saving..." : "Save"}
           </Button>

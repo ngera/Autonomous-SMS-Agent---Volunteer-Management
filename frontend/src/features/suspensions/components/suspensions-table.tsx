@@ -1,6 +1,6 @@
 import { DataTable, type Column } from "@/components/shared/data-table";
 import { StatusBadge } from "@/components/shared/status-badge";
-import { formatDateTime } from "@/lib/utils";
+import { formatDateTime, formatPhone } from "@/lib/utils";
 import type { SuspensionResponse } from "@/types/api";
 
 interface SuspensionsTableProps {
@@ -10,7 +10,16 @@ interface SuspensionsTableProps {
 }
 
 const columns: Column<SuspensionResponse>[] = [
-  { key: "phone", header: "Phone", render: (s) => s.contact_phone },
+  {
+    key: "customer",
+    header: "Customer",
+    render: (s) => (
+      <div>
+        {s.contact_name && <div className="font-medium">{s.contact_name}</div>}
+        <div className="text-xs text-muted-foreground">{formatPhone(s.contact_phone)}</div>
+      </div>
+    ),
+  },
   {
     key: "type",
     header: "Type",

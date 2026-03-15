@@ -148,7 +148,7 @@ export type CustomerListResponse = PaginatedResponse<CustomerResponse>;
 
 export interface CustomerCreate {
   phone: string;
-  name?: string;
+  name: string;
   email?: string;
   reminder_preference_days?: number;
 }
@@ -336,6 +336,7 @@ export interface ConversationListResponse {
 export interface SuspensionResponse {
   id: string;
   contact_phone: string;
+  contact_name: string | null;
   suspended_at: string;
   suspension_type: SuspensionType;
   reason: string;

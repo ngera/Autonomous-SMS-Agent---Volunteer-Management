@@ -85,6 +85,21 @@ def make_list_result(items):
     return result
 
 
+def make_row_result(row_tuple):
+    """Create a mock result for one_or_none() returning a tuple row."""
+    result = MagicMock()
+    result.one_or_none.return_value = row_tuple
+    result.scalar_one_or_none.return_value = row_tuple[0] if row_tuple else None
+    return result
+
+
+def make_rows_result(rows):
+    """Create a mock result for all() returning list of tuple rows."""
+    result = MagicMock()
+    result.all.return_value = rows
+    return result
+
+
 @pytest.fixture
 def mock_db():
     db = AsyncMock()

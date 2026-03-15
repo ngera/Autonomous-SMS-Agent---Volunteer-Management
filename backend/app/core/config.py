@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     api_domain: str = "localhost:8000"
     business_name: str = "Your Business"
     business_domain: str = "yourbusiness.com"
-    business_timezone: str = "Europe/London"
+    business_timezone: str = "America/New_York"
     environment: str = "development"
     secret_key: str = "change-me-in-production"
 

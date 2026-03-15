@@ -59,6 +59,7 @@ export function BookingsFilters({
         type="date"
         value={dateFrom}
         onChange={(e) => onDateFromChange(e.target.value)}
+        max={dateTo || undefined}
         className="w-40"
         placeholder="From"
       />
@@ -66,6 +67,7 @@ export function BookingsFilters({
         type="date"
         value={dateTo}
         onChange={(e) => onDateToChange(e.target.value)}
+        min={dateFrom || undefined}
         className="w-40"
         placeholder="To"
       />
