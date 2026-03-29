@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import func, select
 
-from app.core.dependencies import CurrentUser, DbSession, ManagerUser, OwnerUser
+from app.core.dependencies import CurrentTenant, CurrentUser, DbSession, ManagerUser, OwnerUser
 from app.models.contact import Contact, ContactStatus
 from app.models.contact_consent import ContactConsent, ConsentStatus
 from app.models.suspension import ContactSuspension, ReviewDecision, SuspensionType
@@ -43,9 +43,11 @@ async def _enrich_suspension(db: DbSession, suspension: ContactSuspension) -> Su
 
 
 @router.get("", response_model=SuspensionListResponse)
-async def list_suspensions(db: DbSession, current_user: CurrentUser):
+async def list_suspensions(db: DbSession, current_user: CurrentUser, tenant: CurrentTenant):
     # Unreviewed first, then by date
-    query = select(ContactSuspension).order_by(
+    query = select(ContactSuspension).where(
+        ContactSuspension.tenant_id == tenant.id
+    ).order_by(
         ContactSuspension.reviewed_at.is_(None).desc(),
         ContactSuspension.suspended_at.desc(),
     )
@@ -57,10 +59,13 @@ async def list_suspensions(db: DbSession, current_user: CurrentUser):
 
 @router.get("/{suspension_id}", response_model=SuspensionResponse)
 async def get_suspension(
-    suspension_id: uuid.UUID, db: DbSession, current_user: CurrentUser
+    suspension_id: uuid.UUID, db: DbSession, current_user: CurrentUser, tenant: CurrentTenant
 ):
     result = await db.execute(
-        select(ContactSuspension).where(ContactSuspension.id == suspension_id)
+        select(ContactSuspension).where(
+            ContactSuspension.id == suspension_id,
+            ContactSuspension.tenant_id == tenant.id,
+        )
     )
     suspension = result.scalar_one_or_none()
     if not suspension:
@@ -74,9 +79,13 @@ async def lift_suspension(
     body: ReviewRequest,
     db: DbSession,
     current_user: ManagerUser,
+    tenant: CurrentTenant,
 ):
     result = await db.execute(
-        select(ContactSuspension).where(ContactSuspension.id == suspension_id)
+        select(ContactSuspension).where(
+            ContactSuspension.id == suspension_id,
+            ContactSuspension.tenant_id == tenant.id,
+        )
     )
     suspension = result.scalar_one_or_none()
     if not suspension:
@@ -119,9 +128,13 @@ async def confirm_suspension(
     body: ReviewRequest,
     db: DbSession,
     current_user: ManagerUser,
+    tenant: CurrentTenant,
 ):
     result = await db.execute(
-        select(ContactSuspension).where(ContactSuspension.id == suspension_id)
+        select(ContactSuspension).where(
+            ContactSuspension.id == suspension_id,
+            ContactSuspension.tenant_id == tenant.id,
+        )
     )
     suspension = result.scalar_one_or_none()
     if not suspension:
@@ -143,9 +156,13 @@ async def ban_user(
     body: ReviewRequest,
     db: DbSession,
     current_user: OwnerUser,
+    tenant: CurrentTenant,
 ):
     result = await db.execute(
-        select(ContactSuspension).where(ContactSuspension.id == suspension_id)
+        select(ContactSuspension).where(
+            ContactSuspension.id == suspension_id,
+            ContactSuspension.tenant_id == tenant.id,
+        )
     )
     suspension = result.scalar_one_or_none()
     if not suspension:
@@ -172,7 +189,7 @@ async def ban_user(
 
 @router.post("/customers/{phone}/suspend", response_model=SuspensionResponse, status_code=status.HTTP_201_CREATED)
 async def manual_suspend(
-    phone: str, body: ManualSuspendRequest, db: DbSession, current_user: ManagerUser
+    phone: str, body: ManualSuspendRequest, db: DbSession, current_user: ManagerUser, tenant: CurrentTenant
 ):
     contact_result = await db.execute(
         select(Contact).where(Contact.phone == phone)
@@ -185,6 +202,7 @@ async def manual_suspend(
     contact.status = ContactStatus.SUSPENDED
 
     suspension = ContactSuspension(
+        tenant_id=tenant.id,
         contact_phone=phone,
         suspension_type=SuspensionType.MANUAL,
         reason=body.reason,

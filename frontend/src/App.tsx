@@ -16,6 +16,9 @@ import { ConversationsPage } from "@/features/conversations/pages/conversations-
 import { SuspensionsPage } from "@/features/suspensions/pages/suspensions-page";
 import { AnalyticsPage } from "@/features/analytics/pages/analytics-page";
 import { SettingsPage } from "@/features/settings/pages/settings-page";
+import AnnouncementsPage from "@/features/announcements/pages/announcements-page";
+import { TenantsPage } from "@/features/tenants/pages/tenants-page";
+import { TenantDetailPage } from "@/features/tenants/pages/tenant-detail-page";
 import { AdminRole } from "@/types/enums";
 
 export default function App() {
@@ -40,10 +43,34 @@ export default function App() {
             <Route path="/suspensions" element={<SuspensionsPage />} />
             <Route path="/analytics" element={<AnalyticsPage />} />
             <Route
+              path="/announcements"
+              element={
+                <RoleGate minimum={AdminRole.MANAGER}>
+                  <AnnouncementsPage />
+                </RoleGate>
+              }
+            />
+            <Route
               path="/settings"
               element={
                 <RoleGate minimum={AdminRole.OWNER}>
                   <SettingsPage />
+                </RoleGate>
+              }
+            />
+            <Route
+              path="/tenants"
+              element={
+                <RoleGate minimum={AdminRole.SUPER_ADMIN}>
+                  <TenantsPage />
+                </RoleGate>
+              }
+            />
+            <Route
+              path="/tenants/:id"
+              element={
+                <RoleGate minimum={AdminRole.SUPER_ADMIN}>
+                  <TenantDetailPage />
                 </RoleGate>
               }
             />

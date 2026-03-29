@@ -11,6 +11,7 @@ from app.core.config import settings
 from app.core.database import async_session_factory
 from app.core.logging import get_logger
 from app.models.admin_user import AdminRole, AdminUser
+from app.models.tenant import Tenant
 
 logger = get_logger("deps")
 security = HTTPBearer()
@@ -119,12 +120,13 @@ async def get_current_user(
 def require_role(minimum_role: AdminRole):
     """Dependency that enforces a minimum admin role.
 
-    Role hierarchy: staff < manager < owner
+    Role hierarchy: staff < manager < owner < super_admin
     """
     role_hierarchy = {
         AdminRole.STAFF: 0,
         AdminRole.MANAGER: 1,
         AdminRole.OWNER: 2,
+        AdminRole.SUPER_ADMIN: 3,
     }
 
     async def role_checker(
@@ -140,8 +142,32 @@ def require_role(minimum_role: AdminRole):
     return role_checker
 
 
+async def get_tenant(
+    current_user: Annotated[AdminUser, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> Tenant:
+    """Resolve the tenant for the current user. Super-admins must specify tenant context."""
+    if current_user.tenant_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Super-admin must specify a tenant context",
+        )
+    result = await db.execute(
+        select(Tenant).where(Tenant.id == current_user.tenant_id)
+    )
+    tenant = result.scalar_one_or_none()
+    if not tenant or not tenant.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Tenant not found or inactive",
+        )
+    return tenant
+
+
 # Convenience type aliases
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 CurrentUser = Annotated[AdminUser, Depends(get_current_user)]
+CurrentTenant = Annotated[Tenant, Depends(get_tenant)]
 ManagerUser = Annotated[AdminUser, Depends(require_role(AdminRole.MANAGER))]
 OwnerUser = Annotated[AdminUser, Depends(require_role(AdminRole.OWNER))]
+SuperAdminUser = Annotated[AdminUser, Depends(require_role(AdminRole.SUPER_ADMIN))]

@@ -77,7 +77,7 @@ export function BookingCreatePage() {
         }
       />
 
-      <Card className="max-w-lg">
+      <Card className="max-w-xl">
         <CardHeader>
           <CardTitle>New Booking</CardTitle>
         </CardHeader>
@@ -136,8 +136,12 @@ export function BookingCreatePage() {
                 setSelectedSlot("");
               }}
             >
-              <SelectTrigger>
-                <SelectValue placeholder="Select type" />
+              <SelectTrigger className="w-full">
+                <SelectValue placeholder="Select type">
+                  {selectedType
+                    ? `${selectedType.name} — ${formatCurrency(selectedType.price)} (${selectedType.duration_minutes}min)`
+                    : "Select type"}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {appointmentTypes.data

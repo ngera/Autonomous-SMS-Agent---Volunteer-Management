@@ -7,6 +7,7 @@ from pydantic import BaseModel
 class AvailabilityRuleResponse(BaseModel):
     id: uuid.UUID
     day_of_week: int
+    label: str | None
     start_time: time
     end_time: time
     slot_duration_minutes: int
@@ -17,8 +18,9 @@ class AvailabilityRuleResponse(BaseModel):
 
 
 class AvailabilityRuleUpdate(BaseModel):
-    """A single day's schedule for the weekly update."""
+    """A single slot within a day's schedule."""
     day_of_week: int
+    label: str | None = None
     start_time: time
     end_time: time
     slot_duration_minutes: int

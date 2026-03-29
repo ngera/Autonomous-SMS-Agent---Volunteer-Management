@@ -10,6 +10,7 @@ from app.core.database import async_session_factory
 from app.models.appointment_type import AppointmentType
 from app.models.booking import Booking
 from app.models.contact import Contact
+from app.models.tenant import Tenant
 from app.modules.ics_generator import (
     generate_cancellation_ics,
     generate_new_booking_ics,
@@ -23,8 +24,8 @@ ICS_CONTENT_TYPE = "text/calendar; charset=utf-8"
 
 async def _get_booking_context(
     booking_id: uuid.UUID, db: AsyncSession
-) -> tuple[Booking, str, str]:
-    """Load booking with summary and description for ICS generation."""
+) -> tuple[Booking, str, str, Tenant | None]:
+    """Load booking with summary, description, and tenant for ICS generation."""
     result = await db.execute(select(Booking).where(Booking.id == booking_id))
     booking = result.scalar_one_or_none()
     if not booking:
@@ -39,10 +40,18 @@ async def _get_booking_context(
 
     # Get contact name
     contact_result = await db.execute(
-        select(Contact).where(Contact.phone == booking.contact_phone)
+        select(Contact).where(Contact.id == booking.contact_id)
     )
     contact = contact_result.scalar_one_or_none()
     contact_name = contact.name if contact and contact.name else booking.contact_phone
+
+    # Load tenant
+    tenant = None
+    if booking.tenant_id:
+        tenant_result = await db.execute(
+            select(Tenant).where(Tenant.id == booking.tenant_id)
+        )
+        tenant = tenant_result.scalar_one_or_none()
 
     summary = f"{appt_name} — {contact_name}"
     description = (
@@ -51,14 +60,14 @@ async def _get_booking_context(
         f"Booked via SMS"
     )
 
-    return booking, summary, description
+    return booking, summary, description, tenant
 
 
 @router.get("/{booking_id}/new.ics")
 async def get_new_booking_ics(booking_id: uuid.UUID):
     """Serve new booking ICS file. No auth — UUID is the security token."""
     async with async_session_factory() as db:
-        booking, summary, description = await _get_booking_context(booking_id, db)
+        booking, summary, description, tenant = await _get_booking_context(booking_id, db)
 
         appt_result = await db.execute(
             select(AppointmentType).where(
@@ -74,6 +83,7 @@ async def get_new_booking_ics(booking_id: uuid.UUID):
             description=description,
             start=booking.scheduled_at,
             end=booking.scheduled_at + timedelta(minutes=duration),
+            tenant=tenant,
         )
 
     return Response(
@@ -87,7 +97,7 @@ async def get_new_booking_ics(booking_id: uuid.UUID):
 async def get_update_ics(booking_id: uuid.UUID):
     """Serve reschedule ICS file."""
     async with async_session_factory() as db:
-        booking, summary, description = await _get_booking_context(booking_id, db)
+        booking, summary, description, tenant = await _get_booking_context(booking_id, db)
 
         appt_result = await db.execute(
             select(AppointmentType).where(
@@ -104,6 +114,7 @@ async def get_update_ics(booking_id: uuid.UUID):
             start=booking.scheduled_at,
             end=booking.scheduled_at + timedelta(minutes=duration),
             sequence=booking.ics_sequence,
+            tenant=tenant,
         )
 
     return Response(
@@ -117,7 +128,7 @@ async def get_update_ics(booking_id: uuid.UUID):
 async def get_cancel_ics(booking_id: uuid.UUID):
     """Serve cancellation ICS file."""
     async with async_session_factory() as db:
-        booking, summary, description = await _get_booking_context(booking_id, db)
+        booking, summary, description, tenant = await _get_booking_context(booking_id, db)
 
         appt_result = await db.execute(
             select(AppointmentType).where(
@@ -134,6 +145,7 @@ async def get_cancel_ics(booking_id: uuid.UUID):
             start=booking.scheduled_at,
             end=booking.scheduled_at + timedelta(minutes=duration),
             sequence=booking.ics_sequence,
+            tenant=tenant,
         )
 
     return Response(

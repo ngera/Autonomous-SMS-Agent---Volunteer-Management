@@ -12,6 +12,7 @@ import httpx
 
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.models.tenant import Tenant
 
 logger = get_logger("screener")
 
@@ -101,11 +102,15 @@ def stage1_rule_based(message: str) -> ScreenerResult | None:
     return None
 
 
-async def stage2_ai_classify(message: str, db: AsyncSession | None = None) -> ScreenerResult:
+async def stage2_ai_classify(
+    message: str, db: AsyncSession | None = None, tenant: Tenant | None = None,
+) -> ScreenerResult:
     """Stage 2: AI micro-prompt classification (~60-100 tokens).
 
     On API error, defaults to RELEVANT to avoid blocking legitimate users.
     """
+    api_key = tenant.anthropic_api_key if tenant else settings.anthropic_api_key
+
     try:
         prompt = await get_screener_prompt(db) if db else SCREENER_SYSTEM_PROMPT
         async with httpx.AsyncClient() as client:
@@ -118,7 +123,7 @@ async def stage2_ai_classify(message: str, db: AsyncSession | None = None) -> Sc
                     "system": prompt,
                 },
                 headers={
-                    "x-api-key": settings.anthropic_api_key,
+                    "x-api-key": api_key,
                     "anthropic-version": "2023-06-01",
                     "Content-Type": "application/json",
                 },
@@ -156,7 +161,9 @@ async def stage2_ai_classify(message: str, db: AsyncSession | None = None) -> Sc
         )
 
 
-async def screen_message(message: str, db: AsyncSession | None = None) -> ScreenerResult:
+async def screen_message(
+    message: str, db: AsyncSession | None = None, tenant: Tenant | None = None,
+) -> ScreenerResult:
     """Run the full two-stage screening pipeline."""
     # Stage 1
     result = stage1_rule_based(message)
@@ -164,4 +171,4 @@ async def screen_message(message: str, db: AsyncSession | None = None) -> Screen
         return result
 
     # Stage 2
-    return await stage2_ai_classify(message, db)
+    return await stage2_ai_classify(message, db, tenant=tenant)

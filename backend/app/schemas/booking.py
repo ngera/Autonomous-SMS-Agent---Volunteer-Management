@@ -28,6 +28,9 @@ class BookingResponse(BaseModel):
     ics_update_url: str | None
     conversation_id: uuid.UUID | None
     created_at: datetime
+    contact_name: str | None = None
+    appointment_type_name: str | None = None
+    duration_minutes: int | None = None
 
     model_config = {"from_attributes": True}
 

@@ -2,7 +2,15 @@ import { useNavigate } from "react-router-dom";
 import { DataTable, type Column } from "@/components/shared/data-table";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { formatPhone, formatDate } from "@/lib/utils";
+import { ContactSex } from "@/types/enums";
 import type { CustomerResponse } from "@/types/api";
+
+const SEX_LABELS: Record<string, string> = {
+  [ContactSex.MALE]: "Male",
+  [ContactSex.FEMALE]: "Female",
+  [ContactSex.NON_BINARY]: "Non-binary",
+  [ContactSex.PREFER_NOT_TO_SAY]: "Prefer not to say",
+};
 
 interface CustomersTableProps {
   data: CustomerResponse[];
@@ -24,6 +32,11 @@ const columns: Column<CustomerResponse>[] = [
     key: "email",
     header: "Email",
     render: (c) => c.email || "—",
+  },
+  {
+    key: "sex",
+    header: "Sex",
+    render: (c) => (c.sex ? SEX_LABELS[c.sex] || c.sex : "—"),
   },
   {
     key: "consent",

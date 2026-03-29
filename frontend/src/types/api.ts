@@ -1,6 +1,8 @@
 import type {
+  AnnouncementStatus,
   BookingStatus,
   ConsentStatus,
+  ContactSex,
   ContactStatus,
   ConversationStatus,
   AdminRole,
@@ -97,6 +99,9 @@ export interface BookingResponse {
   ics_update_url: string | null;
   conversation_id: string | null;
   created_at: string;
+  contact_name: string | null;
+  appointment_type_name: string | null;
+  duration_minutes: number | null;
 }
 
 export type BookingListResponse = PaginatedResponse<BookingResponse>;
@@ -137,9 +142,11 @@ export interface CustomerResponse {
   phone: string;
   name: string | null;
   email: string | null;
+  sex: ContactSex | null;
   status: ContactStatus;
   reminder_preference_days: number;
   consent_status: ConsentStatus | null;
+  preferred_appointment_type_ids: string[];
   created_at: string;
   updated_at: string;
 }
@@ -150,13 +157,17 @@ export interface CustomerCreate {
   phone: string;
   name: string;
   email?: string;
+  sex?: ContactSex;
   reminder_preference_days?: number;
+  preferred_appointment_type_ids?: string[];
 }
 
 export interface CustomerUpdate {
   name?: string;
   email?: string;
+  sex?: ContactSex | null;
   reminder_preference_days?: number;
+  preferred_appointment_type_ids?: string[];
 }
 
 export interface CsvImportResponse {
@@ -240,6 +251,7 @@ export interface RelatedServiceCreate {
 export interface AvailabilityRuleResponse {
   id: string;
   day_of_week: number;
+  label: string | null;
   start_time: string;
   end_time: string;
   slot_duration_minutes: number;
@@ -249,6 +261,7 @@ export interface AvailabilityRuleResponse {
 
 export interface AvailabilityRuleUpdate {
   day_of_week: number;
+  label?: string;
   start_time: string;
   end_time: string;
   slot_duration_minutes: number;
@@ -419,6 +432,7 @@ export interface AdminUserResponse {
   id: string;
   email: string;
   role: AdminRole;
+  tenant_id: string | null;
   is_active: boolean;
   created_at: string;
   last_login_at: string | null;
@@ -433,4 +447,96 @@ export interface AdminUserCreate {
 export interface AdminUserUpdate {
   role?: AdminRole;
   is_active?: boolean;
+}
+
+// ── Tenants ──
+
+export interface TenantResponse {
+  id: string;
+  name: string;
+  slug: string;
+  is_active: boolean;
+  business_name: string;
+  business_domain: string;
+  business_timezone: string;
+  admin_panel_url: string;
+  api_domain: string;
+  twilio_phone_number: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TenantDetailResponse extends TenantResponse {
+  has_twilio: boolean;
+  has_anthropic: boolean;
+  has_google_calendar: boolean;
+  has_resend: boolean;
+}
+
+export interface TenantCreate {
+  name: string;
+  slug: string;
+  business_name: string;
+  business_domain?: string;
+  business_timezone?: string;
+  admin_panel_url?: string;
+  api_domain?: string;
+  twilio_account_sid?: string;
+  twilio_auth_token?: string;
+  twilio_phone_number?: string;
+  anthropic_api_key?: string;
+  google_client_id?: string;
+  google_client_secret?: string;
+  google_refresh_token?: string;
+  resend_api_key?: string;
+  resend_from_email?: string;
+}
+
+export interface TenantUpdate {
+  name?: string;
+  slug?: string;
+  is_active?: boolean;
+  business_name?: string;
+  business_domain?: string;
+  business_timezone?: string;
+  admin_panel_url?: string;
+  api_domain?: string;
+  twilio_account_sid?: string;
+  twilio_auth_token?: string;
+  twilio_phone_number?: string;
+  anthropic_api_key?: string;
+  google_client_id?: string;
+  google_client_secret?: string;
+  google_refresh_token?: string;
+  resend_api_key?: string;
+  resend_from_email?: string;
+}
+
+export interface TenantListResponse {
+  items: TenantResponse[];
+  total: number;
+}
+
+// ── Announcements ──
+
+export interface AnnouncementResponse {
+  id: string;
+  message: string;
+  filter_appointment_type_ids: string[] | null;
+  scheduled_at: string | null;
+  sent_at: string | null;
+  status: AnnouncementStatus;
+  total_recipients: number;
+  sent_count: number;
+  failed_count: number;
+  created_by_admin_id: string;
+  created_at: string;
+}
+
+export type AnnouncementListResponse = PaginatedResponse<AnnouncementResponse>;
+
+export interface AnnouncementCreate {
+  message: string;
+  filter_appointment_type_ids?: string[];
+  scheduled_at?: string;
 }

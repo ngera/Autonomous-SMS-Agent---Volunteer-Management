@@ -3,7 +3,7 @@ from datetime import date, datetime
 
 from pydantic import BaseModel
 
-from app.models.contact import ContactStatus
+from app.models.contact import ContactSex, ContactStatus
 from app.models.contact_consent import ConsentStatus
 
 
@@ -11,9 +11,11 @@ class CustomerResponse(BaseModel):
     phone: str
     name: str | None
     email: str | None
+    sex: ContactSex | None = None
     status: ContactStatus
     reminder_preference_days: int
     consent_status: ConsentStatus | None = None
+    preferred_appointment_type_ids: list[uuid.UUID] = []
     created_at: datetime
     updated_at: datetime
 
@@ -24,13 +26,17 @@ class CustomerCreate(BaseModel):
     phone: str
     name: str
     email: str | None = None
+    sex: ContactSex | None = None
     reminder_preference_days: int = 7
+    preferred_appointment_type_ids: list[uuid.UUID] = []
 
 
 class CustomerUpdate(BaseModel):
     name: str | None = None
     email: str | None = None
+    sex: ContactSex | None = None
     reminder_preference_days: int | None = None
+    preferred_appointment_type_ids: list[uuid.UUID] | None = None
 
 
 class CustomerListResponse(BaseModel):

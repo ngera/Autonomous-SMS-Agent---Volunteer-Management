@@ -19,7 +19,12 @@ const columns: Column<BookingResponse>[] = [
   {
     key: "contact_phone",
     header: "Customer",
-    render: (b) => formatPhone(b.contact_phone),
+    render: (b) => (
+      <div>
+        {b.contact_name && <div className="font-medium">{b.contact_name}</div>}
+        <div className="text-xs text-muted-foreground">{formatPhone(b.contact_phone)}</div>
+      </div>
+    ),
   },
   {
     key: "status",

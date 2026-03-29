@@ -4,6 +4,7 @@ Implements the 19-step message flow from spec Section 2.2.
 Each step can terminate processing early if appropriate.
 """
 
+import uuid
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
@@ -31,6 +32,7 @@ from app.modules.conversation import get_ai_response
 from app.modules.screener import Classification, screen_message
 from app.services.booking import process_booking_creation
 from app.services.notification import create_notification, notify_suspension
+from app.models.tenant import Tenant
 from app.services.sms import send_sms
 
 logger = get_logger("pipeline")
@@ -66,11 +68,17 @@ async def process_inbound_message(
     db: AsyncSession,
     from_phone: str,
     message_body: str,
+    tenant_id: uuid.UUID | None = None,
 ) -> None:
     """Process an inbound SMS through the full pipeline."""
 
+    # Load tenant
+    tenant: Tenant | None = None
+    if tenant_id:
+        tenant = (await db.execute(select(Tenant).where(Tenant.id == tenant_id))).scalar_one()
+
     # Step 5: Lookup or create contact
-    contact = await _get_or_create_contact(db, from_phone)
+    contact = await _get_or_create_contact(db, from_phone, tenant_id=tenant_id)
 
     # Step 6: Check suspension status
     if contact.status in (ContactStatus.SUSPENDED, ContactStatus.BANNED):
@@ -81,20 +89,20 @@ async def process_inbound_message(
     message_lower = message_body.strip().lower()
     for keyword in OPT_OUT_KEYWORDS:
         if keyword in message_lower:
-            await _process_opt_out(db, contact)
+            await _process_opt_out(db, contact, tenant=tenant, tenant_id=tenant_id)
             return
 
     # Step 8: Check consent status
-    consent = await _get_consent(db, from_phone)
+    consent = await _get_consent(db, from_phone, tenant_id=tenant_id)
     if not consent or consent.status != ConsentStatus.OPTED_IN:
-        await _handle_consent_flow(db, contact, consent, message_body)
+        await _handle_consent_flow(db, contact, consent, message_body, tenant=tenant, tenant_id=tenant_id)
         return
 
     # Steps 9-10: Pre-screener (Stage 1 rule-based + Stage 2 AI)
-    screener_result = await screen_message(message_body, db)
+    screener_result = await screen_message(message_body, db, tenant=tenant)
 
     if screener_result.is_opt_out:
-        await _process_opt_out(db, contact)
+        await _process_opt_out(db, contact, tenant=tenant, tenant_id=tenant_id)
         return
 
     if screener_result.classification in (Classification.IRRELEVANT, Classification.ABUSIVE):
@@ -102,13 +110,15 @@ async def process_inbound_message(
             db, contact, message_body,
             screener_result.classification,
             screener_result.method.value,
+            tenant=tenant,
+            tenant_id=tenant_id,
         )
         return
 
     # Step 11 handled inside _handle_strike
 
     # Steps 12-13: Load/create conversation and fetch dynamic context
-    conversation = await _get_or_create_conversation(db, from_phone)
+    conversation = await _get_or_create_conversation(db, from_phone, tenant_id=tenant_id, contact_id=contact.id)
 
     # Steps 14-15: Call full conversation AI
     ai_response = await get_ai_response(
@@ -116,12 +126,15 @@ async def process_inbound_message(
         contact_phone=from_phone,
         message_history=conversation.message_history or [],
         user_message=message_body,
+        tenant=tenant,
     )
 
     # Step 16-17: If booking confirmed, create booking
     if ai_response.booking_confirmed and ai_response.appointment_type_id:
         booking = Booking(
             contact_phone=from_phone,
+            contact_id=contact.id,
+            tenant_id=tenant_id,
             appointment_type_id=ai_response.appointment_type_id,
             scheduled_at=ai_response.slot_datetime,
             price_at_booking=ai_response.total_price or 0,
@@ -139,12 +152,13 @@ async def process_inbound_message(
             new_status=BookingStatus.SCHEDULED,
             new_scheduled_at=ai_response.slot_datetime,
             changed_by=ChangedBy.USER_SMS,
+            tenant_id=tenant_id,
         )
         db.add(history)
         await db.flush()
 
         # Calendar event, ICS URLs, SMS handled by booking service
-        await process_booking_creation(db, booking)
+        await process_booking_creation(db, booking, tenant=tenant)
 
         # Mark conversation as completed
         conversation.status = ConversationStatus.COMPLETED
@@ -157,10 +171,11 @@ async def process_inbound_message(
             body=f"Booking confirmed via SMS conversation",
             reference_id=booking.id,
             reference_type="booking",
+            tenant_id=tenant_id,
         )
     else:
         # Step 18: Send SMS response
-        await send_sms(to=from_phone, body=ai_response.message_to_user)
+        await send_sms(to=from_phone, body=ai_response.message_to_user, tenant=tenant)
 
     # Step 19: Save conversation history
     history_entry = {
@@ -183,32 +198,48 @@ async def process_inbound_message(
     await db.flush()
 
 
-async def _get_or_create_contact(db: AsyncSession, phone: str) -> Contact:
-    result = await db.execute(select(Contact).where(Contact.phone == phone))
+async def _get_or_create_contact(
+    db: AsyncSession, phone: str, tenant_id: uuid.UUID | None = None
+) -> Contact:
+    query = select(Contact).where(Contact.phone == phone)
+    if tenant_id:
+        query = query.where(Contact.tenant_id == tenant_id)
+    result = await db.execute(query)
     contact = result.scalar_one_or_none()
     if not contact:
-        contact = Contact(phone=phone)
+        contact = Contact(phone=phone, tenant_id=tenant_id)
         db.add(contact)
+        await db.flush()
         # Also create consent record
         consent = ContactConsent(
             contact_phone=phone,
+            contact_id=contact.id,
             status=ConsentStatus.UNCONTACTED,
+            tenant_id=tenant_id,
         )
         db.add(consent)
         await db.flush()
     return contact
 
 
-async def _get_consent(db: AsyncSession, phone: str) -> ContactConsent | None:
-    result = await db.execute(
-        select(ContactConsent).where(ContactConsent.contact_phone == phone)
-    )
+async def _get_consent(
+    db: AsyncSession, phone: str, tenant_id: uuid.UUID | None = None
+) -> ContactConsent | None:
+    query = select(ContactConsent).where(ContactConsent.contact_phone == phone)
+    if tenant_id:
+        query = query.where(ContactConsent.tenant_id == tenant_id)
+    result = await db.execute(query)
     return result.scalar_one_or_none()
 
 
-async def _process_opt_out(db: AsyncSession, contact: Contact) -> None:
+async def _process_opt_out(
+    db: AsyncSession,
+    contact: Contact,
+    tenant: "Tenant | None" = None,
+    tenant_id: uuid.UUID | None = None,
+) -> None:
     """Process opt-out: update consent, send confirmation, stop."""
-    consent = await _get_consent(db, contact.phone)
+    consent = await _get_consent(db, contact.phone, tenant_id=tenant_id)
     if consent:
         old_status = consent.status
         consent.status = ConsentStatus.OPTED_OUT
@@ -218,6 +249,8 @@ async def _process_opt_out(db: AsyncSession, contact: Contact) -> None:
 
         # Record history
         history = ContactConsentHistory(
+            tenant_id=tenant_id,
+            contact_id=contact.id,
             contact_phone=contact.phone,
             previous_status=old_status,
             new_status=ConsentStatus.OPTED_OUT,
@@ -227,7 +260,7 @@ async def _process_opt_out(db: AsyncSession, contact: Contact) -> None:
         )
         db.add(history)
 
-    await send_sms(to=contact.phone, body=OPT_OUT_CONFIRMATION)
+    await send_sms(to=contact.phone, body=OPT_OUT_CONFIRMATION, tenant=tenant)
 
     # Create notification
     await create_notification(
@@ -235,6 +268,7 @@ async def _process_opt_out(db: AsyncSession, contact: Contact) -> None:
         notification_type=NotificationType.OPT_OUT,
         title=f"Customer opted out: {contact.phone}",
         body="Customer sent opt-out keyword via SMS",
+        tenant_id=tenant_id,
     )
 
     await db.flush()
@@ -246,6 +280,8 @@ async def _handle_consent_flow(
     contact: Contact,
     consent: ContactConsent | None,
     message: str,
+    tenant: "Tenant | None" = None,
+    tenant_id: uuid.UUID | None = None,
 ) -> None:
     """Handle messages from users who haven't opted in yet."""
     if not consent:
@@ -262,6 +298,8 @@ async def _handle_consent_flow(
             consent.last_status_change_at = datetime.now(timezone.utc)
 
             history = ContactConsentHistory(
+                tenant_id=tenant_id,
+                contact_id=contact.id,
                 contact_phone=contact.phone,
                 previous_status=ConsentStatus.PENDING,
                 new_status=ConsentStatus.OPTED_IN,
@@ -272,13 +310,15 @@ async def _handle_consent_flow(
             db.add(history)
             await db.flush()
 
+            business_name = tenant.business_name if tenant else settings.business_name
             await send_sms(
                 to=contact.phone,
                 body=(
-                    f"Thanks for opting in to {settings.business_name}! "
+                    f"Thanks for opting in to {business_name}! "
                     "You can now book appointments by sending us a message. "
                     "Reply STOP at any time to unsubscribe."
                 ),
+                tenant=tenant,
             )
 
         elif msg_lower in NO_INTENT:
@@ -288,6 +328,8 @@ async def _handle_consent_flow(
             consent.last_status_change_at = datetime.now(timezone.utc)
 
             history = ContactConsentHistory(
+                tenant_id=tenant_id,
+                contact_id=contact.id,
                 contact_phone=contact.phone,
                 previous_status=ConsentStatus.PENDING,
                 new_status=ConsentStatus.OPTED_OUT,
@@ -301,11 +343,13 @@ async def _handle_consent_flow(
             await send_sms(
                 to=contact.phone,
                 body="No problem. You won't receive any further messages from us.",
+                tenant=tenant,
             )
         else:
             await send_sms(
                 to=contact.phone,
                 body="Please reply YES to opt in to appointment messages, or NO to decline.",
+                tenant=tenant,
             )
 
     # For UNCONTACTED or OPTED_OUT, do nothing (no unsolicited messages)
@@ -317,19 +361,22 @@ async def _handle_strike(
     message: str,
     classification: Classification,
     screener_method: str,
+    tenant: "Tenant | None" = None,
+    tenant_id: uuid.UUID | None = None,
 ) -> None:
     """Record a strike and take escalation action."""
     now = datetime.now(timezone.utc)
     thirty_days_ago = now - timedelta(days=30)
 
     # Count active (non-decayed) strikes
-    active_strikes_result = await db.execute(
-        select(func.count()).where(
-            ContactStrike.contact_phone == contact.phone,
-            ContactStrike.decayed_at.is_(None),
-            ContactStrike.created_at >= thirty_days_ago,
-        )
+    strike_query = select(func.count()).where(
+        ContactStrike.contact_phone == contact.phone,
+        ContactStrike.decayed_at.is_(None),
+        ContactStrike.created_at >= thirty_days_ago,
     )
+    if tenant_id:
+        strike_query = strike_query.where(ContactStrike.tenant_id == tenant_id)
+    active_strikes_result = await db.execute(strike_query)
     active_count = active_strikes_result.scalar() or 0
     new_strike_number = active_count + 1
 
@@ -340,6 +387,8 @@ async def _handle_strike(
     # Record strike
     strike = ContactStrike(
         contact_phone=contact.phone,
+        contact_id=contact.id,
+        tenant_id=tenant_id,
         strike_number=new_strike_number,
         message_content=message,
         classification=strike_class,
@@ -351,16 +400,16 @@ async def _handle_strike(
 
     # Immediate suspension for ABUSIVE
     if classification == Classification.ABUSIVE:
-        await _suspend_contact(db, contact, strike, "Abusive message detected")
-        await send_sms(to=contact.phone, body=SUSPENSION_MESSAGE)
+        await _suspend_contact(db, contact, strike, "Abusive message detected", tenant=tenant, tenant_id=tenant_id)
+        await send_sms(to=contact.phone, body=SUSPENSION_MESSAGE, tenant=tenant)
         return
 
     # Strike escalation for IRRELEVANT
     if new_strike_number >= 4:
-        await _suspend_contact(db, contact, strike, f"Strike {new_strike_number}: repeated irrelevant messages")
-        await send_sms(to=contact.phone, body=SUSPENSION_MESSAGE)
+        await _suspend_contact(db, contact, strike, f"Strike {new_strike_number}: repeated irrelevant messages", tenant=tenant, tenant_id=tenant_id)
+        await send_sms(to=contact.phone, body=SUSPENSION_MESSAGE, tenant=tenant)
     elif new_strike_number in STRIKE_MESSAGES:
-        await send_sms(to=contact.phone, body=STRIKE_MESSAGES[new_strike_number])
+        await send_sms(to=contact.phone, body=STRIKE_MESSAGES[new_strike_number], tenant=tenant)
 
     # Strike 3 warning notification
     if new_strike_number == 3:
@@ -369,6 +418,7 @@ async def _handle_strike(
             notification_type=NotificationType.STRIKE_WARNING,
             title=f"Strike 3 issued: {contact.phone}",
             body="Final warning sent — next offense will suspend the account",
+            tenant_id=tenant_id,
         )
 
     await db.flush()
@@ -379,36 +429,42 @@ async def _suspend_contact(
     contact: Contact,
     strike: ContactStrike,
     reason: str,
+    tenant: "Tenant | None" = None,
+    tenant_id: uuid.UUID | None = None,
 ) -> None:
     """Suspend a contact and notify admins."""
     contact.status = ContactStatus.SUSPENDED
 
     # Update consent
-    consent = await _get_consent(db, contact.phone)
+    consent = await _get_consent(db, contact.phone, tenant_id=tenant_id)
     if consent:
         consent.status = ConsentStatus.BLOCKED
         consent.last_status_change_at = datetime.now(timezone.utc)
 
     # Get active conversation if any
-    conv_result = await db.execute(
-        select(Conversation).where(
-            Conversation.contact_phone == contact.phone,
-            Conversation.status == ConversationStatus.ACTIVE,
-        )
+    conv_query = select(Conversation).where(
+        Conversation.contact_phone == contact.phone,
+        Conversation.status == ConversationStatus.ACTIVE,
     )
+    if tenant_id:
+        conv_query = conv_query.where(Conversation.tenant_id == tenant_id)
+    conv_result = await db.execute(conv_query)
     active_conv = conv_result.scalar_one_or_none()
 
     # Collect recent strike IDs
-    strikes_result = await db.execute(
-        select(ContactStrike.id).where(
-            ContactStrike.contact_phone == contact.phone,
-            ContactStrike.decayed_at.is_(None),
-        )
+    strike_query = select(ContactStrike.id).where(
+        ContactStrike.contact_phone == contact.phone,
+        ContactStrike.decayed_at.is_(None),
     )
+    if tenant_id:
+        strike_query = strike_query.where(ContactStrike.tenant_id == tenant_id)
+    strikes_result = await db.execute(strike_query)
     strike_ids = [row[0] for row in strikes_result.all()]
 
     suspension = ContactSuspension(
         contact_phone=contact.phone,
+        contact_id=contact.id,
+        tenant_id=tenant_id,
         suspension_type=SuspensionType.AUTO_ABUSIVE
         if strike.classification == StrikeClassification.ABUSIVE
         else SuspensionType.AUTO_STRIKE,
@@ -421,24 +477,29 @@ async def _suspend_contact(
     await db.flush()
 
     # Notify admins
-    await notify_suspension(db, contact.phone, suspension.id, reason)
+    await notify_suspension(db, contact.phone, suspension.id, reason, tenant_id=tenant_id)
 
     logger.warning("Contact %s suspended: %s", contact.phone, reason)
 
 
-async def _get_or_create_conversation(db: AsyncSession, phone: str) -> Conversation:
+async def _get_or_create_conversation(
+    db: AsyncSession, phone: str, tenant_id: uuid.UUID | None = None, contact_id: uuid.UUID | None = None,
+) -> Conversation:
     """Get active conversation or create a new one."""
-    result = await db.execute(
-        select(Conversation).where(
-            Conversation.contact_phone == phone,
-            Conversation.status == ConversationStatus.ACTIVE,
-        )
+    query = select(Conversation).where(
+        Conversation.contact_phone == phone,
+        Conversation.status == ConversationStatus.ACTIVE,
     )
+    if tenant_id:
+        query = query.where(Conversation.tenant_id == tenant_id)
+    result = await db.execute(query)
     conversation = result.scalar_one_or_none()
 
     if not conversation:
         conversation = Conversation(
             contact_phone=phone,
+            contact_id=contact_id,
+            tenant_id=tenant_id,
             message_history=[],
             current_step="greeting",
             status=ConversationStatus.ACTIVE,

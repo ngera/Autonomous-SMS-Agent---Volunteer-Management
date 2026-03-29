@@ -34,12 +34,19 @@ export function Header({ title }: HeaderProps) {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-48">
-            <DropdownMenuLabel className="flex items-center gap-2">
-              {user?.email}
-              {user?.role && (
-                <Badge variant="secondary" className="text-xs">
-                  {ADMIN_ROLE_LABELS[user.role]}
-                </Badge>
+            <DropdownMenuLabel className="space-y-1">
+              <div className="flex items-center gap-2">
+                {user?.email}
+                {user?.role && (
+                  <Badge variant="secondary" className="text-xs">
+                    {ADMIN_ROLE_LABELS[user.role]}
+                  </Badge>
+                )}
+              </div>
+              {user?.tenant_name && (
+                <div className="text-xs font-normal text-muted-foreground">
+                  {user.tenant_name}
+                </div>
               )}
             </DropdownMenuLabel>
             <DropdownMenuSeparator />

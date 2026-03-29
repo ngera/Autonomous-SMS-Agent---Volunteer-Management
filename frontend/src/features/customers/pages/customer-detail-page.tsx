@@ -195,7 +195,9 @@ export function CustomerDetailPage() {
               body: {
                 name: data.name,
                 email: data.email,
+                sex: data.sex,
                 reminder_preference_days: data.reminder_preference_days,
+                preferred_appointment_type_ids: data.preferred_appointment_type_ids,
               },
             },
             {

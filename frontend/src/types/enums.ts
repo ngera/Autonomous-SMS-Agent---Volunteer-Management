@@ -7,6 +7,23 @@ export const BookingStatus = {
 } as const;
 export type BookingStatus = (typeof BookingStatus)[keyof typeof BookingStatus];
 
+export const ContactSex = {
+  MALE: "male",
+  FEMALE: "female",
+  NON_BINARY: "non_binary",
+  PREFER_NOT_TO_SAY: "prefer_not_to_say",
+} as const;
+export type ContactSex = (typeof ContactSex)[keyof typeof ContactSex];
+
+export const AnnouncementStatus = {
+  DRAFT: "draft",
+  SCHEDULED: "scheduled",
+  SENDING: "sending",
+  SENT: "sent",
+  FAILED: "failed",
+} as const;
+export type AnnouncementStatus = (typeof AnnouncementStatus)[keyof typeof AnnouncementStatus];
+
 export const ContactStatus = {
   ACTIVE: "active",
   SUSPENDED: "suspended",
@@ -37,6 +54,7 @@ export const AdminRole = {
   STAFF: "staff",
   MANAGER: "manager",
   OWNER: "owner",
+  SUPER_ADMIN: "super_admin",
 } as const;
 export type AdminRole = (typeof AdminRole)[keyof typeof AdminRole];
 

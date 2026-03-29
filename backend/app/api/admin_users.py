@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import select
 
 from app.core.config import settings
-from app.core.dependencies import DbSession, OwnerUser
+from app.core.dependencies import CurrentTenant, DbSession, OwnerUser
 from app.models.admin_user import AdminRole, AdminUser
 from app.schemas.settings import AdminUserCreate, AdminUserResponse, AdminUserUpdate
 from app.services.auth import _get_supabase_url
@@ -14,16 +14,16 @@ router = APIRouter(prefix="/api/v1/admin-users", tags=["admin-users"])
 
 
 @router.get("", response_model=list[AdminUserResponse])
-async def list_admin_users(db: DbSession, current_user: OwnerUser):
+async def list_admin_users(db: DbSession, current_user: OwnerUser, tenant: CurrentTenant):
     result = await db.execute(
-        select(AdminUser).order_by(AdminUser.created_at)
+        select(AdminUser).where(AdminUser.tenant_id == tenant.id).order_by(AdminUser.created_at)
     )
     return result.scalars().all()
 
 
 @router.post("", response_model=AdminUserResponse, status_code=status.HTTP_201_CREATED)
 async def create_admin_user(
-    body: AdminUserCreate, db: DbSession, current_user: OwnerUser
+    body: AdminUserCreate, db: DbSession, current_user: OwnerUser, tenant: CurrentTenant
 ):
     # Validate role
     try:
@@ -58,6 +58,7 @@ async def create_admin_user(
     # Create admin user record
     admin_user = AdminUser(
         id=user_id,
+        tenant_id=tenant.id,
         email=body.email,
         role=role,
     )
@@ -73,9 +74,10 @@ async def update_admin_user(
     body: AdminUserUpdate,
     db: DbSession,
     current_user: OwnerUser,
+    tenant: CurrentTenant,
 ):
     result = await db.execute(
-        select(AdminUser).where(AdminUser.id == user_id)
+        select(AdminUser).where(AdminUser.id == user_id, AdminUser.tenant_id == tenant.id)
     )
     user = result.scalar_one_or_none()
     if not user:

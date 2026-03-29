@@ -15,7 +15,13 @@ import {
   manualOptout,
   type CustomerFilters,
 } from "../api";
-import type { CustomerCreate, CustomerUpdate, PatternOverrideRequest, OptOutRequest } from "@/types/api";
+import type {
+  CustomerCreate,
+  CustomerResponse,
+  CustomerUpdate,
+  PatternOverrideRequest,
+  OptOutRequest,
+} from "@/types/api";
 
 export function useCustomers(filters: CustomerFilters) {
   return useQuery({
@@ -62,9 +68,22 @@ export function useUpdateCustomer() {
   return useMutation({
     mutationFn: ({ phone, body }: { phone: string; body: CustomerUpdate }) =>
       updateCustomer(phone, body),
-    onSuccess: (_d, v) => {
-      void qc.invalidateQueries({ queryKey: ["customers", v.phone] });
-      void qc.invalidateQueries({ queryKey: ["customers"] });
+    onSuccess: (data, variables) => {
+      qc.setQueryData<CustomerResponse>(["customers", variables.phone], data);
+      void qc.invalidateQueries({ queryKey: ["customers", variables.phone] });
+      void qc.invalidateQueries({
+        predicate: (query) => {
+          const key = query.queryKey;
+          return (
+            Array.isArray(key) &&
+            key[0] === "customers" &&
+            key.length > 1 &&
+            typeof key[1] === "object" &&
+            key[1] !== null &&
+            !Array.isArray(key[1])
+          );
+        },
+      });
     },
   });
 }

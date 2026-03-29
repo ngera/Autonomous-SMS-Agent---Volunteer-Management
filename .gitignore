@@ -16,6 +16,11 @@ env/
 # IDE
 .vscode/
 .idea/
+.claude/
+
+# Windows reserved name artifacts
+nul
+backend/nul
 *.swp
 *.swo
 

@@ -63,12 +63,14 @@ export const ADMIN_ROLE_LABELS: Record<AdminRole, string> = {
   [AdminRole.STAFF]: "Staff",
   [AdminRole.MANAGER]: "Manager",
   [AdminRole.OWNER]: "Owner",
+  [AdminRole.SUPER_ADMIN]: "Super Admin",
 };
 
 export const ROLE_HIERARCHY: Record<AdminRole, number> = {
   [AdminRole.STAFF]: 0,
   [AdminRole.MANAGER]: 1,
   [AdminRole.OWNER]: 2,
+  [AdminRole.SUPER_ADMIN]: 3,
 };
 
 export const SUSPENSION_TYPE_LABELS: Record<SuspensionType, string> = {

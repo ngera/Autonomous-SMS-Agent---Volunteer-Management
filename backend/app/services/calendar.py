@@ -4,21 +4,21 @@ from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
-from app.core.config import settings
 from app.core.logging import get_logger
+from app.models.tenant import Tenant
 
 logger = get_logger("calendar")
 
 SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
 
 
-def _get_credentials() -> Credentials:
-    """Build Google OAuth2 credentials from stored refresh token."""
+def _get_credentials(tenant: Tenant) -> Credentials:
+    """Build Google OAuth2 credentials from tenant's stored refresh token."""
     creds = Credentials(
         token=None,
-        refresh_token=settings.google_refresh_token,
-        client_id=settings.google_client_id,
-        client_secret=settings.google_client_secret,
+        refresh_token=tenant.google_refresh_token,
+        client_id=tenant.google_client_id,
+        client_secret=tenant.google_client_secret,
         token_uri="https://oauth2.googleapis.com/token",
         scopes=SCOPES,
     )
@@ -26,21 +26,21 @@ def _get_credentials() -> Credentials:
     return creds
 
 
-def _get_service():
+def _get_service(tenant: Tenant):
     """Build the Google Calendar API service client."""
-    creds = _get_credentials()
+    creds = _get_credentials(tenant)
     return build("calendar", "v3", credentials=creds)
 
 
 async def get_busy_periods(
-    time_min: datetime, time_max: datetime
+    time_min: datetime, time_max: datetime, tenant: Tenant
 ) -> list[dict]:
     """Query Google Calendar freeBusy API for busy periods.
 
     Returns list of {"start": datetime_str, "end": datetime_str}.
     """
     try:
-        service = _get_service()
+        service = _get_service(tenant)
         body = {
             "timeMin": time_min.isoformat(),
             "timeMax": time_max.isoformat(),
@@ -60,20 +60,21 @@ async def create_event(
     description: str,
     start_time: datetime,
     end_time: datetime,
+    tenant: Tenant,
 ) -> str:
     """Create a Google Calendar event. Returns the event ID."""
     try:
-        service = _get_service()
+        service = _get_service(tenant)
         event = {
             "summary": summary,
             "description": description,
             "start": {
                 "dateTime": start_time.isoformat(),
-                "timeZone": settings.business_timezone,
+                "timeZone": tenant.business_timezone,
             },
             "end": {
                 "dateTime": end_time.isoformat(),
-                "timeZone": settings.business_timezone,
+                "timeZone": tenant.business_timezone,
             },
         }
         result = service.events().insert(calendarId="primary", body=event).execute()
@@ -89,20 +90,21 @@ async def update_event(
     event_id: str,
     start_time: datetime,
     end_time: datetime,
+    tenant: Tenant,
     summary: str | None = None,
     description: str | None = None,
 ) -> None:
     """Update an existing Google Calendar event."""
     try:
-        service = _get_service()
+        service = _get_service(tenant)
         body = {
             "start": {
                 "dateTime": start_time.isoformat(),
-                "timeZone": settings.business_timezone,
+                "timeZone": tenant.business_timezone,
             },
             "end": {
                 "dateTime": end_time.isoformat(),
-                "timeZone": settings.business_timezone,
+                "timeZone": tenant.business_timezone,
             },
         }
         if summary:
@@ -119,10 +121,10 @@ async def update_event(
         raise
 
 
-async def delete_event(event_id: str) -> None:
+async def delete_event(event_id: str, tenant: Tenant) -> None:
     """Delete a Google Calendar event."""
     try:
-        service = _get_service()
+        service = _get_service(tenant)
         service.events().delete(calendarId="primary", eventId=event_id).execute()
         logger.info("Deleted calendar event: %s", event_id)
     except Exception as e:

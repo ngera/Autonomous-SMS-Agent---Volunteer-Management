@@ -1,195 +1,244 @@
 """APScheduler cron jobs for background processing.
 
-Four daily jobs:
+Five daily jobs:
 - reminder_dispatch (08:00): evaluate customers and send qualifying reminders
 - follow_up_dispatch (10:00): follow up on reminders with no response after 48hrs
 - strike_decay (00:00): mark strikes >30 days old as decayed
 - conversation_expiry (02:00): expire conversations with no activity for 7 days
+- announcement_dispatch (every hour): send scheduled announcements whose time has arrived
+
+Multi-tenant: reminder and follow-up jobs iterate over all active tenants,
+checking each tenant's local time before dispatching.
 """
 
 from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import and_, select, update
+from sqlalchemy import select, update
 
 from app.core.database import async_session_factory
 from app.core.logging import get_logger
-from app.models.contact import Contact
+from app.models.announcement import Announcement, AnnouncementStatus
+from app.models.contact import Contact, ContactStatus
 from app.models.contact_consent import ContactConsent, ConsentStatus
+from app.models.contact_preferred_type import ContactPreferredType
 from app.models.conversation import Conversation, ConversationStatus
 from app.models.pattern import CustomerAppointmentPattern
 from app.models.reminder import Reminder, ReminderStatus
 from app.models.strike import ContactStrike
 from app.models.suspension import ContactSuspension, ReviewDecision
+from app.models.tenant import Tenant
 from app.services.sms import send_sms
 
 logger = get_logger("scheduler")
 
 
 async def reminder_dispatch() -> None:
-    """Daily 08:00 — evaluate customers and send qualifying reminders.
+    """Daily — evaluate customers per tenant and send qualifying reminders.
 
-    For each customer with a pattern that has a next_due_date <= today + 3 days:
-    1. Check they are not suspended
-    2. Check they have opted-in consent
-    3. Check no active reminder already exists for this type
-    4. Create reminder record and send SMS
+    Iterates over all active tenants. For each tenant, finds patterns
+    with upcoming due dates and sends reminders to qualifying customers.
     """
-    today = date.today()
-    lookahead = today + timedelta(days=3)
-
     async with async_session_factory() as db:
         try:
-            # Find patterns with upcoming due dates
-            result = await db.execute(
-                select(CustomerAppointmentPattern).where(
-                    CustomerAppointmentPattern.next_due_date != None,  # noqa: E711
-                    CustomerAppointmentPattern.next_due_date <= lookahead,
-                )
+            # Get all active tenants
+            tenants_result = await db.execute(
+                select(Tenant).where(Tenant.is_active.is_(True))
             )
-            patterns = result.scalars().all()
+            tenants = tenants_result.scalars().all()
 
-            sent_count = 0
-            skipped_count = 0
-
-            for pattern in patterns:
-                phone = pattern.contact_phone
-                type_id = pattern.appointment_type_id
-
-                # Check for active suspension
-                suspension = await db.execute(
-                    select(ContactSuspension).where(
-                        ContactSuspension.contact_phone == phone,
-                        ContactSuspension.lifted_at == None,  # noqa: E711
-                        ContactSuspension.review_decision != ReviewDecision.LIFTED,
+            for tenant in tenants:
+                try:
+                    await _reminder_dispatch_for_tenant(db, tenant)
+                except Exception as e:
+                    logger.error(
+                        "Reminder dispatch failed for tenant %s: %s",
+                        tenant.slug, str(e), exc_info=True,
                     )
-                )
-                if suspension.scalar_one_or_none():
-                    skipped_count += 1
-                    continue
-
-                # Check consent
-                consent_result = await db.execute(
-                    select(ContactConsent).where(
-                        ContactConsent.contact_phone == phone,
-                    )
-                )
-                consent = consent_result.scalar_one_or_none()
-                if not consent or consent.status != ConsentStatus.OPTED_IN:
-                    skipped_count += 1
-                    continue
-
-                # Check no existing pending/sent reminder for this type
-                existing = await db.execute(
-                    select(Reminder).where(
-                        Reminder.contact_phone == phone,
-                        Reminder.appointment_type_id == type_id,
-                        Reminder.status.in_([
-                            ReminderStatus.PENDING,
-                            ReminderStatus.SENT,
-                        ]),
-                    )
-                )
-                if existing.scalar_one_or_none():
-                    skipped_count += 1
-                    continue
-
-                # Create reminder
-                reminder = Reminder(
-                    contact_phone=phone,
-                    appointment_type_id=type_id,
-                    scheduled_for=pattern.next_due_date,
-                    status=ReminderStatus.SENT,
-                    sent_at=datetime.now(timezone.utc),
-                    pattern_snapshot={
-                        "blended_interval_days": float(pattern.blended_interval_days or 0),
-                        "confidence": pattern.confidence.value if pattern.confidence else "default",
-                        "completed_count": pattern.completed_booking_count,
-                    },
-                )
-                db.add(reminder)
-
-                # Send SMS
-                interval_days = int(pattern.blended_interval_days or 28)
-                await send_sms(
-                    to=phone,
-                    body=(
-                        f"Hi! It's been about {interval_days} days since your last appointment. "
-                        f"Would you like to book your next session? "
-                        f"Reply YES to start booking or STOP to opt out of reminders."
-                    ),
-                )
-                sent_count += 1
 
             await db.commit()
-            logger.info(
-                "Reminder dispatch complete: %d sent, %d skipped",
-                sent_count, skipped_count,
-            )
 
         except Exception as e:
             await db.rollback()
             logger.error("Reminder dispatch failed: %s", str(e), exc_info=True)
 
 
-async def follow_up_dispatch() -> None:
-    """Daily 10:00 — follow up on reminders with no response after 48hrs.
+async def _reminder_dispatch_for_tenant(db, tenant: Tenant) -> None:
+    """Send qualifying reminders for a single tenant."""
+    today = date.today()
+    lookahead = today + timedelta(days=3)
 
-    Find reminders that were sent >= 48 hours ago with no follow-up yet
-    and no booking conversion. Send a single follow-up message.
+    # Find patterns with upcoming due dates for this tenant
+    result = await db.execute(
+        select(CustomerAppointmentPattern).where(
+            CustomerAppointmentPattern.tenant_id == tenant.id,
+            CustomerAppointmentPattern.next_due_date != None,  # noqa: E711
+            CustomerAppointmentPattern.next_due_date <= lookahead,
+        )
+    )
+    patterns = result.scalars().all()
+
+    sent_count = 0
+    skipped_count = 0
+
+    for pattern in patterns:
+        phone = pattern.contact_phone
+        type_id = pattern.appointment_type_id
+
+        # Check for active suspension
+        suspension = await db.execute(
+            select(ContactSuspension).where(
+                ContactSuspension.contact_phone == phone,
+                ContactSuspension.tenant_id == tenant.id,
+                ContactSuspension.lifted_at == None,  # noqa: E711
+                ContactSuspension.review_decision != ReviewDecision.LIFTED,
+            )
+        )
+        if suspension.scalar_one_or_none():
+            skipped_count += 1
+            continue
+
+        # Check consent
+        consent_result = await db.execute(
+            select(ContactConsent).where(
+                ContactConsent.contact_phone == phone,
+                ContactConsent.tenant_id == tenant.id,
+            )
+        )
+        consent = consent_result.scalar_one_or_none()
+        if not consent or consent.status != ConsentStatus.OPTED_IN:
+            skipped_count += 1
+            continue
+
+        # Check no existing pending/sent reminder for this type
+        existing = await db.execute(
+            select(Reminder).where(
+                Reminder.contact_phone == phone,
+                Reminder.tenant_id == tenant.id,
+                Reminder.appointment_type_id == type_id,
+                Reminder.status.in_([
+                    ReminderStatus.PENDING,
+                    ReminderStatus.SENT,
+                ]),
+            )
+        )
+        if existing.scalar_one_or_none():
+            skipped_count += 1
+            continue
+
+        # Create reminder
+        reminder = Reminder(
+            contact_phone=phone,
+            contact_id=pattern.contact_id,
+            tenant_id=tenant.id,
+            appointment_type_id=type_id,
+            scheduled_for=pattern.next_due_date,
+            status=ReminderStatus.SENT,
+            sent_at=datetime.now(timezone.utc),
+            pattern_snapshot={
+                "blended_interval_days": float(pattern.blended_interval_days or 0),
+                "confidence": pattern.confidence.value if pattern.confidence else "default",
+                "completed_count": pattern.completed_booking_count,
+            },
+        )
+        db.add(reminder)
+
+        # Send SMS
+        interval_days = int(pattern.blended_interval_days or 28)
+        await send_sms(
+            to=phone,
+            body=(
+                f"Hi! It's been about {interval_days} days since your last appointment. "
+                f"Would you like to book your next session? "
+                f"Reply YES to start booking or STOP to opt out of reminders."
+            ),
+            tenant=tenant,
+        )
+        sent_count += 1
+
+    logger.info(
+        "Reminder dispatch for tenant %s: %d sent, %d skipped",
+        tenant.slug, sent_count, skipped_count,
+    )
+
+
+async def follow_up_dispatch() -> None:
+    """Daily — follow up on reminders with no response after 48hrs.
+
+    Iterates over all active tenants.
     """
     cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
 
     async with async_session_factory() as db:
         try:
-            result = await db.execute(
-                select(Reminder).where(
-                    Reminder.status == ReminderStatus.SENT,
-                    Reminder.sent_at != None,  # noqa: E711
-                    Reminder.sent_at <= cutoff,
-                    Reminder.follow_up_sent_at == None,  # noqa: E711
-                )
+            tenants_result = await db.execute(
+                select(Tenant).where(Tenant.is_active.is_(True))
             )
-            reminders = result.scalars().all()
+            tenants = tenants_result.scalars().all()
 
-            sent_count = 0
-
-            for reminder in reminders:
-                await send_sms(
-                    to=reminder.contact_phone,
-                    body=(
-                        "Just a gentle follow-up — would you like to book your "
-                        "next appointment? Reply YES to book or STOP to opt out."
-                    ),
-                )
-                reminder.follow_up_sent_at = datetime.now(timezone.utc)
-                sent_count += 1
-
-            # Mark reminders that still have no response after follow-up
-            # (from previous cycle — sent follow-up >= 48hrs ago)
-            follow_up_cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
-            await db.execute(
-                update(Reminder)
-                .where(
-                    Reminder.status == ReminderStatus.SENT,
-                    Reminder.follow_up_sent_at != None,  # noqa: E711
-                    Reminder.follow_up_sent_at <= follow_up_cutoff,
-                )
-                .values(status=ReminderStatus.NO_RESPONSE)
-            )
+            for tenant in tenants:
+                try:
+                    await _follow_up_for_tenant(db, tenant, cutoff)
+                except Exception as e:
+                    logger.error(
+                        "Follow-up dispatch failed for tenant %s: %s",
+                        tenant.slug, str(e), exc_info=True,
+                    )
 
             await db.commit()
-            logger.info("Follow-up dispatch complete: %d sent", sent_count)
 
         except Exception as e:
             await db.rollback()
             logger.error("Follow-up dispatch failed: %s", str(e), exc_info=True)
 
 
+async def _follow_up_for_tenant(db, tenant: Tenant, cutoff: datetime) -> None:
+    """Send follow-up messages for a single tenant."""
+    result = await db.execute(
+        select(Reminder).where(
+            Reminder.tenant_id == tenant.id,
+            Reminder.status == ReminderStatus.SENT,
+            Reminder.sent_at != None,  # noqa: E711
+            Reminder.sent_at <= cutoff,
+            Reminder.follow_up_sent_at == None,  # noqa: E711
+        )
+    )
+    reminders = result.scalars().all()
+
+    sent_count = 0
+    for reminder in reminders:
+        await send_sms(
+            to=reminder.contact_phone,
+            body=(
+                "Just a gentle follow-up — would you like to book your "
+                "next appointment? Reply YES to book or STOP to opt out."
+            ),
+            tenant=tenant,
+        )
+        reminder.follow_up_sent_at = datetime.now(timezone.utc)
+        sent_count += 1
+
+    # Mark reminders that still have no response after follow-up
+    follow_up_cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
+    await db.execute(
+        update(Reminder)
+        .where(
+            Reminder.tenant_id == tenant.id,
+            Reminder.status == ReminderStatus.SENT,
+            Reminder.follow_up_sent_at != None,  # noqa: E711
+            Reminder.follow_up_sent_at <= follow_up_cutoff,
+        )
+        .values(status=ReminderStatus.NO_RESPONSE)
+    )
+
+    if sent_count:
+        logger.info("Follow-up for tenant %s: %d sent", tenant.slug, sent_count)
+
+
 async def strike_decay() -> None:
     """Daily 00:00 — mark strikes >30 days old as decayed.
 
     Strikes older than 30 days no longer count toward the 4-strike suspension
-    threshold. We mark them with a decayed_at timestamp.
+    threshold. This runs globally (not per-tenant) since it's a simple timestamp update.
     """
     cutoff = datetime.now(timezone.utc) - timedelta(days=30)
 
@@ -217,8 +266,7 @@ async def strike_decay() -> None:
 async def conversation_expiry() -> None:
     """Daily 02:00 — expire conversations with no activity for 7 days.
 
-    Active conversations that have had no messages for 7 days are marked
-    as expired so they don't interfere with new conversation sessions.
+    Runs globally (not per-tenant) since it's a simple timestamp-based update.
     """
     cutoff = datetime.now(timezone.utc) - timedelta(days=7)
 
@@ -244,3 +292,35 @@ async def conversation_expiry() -> None:
         except Exception as e:
             await db.rollback()
             logger.error("Conversation expiry failed: %s", str(e), exc_info=True)
+
+
+async def announcement_dispatch() -> None:
+    """Hourly — send scheduled announcements whose scheduled_at has passed."""
+    from app.api.announcements import _get_recipient_phones, _send_announcement
+
+    now = datetime.now(timezone.utc)
+
+    async with async_session_factory() as db:
+        try:
+            result = await db.execute(
+                select(Announcement).where(
+                    Announcement.status == AnnouncementStatus.SCHEDULED,
+                    Announcement.scheduled_at <= now,
+                )
+            )
+            announcements = result.scalars().all()
+
+            for ann in announcements:
+                try:
+                    await _send_announcement(str(ann.id), str(ann.tenant_id))
+                    logger.info("Sent scheduled announcement %s", ann.id)
+                except Exception as e:
+                    logger.error(
+                        "Failed to send announcement %s: %s",
+                        ann.id, str(e), exc_info=True,
+                    )
+
+            await db.commit()
+        except Exception as e:
+            await db.rollback()
+            logger.error("Announcement dispatch failed: %s", str(e), exc_info=True)

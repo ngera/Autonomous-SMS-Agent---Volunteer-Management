@@ -13,11 +13,12 @@ from datetime import date, datetime, time, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.core.logging import get_logger
 from app.models.appointment_type import AppointmentType
 from app.models.availability import AvailabilityRule
 from app.models.blocked_date import BlockedDate
+from app.models.booking import Booking, BookingStatus
+from app.models.tenant import Tenant
 from app.services.calendar import get_busy_periods
 
 logger = get_logger("availability")
@@ -27,7 +28,8 @@ async def compute_available_slots(
     db: AsyncSession,
     target_date: date,
     appointment_type_id: str,
-    max_slots: int = 3,
+    tenant: Tenant,
+    max_slots: int = 0,
 ) -> list[dict]:
     """Compute available time slots for a given date and appointment type.
 
@@ -35,11 +37,12 @@ async def compute_available_slots(
     """
     import pytz
 
-    tz = pytz.timezone(settings.business_timezone)
+    tz = pytz.timezone(tenant.business_timezone)
 
     # Check if date is blocked
     blocked = await db.execute(
         select(BlockedDate).where(
+            BlockedDate.tenant_id == tenant.id,
             BlockedDate.date_from <= target_date,
             BlockedDate.date_to >= target_date,
         )
@@ -51,6 +54,7 @@ async def compute_available_slots(
     day_of_week = target_date.weekday()
     rules_result = await db.execute(
         select(AvailabilityRule).where(
+            AvailabilityRule.tenant_id == tenant.id,
             AvailabilityRule.day_of_week == day_of_week,
             AvailabilityRule.is_active.is_(True),
         )
@@ -75,7 +79,8 @@ async def compute_available_slots(
         start_dt = tz.localize(datetime.combine(target_date, rule.start_time))
         end_dt = tz.localize(datetime.combine(target_date, rule.end_time))
         buffer = timedelta(minutes=rule.buffer_minutes)
-        working_windows.append((start_dt, end_dt, buffer))
+        slot_step = timedelta(minutes=rule.slot_duration_minutes)
+        working_windows.append((start_dt, end_dt, buffer, slot_step))
 
     if not working_windows:
         return []
@@ -85,10 +90,10 @@ async def compute_available_slots(
     day_end = tz.localize(datetime.combine(target_date, time.max))
 
     try:
-        busy_periods = await get_busy_periods(day_start, day_end)
+        busy_periods = await get_busy_periods(day_start, day_end, tenant=tenant)
     except Exception:
-        logger.warning("Failed to fetch busy periods, returning no slots")
-        return []
+        logger.warning("Failed to fetch busy periods from Google Calendar, assuming none")
+        busy_periods = []
 
     # Parse busy periods
     busy_ranges = []
@@ -97,9 +102,29 @@ async def compute_available_slots(
         busy_end = datetime.fromisoformat(period["end"])
         busy_ranges.append((busy_start, busy_end))
 
+    # Get existing bookings for this date (exclude cancelled)
+    active_statuses = [BookingStatus.SCHEDULED, BookingStatus.RESCHEDULED, BookingStatus.COMPLETED]
+    bookings_result = await db.execute(
+        select(Booking, AppointmentType.duration_minutes)
+        .join(AppointmentType, Booking.appointment_type_id == AppointmentType.id)
+        .where(
+            Booking.tenant_id == tenant.id,
+            Booking.scheduled_at >= day_start,
+            Booking.scheduled_at <= day_end,
+            Booking.status.in_(active_statuses),
+        )
+    )
+    for booking, dur_minutes in bookings_result.all():
+        busy_ranges.append((
+            booking.scheduled_at,
+            booking.scheduled_at + timedelta(minutes=dur_minutes),
+        ))
+
     # Compute available slots
+    # Use the larger of slot_step and duration to avoid overlapping slots
     slots = []
-    for window_start, window_end, buffer in working_windows:
+    for window_start, window_end, buffer, slot_step in working_windows:
+        effective_step = max(slot_step, duration)
         cursor = window_start
 
         while cursor + duration <= window_end:
@@ -114,13 +139,20 @@ async def compute_available_slots(
                     is_busy = True
                     # Jump past this busy period
                     cursor = busy_end + buffer
+                    # Align to next slot step boundary
+                    elapsed = (cursor - window_start).total_seconds()
+                    step_secs = slot_step.total_seconds()
+                    if step_secs > 0 and elapsed % step_secs != 0:
+                        cursor = window_start + timedelta(
+                            seconds=((elapsed // step_secs) + 1) * step_secs
+                        )
                     break
 
             if not is_busy:
                 slots.append({"start": cursor, "end": slot_end})
-                cursor = slot_end + buffer
+                cursor += effective_step
 
-                if len(slots) >= max_slots:
+                if max_slots and len(slots) >= max_slots:
                     return slots
 
     return slots

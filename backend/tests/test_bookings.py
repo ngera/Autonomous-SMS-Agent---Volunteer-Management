@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.models.booking import BookingStatus
-from tests.conftest import make_list_result, make_scalar_result
+from tests.conftest import make_list_result, make_row_result, make_scalar_result
 
 
 def _make_booking(**overrides):
@@ -33,22 +33,32 @@ def _make_booking(**overrides):
 async def test_list_bookings(client, mock_db):
     booking = _make_booking()
     mock_db.execute.side_effect = [
-        make_scalar_result(1),
-        make_list_result([booking]),
+        make_scalar_result(1),              # count query
+        make_list_result([booking]),         # list query
+        make_scalar_result("John Doe"),      # _enrich: contact name
+        make_row_result(("Haircut", 30)),    # _enrich: appt type name + duration
     ]
     resp = await client.get("/api/v1/bookings")
     assert resp.status_code == 200
     data = resp.json()
     assert "items" in data
     assert "total" in data
+    assert data["items"][0]["contact_name"] == "John Doe"
+    assert data["items"][0]["appointment_type_name"] == "Haircut"
+    assert data["items"][0]["duration_minutes"] == 30
 
 
 @pytest.mark.asyncio
 async def test_get_booking(client, mock_db):
     booking = _make_booking()
-    mock_db.execute.return_value = make_scalar_result(booking)
+    mock_db.execute.side_effect = [
+        make_scalar_result(booking),         # booking lookup
+        make_scalar_result("Jane Smith"),     # _enrich: contact name
+        make_row_result(("Color", 60)),       # _enrich: appt type name + duration
+    ]
     resp = await client.get(f"/api/v1/bookings/{uuid.uuid4()}")
     assert resp.status_code == 200
+    assert resp.json()["contact_name"] == "Jane Smith"
 
 
 @pytest.mark.asyncio

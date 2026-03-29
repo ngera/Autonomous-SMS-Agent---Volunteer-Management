@@ -34,13 +34,24 @@ async def login(request: Request, body: LoginRequest, db: DbSession):
 
 
 @router.get("/me")
-async def get_me(current_user: CurrentUser):
+async def get_me(current_user: CurrentUser, db: DbSession):
     """Return the current authenticated admin user's profile."""
-    return {
+    result = {
         "id": str(current_user.id),
         "email": current_user.email,
         "role": current_user.role,
+        "tenant_id": str(current_user.tenant_id) if current_user.tenant_id else None,
+        "tenant_name": None,
     }
+    if current_user.tenant_id:
+        from app.models.tenant import Tenant
+        from sqlalchemy import select
+
+        tenant_result = await db.execute(
+            select(Tenant.name).where(Tenant.id == current_user.tenant_id)
+        )
+        result["tenant_name"] = tenant_result.scalar_one_or_none()
+    return result
 
 
 @router.post("/logout", response_model=MessageResponse)

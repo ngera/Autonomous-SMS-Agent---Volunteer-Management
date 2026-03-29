@@ -1,9 +1,18 @@
 import enum
+import uuid
 
-from sqlalchemy import DateTime, Enum, Integer, String, func
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, UniqueConstraint, func
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
+
+
+class ContactSex(str, enum.Enum):
+    MALE = "male"
+    FEMALE = "female"
+    NON_BINARY = "non_binary"
+    PREFER_NOT_TO_SAY = "prefer_not_to_say"
 
 
 class ContactStatus(str, enum.Enum):
@@ -14,10 +23,22 @@ class ContactStatus(str, enum.Enum):
 
 class Contact(Base):
     __tablename__ = "contacts"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "phone", name="uq_contact_tenant_phone"),
+    )
 
-    phone: Mapped[str] = mapped_column(String(20), primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False, index=True
+    )
+    phone: Mapped[str] = mapped_column(String(20), nullable=False)
     name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    sex: Mapped[ContactSex | None] = mapped_column(
+        Enum(ContactSex, name="contact_sex"), nullable=True
+    )
     status: Mapped[ContactStatus] = mapped_column(
         Enum(ContactStatus, name="contact_status"), default=ContactStatus.ACTIVE
     )

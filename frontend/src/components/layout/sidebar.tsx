@@ -10,6 +10,8 @@ import {
   ShieldAlert,
   BarChart3,
   Settings,
+  Building2,
+  Megaphone,
   ChevronLeft,
   ChevronRight,
 } from "lucide-react";
@@ -33,10 +35,11 @@ const navItems = [
   { to: "/conversations", label: "Conversations", icon: MessageSquare },
   { to: "/suspensions", label: "Suspensions", icon: ShieldAlert },
   { to: "/analytics", label: "Analytics", icon: BarChart3 },
+  { to: "/announcements", label: "Announcements", icon: Megaphone },
 ];
 
 export function Sidebar({ collapsed, onToggle }: SidebarProps) {
-  const { hasRole } = useAuth();
+  const { hasRole, user } = useAuth();
 
   return (
     <aside
@@ -47,7 +50,9 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     >
       <div className="flex h-14 items-center justify-between border-b border-border px-3">
         {!collapsed && (
-          <span className="text-sm font-semibold truncate">Booking System</span>
+          <span className="text-sm font-semibold truncate">
+            {user?.tenant_name || "Booking System"}
+          </span>
         )}
         <Button
           variant="ghost"
@@ -94,6 +99,24 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           >
             <Settings className="h-4 w-4 shrink-0" />
             {!collapsed && <span>Settings</span>}
+          </NavLink>
+        )}
+
+        {hasRole(AdminRole.SUPER_ADMIN) && (
+          <NavLink
+            to="/tenants"
+            className={({ isActive }) =>
+              cn(
+                "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                isActive
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                collapsed && "justify-center px-2"
+              )
+            }
+          >
+            <Building2 className="h-4 w-4 shrink-0" />
+            {!collapsed && <span>Tenants</span>}
           </NavLink>
         )}
       </nav>

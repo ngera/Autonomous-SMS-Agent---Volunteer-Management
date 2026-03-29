@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.admin_users import router as admin_users_router
 from app.api.analytics import router as analytics_router
+from app.api.announcements import router as announcements_router
 from app.api.appointment_types import router as appointment_types_router
 from app.api.auth import router as auth_router
 from app.api.availability import router as availability_router
@@ -18,12 +19,14 @@ from app.api.dashboard import router as dashboard_router
 from app.api.reminders import router as reminders_router
 from app.api.settings import router as settings_router
 from app.api.suspensions import router as suspensions_router
+from app.api.tenants import router as tenants_router
 from app.api.webhook import router as webhook_router
 from app.core.config import settings
 from app.core.logging import get_logger, setup_logging
 from app.middleware.auth import AuthLoggingMiddleware
 from app.middleware.ratelimit import setup_rate_limiting
 from app.scheduler.jobs import (
+    announcement_dispatch,
     conversation_expiry,
     follow_up_dispatch,
     reminder_dispatch,
@@ -61,6 +64,12 @@ async def lifespan(app: FastAPI):
         follow_up_dispatch,
         CronTrigger(hour=10, minute=0),
         id="follow_up_dispatch",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        announcement_dispatch,
+        CronTrigger(minute=0),
+        id="announcement_dispatch",
         replace_existing=True,
     )
     scheduler.start()
@@ -109,6 +118,8 @@ app.include_router(admin_users_router)
 app.include_router(conversations_router)
 app.include_router(calendar_ics_router)
 app.include_router(webhook_router)
+app.include_router(tenants_router)
+app.include_router(announcements_router)
 
 
 @app.get("/health")

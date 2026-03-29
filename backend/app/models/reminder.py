@@ -23,9 +23,13 @@ class Reminder(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    contact_phone: Mapped[str] = mapped_column(
-        String(20), ForeignKey("contacts.phone"), nullable=False
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False, index=True
     )
+    contact_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("contacts.id"), nullable=False
+    )
+    contact_phone: Mapped[str] = mapped_column(String(20), nullable=False)
     appointment_type_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("appointment_types.id"), nullable=False
     )

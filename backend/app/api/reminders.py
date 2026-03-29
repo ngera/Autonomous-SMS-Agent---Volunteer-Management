@@ -4,7 +4,7 @@ from datetime import date, datetime, timezone
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, select
 
-from app.core.dependencies import CurrentUser, DbSession, ManagerUser
+from app.core.dependencies import CurrentTenant, CurrentUser, DbSession, ManagerUser
 from app.models.reminder import Reminder, ReminderStatus
 from app.schemas.reminder import (
     ReminderCancelRequest,
@@ -18,9 +18,10 @@ router = APIRouter(prefix="/api/v1/reminders", tags=["reminders"])
 
 
 @router.get("/upcoming", response_model=ReminderListResponse)
-async def get_upcoming_reminders(db: DbSession, current_user: CurrentUser):
+async def get_upcoming_reminders(db: DbSession, current_user: CurrentUser, tenant: CurrentTenant):
     today = date.today()
     query = select(Reminder).where(
+        Reminder.tenant_id == tenant.id,
         Reminder.scheduled_for >= today,
         Reminder.status == ReminderStatus.PENDING,
     ).order_by(Reminder.scheduled_for)
@@ -34,10 +35,12 @@ async def get_upcoming_reminders(db: DbSession, current_user: CurrentUser):
 async def get_reminder_history(
     db: DbSession,
     current_user: CurrentUser,
+    tenant: CurrentTenant,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
 ):
     query = select(Reminder).where(
+        Reminder.tenant_id == tenant.id,
         Reminder.status != ReminderStatus.PENDING,
     ).order_by(Reminder.created_at.desc())
 
@@ -52,10 +55,11 @@ async def get_reminder_history(
 
 @router.post("/trigger", response_model=ReminderResponse, status_code=status.HTTP_201_CREATED)
 async def trigger_reminder(
-    body: ReminderTriggerRequest, db: DbSession, current_user: ManagerUser
+    body: ReminderTriggerRequest, db: DbSession, current_user: ManagerUser, tenant: CurrentTenant
 ):
     """Manually trigger a reminder for a specific customer."""
     reminder = Reminder(
+        tenant_id=tenant.id,
         contact_phone=body.contact_phone,
         appointment_type_id=body.appointment_type_id,
         scheduled_for=date.today(),
@@ -79,9 +83,10 @@ async def update_reminder(
     body: ReminderUpdate,
     db: DbSession,
     current_user: ManagerUser,
+    tenant: CurrentTenant,
 ):
     result = await db.execute(
-        select(Reminder).where(Reminder.id == reminder_id)
+        select(Reminder).where(Reminder.id == reminder_id, Reminder.tenant_id == tenant.id)
     )
     reminder = result.scalar_one_or_none()
     if not reminder:
@@ -102,9 +107,10 @@ async def cancel_reminder(
     body: ReminderCancelRequest,
     db: DbSession,
     current_user: ManagerUser,
+    tenant: CurrentTenant,
 ):
     result = await db.execute(
-        select(Reminder).where(Reminder.id == reminder_id)
+        select(Reminder).where(Reminder.id == reminder_id, Reminder.tenant_id == tenant.id)
     )
     reminder = result.scalar_one_or_none()
     if not reminder:
@@ -119,14 +125,20 @@ async def cancel_reminder(
 
 
 @router.get("/analytics")
-async def get_reminder_analytics(db: DbSession, current_user: CurrentUser):
+async def get_reminder_analytics(db: DbSession, current_user: CurrentUser, tenant: CurrentTenant):
     """Reminder conversion analytics. Full implementation in Phase 7."""
     total_sent = (await db.execute(
-        select(func.count()).where(Reminder.status != ReminderStatus.PENDING)
+        select(func.count()).where(
+            Reminder.tenant_id == tenant.id,
+            Reminder.status != ReminderStatus.PENDING,
+        )
     )).scalar() or 0
 
     total_converted = (await db.execute(
-        select(func.count()).where(Reminder.status == ReminderStatus.BOOKED)
+        select(func.count()).where(
+            Reminder.tenant_id == tenant.id,
+            Reminder.status == ReminderStatus.BOOKED,
+        )
     )).scalar() or 0
 
     conversion_rate = (total_converted / total_sent * 100) if total_sent > 0 else 0

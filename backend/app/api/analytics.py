@@ -3,7 +3,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from fastapi import APIRouter, Query
 from sqlalchemy import extract, func, select
 
-from app.core.dependencies import CurrentUser, DbSession, ManagerUser
+from app.core.dependencies import CurrentTenant, CurrentUser, DbSession, ManagerUser
 from app.models.booking import Booking, BookingStatus
 from app.models.contact_consent import ContactConsent, ConsentStatus
 from app.models.pattern import CustomerAppointmentPattern, PatternConfidence
@@ -23,6 +23,7 @@ router = APIRouter(prefix="/api/v1/analytics", tags=["analytics"])
 async def get_booking_analytics(
     db: DbSession,
     current_user: CurrentUser,
+    tenant: CurrentTenant,
     months: int = Query(6, ge=1, le=24),
 ):
     """Booking volume by month."""
@@ -33,7 +34,7 @@ async def get_booking_analytics(
             func.to_char(Booking.created_at, "YYYY-MM").label("period"),
             func.count().label("count"),
         )
-        .where(Booking.created_at >= cutoff)
+        .where(Booking.tenant_id == tenant.id, Booking.created_at >= cutoff)
         .group_by("period")
         .order_by("period")
     )
@@ -48,6 +49,7 @@ async def get_booking_analytics(
 async def get_revenue_analytics(
     db: DbSession,
     current_user: ManagerUser,
+    tenant: CurrentTenant,
     months: int = Query(6, ge=1, le=24),
 ):
     """Revenue by month."""
@@ -59,6 +61,7 @@ async def get_revenue_analytics(
             func.coalesce(func.sum(Booking.price_at_booking), 0).label("revenue"),
         )
         .where(
+            Booking.tenant_id == tenant.id,
             Booking.created_at >= cutoff,
             Booking.status != BookingStatus.CANCELLED,
         )
@@ -73,14 +76,15 @@ async def get_revenue_analytics(
 
 
 @router.get("/retention", response_model=RetentionMetrics)
-async def get_retention_analytics(db: DbSession, current_user: CurrentUser):
+async def get_retention_analytics(db: DbSession, current_user: CurrentUser, tenant: CurrentTenant):
     total_patterns = (await db.execute(
-        select(func.count()).select_from(CustomerAppointmentPattern)
+        select(func.count()).where(CustomerAppointmentPattern.tenant_id == tenant.id)
     )).scalar() or 0
 
     personal_patterns = (await db.execute(
         select(func.count()).where(
-            CustomerAppointmentPattern.confidence == PatternConfidence.PERSONAL
+            CustomerAppointmentPattern.tenant_id == tenant.id,
+            CustomerAppointmentPattern.confidence == PatternConfidence.PERSONAL,
         )
     )).scalar() or 0
 
@@ -94,18 +98,22 @@ async def get_retention_analytics(db: DbSession, current_user: CurrentUser):
 
 
 @router.get("/reminders", response_model=ReminderAnalytics)
-async def get_reminder_analytics(db: DbSession, current_user: CurrentUser):
+async def get_reminder_analytics(db: DbSession, current_user: CurrentUser, tenant: CurrentTenant):
     total_sent = (await db.execute(
         select(func.count()).where(
+            Reminder.tenant_id == tenant.id,
             Reminder.status.in_([
                 ReminderStatus.SENT, ReminderStatus.BOOKED,
                 ReminderStatus.SKIPPED, ReminderStatus.NO_RESPONSE,
-            ])
+            ]),
         )
     )).scalar() or 0
 
     total_converted = (await db.execute(
-        select(func.count()).where(Reminder.status == ReminderStatus.BOOKED)
+        select(func.count()).where(
+            Reminder.tenant_id == tenant.id,
+            Reminder.status == ReminderStatus.BOOKED,
+        )
     )).scalar() or 0
 
     conversion_rate = (total_converted / total_sent * 100) if total_sent > 0 else 0
@@ -120,15 +128,18 @@ async def get_reminder_analytics(db: DbSession, current_user: CurrentUser):
 
 
 @router.get("/consent", response_model=ConsentFunnel)
-async def get_consent_analytics(db: DbSession, current_user: CurrentUser):
+async def get_consent_analytics(db: DbSession, current_user: CurrentUser, tenant: CurrentTenant):
     total = (await db.execute(
-        select(func.count()).select_from(ContactConsent)
+        select(func.count()).where(ContactConsent.tenant_id == tenant.id)
     )).scalar() or 0
 
     statuses = {}
     for s in ConsentStatus:
         count = (await db.execute(
-            select(func.count()).where(ContactConsent.status == s)
+            select(func.count()).where(
+                ContactConsent.tenant_id == tenant.id,
+                ContactConsent.status == s,
+            )
         )).scalar() or 0
         statuses[s.value] = count
 

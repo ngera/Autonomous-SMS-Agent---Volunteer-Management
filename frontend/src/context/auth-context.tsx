@@ -15,6 +15,8 @@ interface AuthUser {
   id: string;
   email: string;
   role: AdminRole;
+  tenant_id: string | null;
+  tenant_name: string | null;
 }
 
 interface AuthContextType {
@@ -46,18 +48,26 @@ function extractUserFromToken(token: string): AuthUser | null {
     id: (payload.sub as string) || "",
     email: (payload.email as string) || "",
     role: ((payload.role as string) || "staff") as AdminRole,
+    tenant_id: null,
+    tenant_name: null,
   };
 }
 
 async function fetchUserProfile(): Promise<AuthUser | null> {
   try {
-    const { data } = await api.get<{ id: string; email: string; role: string }>(
-      "/auth/me"
-    );
+    const { data } = await api.get<{
+      id: string;
+      email: string;
+      role: string;
+      tenant_id: string | null;
+      tenant_name: string | null;
+    }>("/auth/me");
     return {
       id: data.id,
       email: data.email,
       role: data.role.toLowerCase() as AdminRole,
+      tenant_id: data.tenant_id,
+      tenant_name: data.tenant_name,
     };
   } catch {
     return null;

@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter
 from sqlalchemy import select
 
-from app.core.dependencies import CurrentUser, DbSession, OwnerUser
+from app.core.dependencies import CurrentTenant, CurrentUser, DbSession, OwnerUser
 from app.models.system_setting import SystemSetting
 from app.prompts.conversation import PROMPT_KEYS
 from app.prompts.screener import SCREENER_SYSTEM_PROMPT
@@ -13,15 +13,15 @@ router = APIRouter(prefix="/api/v1/settings", tags=["settings"])
 
 
 @router.get("", response_model=list[SystemSettingResponse])
-async def get_settings(db: DbSession, current_user: CurrentUser):
+async def get_settings(db: DbSession, current_user: CurrentUser, tenant: CurrentTenant):
     result = await db.execute(
-        select(SystemSetting).order_by(SystemSetting.key)
+        select(SystemSetting).where(SystemSetting.tenant_id == tenant.id).order_by(SystemSetting.key)
     )
     return result.scalars().all()
 
 
 @router.get("/prompts")
-async def get_prompts(db: DbSession, current_user: OwnerUser):
+async def get_prompts(db: DbSession, current_user: OwnerUser, tenant: CurrentTenant):
     """Return all prompt keys with current values (DB override or default)."""
     # Build defaults map (fill in screener default)
     defaults = {**PROMPT_KEYS}
@@ -29,7 +29,10 @@ async def get_prompts(db: DbSession, current_user: OwnerUser):
 
     # Fetch any DB overrides
     result = await db.execute(
-        select(SystemSetting).where(SystemSetting.key.in_(defaults.keys()))
+        select(SystemSetting).where(
+            SystemSetting.tenant_id == tenant.id,
+            SystemSetting.key.in_(defaults.keys()),
+        )
     )
     overrides = {s.key: s.value for s in result.scalars().all()}
 
@@ -45,12 +48,15 @@ async def get_prompts(db: DbSession, current_user: OwnerUser):
 
 @router.put("")
 async def update_settings(
-    body: SystemSettingsUpdate, db: DbSession, current_user: OwnerUser
+    body: SystemSettingsUpdate, db: DbSession, current_user: OwnerUser, tenant: CurrentTenant
 ):
     now = datetime.now(timezone.utc)
     for key, value in body.settings.items():
         result = await db.execute(
-            select(SystemSetting).where(SystemSetting.key == key)
+            select(SystemSetting).where(
+                SystemSetting.tenant_id == tenant.id,
+                SystemSetting.key == key,
+            )
         )
         setting = result.scalar_one_or_none()
 
@@ -60,6 +66,7 @@ async def update_settings(
             setting.updated_by_admin_id = current_user.id
         else:
             setting = SystemSetting(
+                tenant_id=tenant.id,
                 key=key,
                 value=value,
                 updated_by_admin_id=current_user.id,

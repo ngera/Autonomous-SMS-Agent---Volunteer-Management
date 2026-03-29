@@ -1,7 +1,7 @@
 import enum
 import uuid
 
-from sqlalchemy import Boolean, DateTime, Enum, Integer, String, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -9,6 +9,7 @@ from app.core.database import Base
 
 
 class AdminRole(str, enum.Enum):
+    SUPER_ADMIN = "super_admin"
     OWNER = "owner"
     MANAGER = "manager"
     STAFF = "staff"
@@ -19,6 +20,9 @@ class AdminUser(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=True, index=True
     )
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     role: Mapped[AdminRole] = mapped_column(

@@ -21,6 +21,7 @@ from app.models.booking import Booking, BookingStatus
 from app.models.contact import Contact
 from app.models.related_service import RelatedService
 from app.models.system_setting import SystemSetting
+from app.models.tenant import Tenant
 from app.prompts.conversation import (
     get_conversation_prompt,
     get_error_message,
@@ -46,24 +47,28 @@ class ConversationResponse:
     total_price: float | None = None
 
 
-async def build_system_prompt(db: AsyncSession, contact_phone: str) -> str:
+async def build_system_prompt(
+    db: AsyncSession, contact_phone: str, tenant: Tenant | None = None,
+) -> str:
     """Build the dynamic system prompt with live data."""
-    # Business name
-    business_name = settings.business_name
+    tenant_id = tenant.id if tenant else None
+    business_name = tenant.business_name if tenant else settings.business_name
 
     # Custom instructions
     custom_instructions = ""
-    setting_result = await db.execute(
-        select(SystemSetting).where(SystemSetting.key == "custom_ai_instructions")
-    )
+    setting_query = select(SystemSetting).where(SystemSetting.key == "custom_ai_instructions")
+    if tenant_id:
+        setting_query = setting_query.where(SystemSetting.tenant_id == tenant_id)
+    setting_result = await db.execute(setting_query)
     setting = setting_result.scalar_one_or_none()
     if setting:
         custom_instructions = setting.value
 
     # Active appointment types
-    types_result = await db.execute(
-        select(AppointmentType).where(AppointmentType.is_active.is_(True))
-    )
+    types_query = select(AppointmentType).where(AppointmentType.is_active.is_(True))
+    if tenant_id:
+        types_query = types_query.where(AppointmentType.tenant_id == tenant_id)
+    types_result = await db.execute(types_query)
     appt_types = types_result.scalars().all()
     types_text = "\n".join(
         f"- {t.name}: {t.duration_minutes} min, £{t.price:.2f}"
@@ -72,13 +77,15 @@ async def build_system_prompt(db: AsyncSession, contact_phone: str) -> str:
     )
 
     # Related services
-    related_result = await db.execute(select(RelatedService))
+    related_query = select(RelatedService)
+    if tenant_id:
+        related_query = related_query.where(RelatedService.tenant_id == tenant_id)
+    related_result = await db.execute(related_query)
     related_services = related_result.scalars().all()
     related_text = ""
     if related_services:
         lines = []
         for rs in related_services:
-            # Look up type names
             primary = next((t for t in appt_types if t.id == rs.appointment_type_id), None)
             related = next((t for t in appt_types if t.id == rs.related_appointment_type_id), None)
             if primary and related:
@@ -98,7 +105,7 @@ async def build_system_prompt(db: AsyncSession, contact_phone: str) -> str:
         for appt_type in appt_types[:3]:  # Limit to avoid excessive API calls
             try:
                 slots = await compute_available_slots(
-                    db, check_date, str(appt_type.id), max_slots=3
+                    db, check_date, str(appt_type.id), max_slots=3, tenant=tenant,
                 )
                 if slots:
                     for s in slots:
@@ -113,12 +120,15 @@ async def build_system_prompt(db: AsyncSession, contact_phone: str) -> str:
 
     # Customer history
     history_text = "New customer — no previous bookings."
-    bookings_result = await db.execute(
+    bookings_query = (
         select(Booking)
         .where(Booking.contact_phone == contact_phone)
         .order_by(Booking.scheduled_at.desc())
         .limit(5)
     )
+    if tenant_id:
+        bookings_query = bookings_query.where(Booking.tenant_id == tenant_id)
+    bookings_result = await db.execute(bookings_query)
     bookings = bookings_result.scalars().all()
     if bookings:
         lines = []
@@ -144,12 +154,15 @@ async def get_ai_response(
     contact_phone: str,
     message_history: list[dict],
     user_message: str,
+    tenant: Tenant | None = None,
 ) -> ConversationResponse:
     """Call Claude claude-haiku-4-5 for a conversation turn.
 
     Retries once on failure, then returns a fallback message.
     """
-    system_prompt = await build_system_prompt(db, contact_phone)
+    system_prompt = await build_system_prompt(db, contact_phone, tenant=tenant)
+
+    api_key = tenant.anthropic_api_key if tenant else settings.anthropic_api_key
 
     # Build messages for the API
     api_messages = []
@@ -172,7 +185,7 @@ async def get_ai_response(
                         "messages": api_messages,
                     },
                     headers={
-                        "x-api-key": settings.anthropic_api_key,
+                        "x-api-key": api_key,
                         "anthropic-version": "2023-06-01",
                         "Content-Type": "application/json",
                     },

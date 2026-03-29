@@ -12,6 +12,7 @@ Spec Section 11:
 """
 
 import statistics
+import uuid
 from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -39,17 +40,16 @@ async def recalculate_pattern(
     db: AsyncSession,
     contact_phone: str,
     appointment_type_id: str,
+    tenant_id: uuid.UUID | None = None,
 ) -> CustomerAppointmentPattern | None:
     """Recalculate the recurrence pattern for a customer + appointment type.
 
     Called after a booking is marked COMPLETED.
     """
-    import uuid
-
     type_uuid = uuid.UUID(appointment_type_id) if isinstance(appointment_type_id, str) else appointment_type_id
 
     # Get all completed bookings sorted by date
-    result = await db.execute(
+    bookings_query = (
         select(Booking)
         .where(
             Booking.contact_phone == contact_phone,
@@ -58,13 +58,17 @@ async def recalculate_pattern(
         )
         .order_by(Booking.scheduled_at)
     )
+    if tenant_id:
+        bookings_query = bookings_query.where(Booking.tenant_id == tenant_id)
+    result = await db.execute(bookings_query)
     bookings = result.scalars().all()
     completed_count = len(bookings)
 
     # Get admin default interval
-    appt_result = await db.execute(
-        select(AppointmentType).where(AppointmentType.id == type_uuid)
-    )
+    appt_query = select(AppointmentType).where(AppointmentType.id == type_uuid)
+    if tenant_id:
+        appt_query = appt_query.where(AppointmentType.tenant_id == tenant_id)
+    appt_result = await db.execute(appt_query)
     appt_type = appt_result.scalar_one_or_none()
     admin_default_days = (
         (appt_type.recurrence_weeks_default or 4) * 7
@@ -73,17 +77,28 @@ async def recalculate_pattern(
     )
 
     # Get or create pattern record
-    pattern_result = await db.execute(
-        select(CustomerAppointmentPattern).where(
-            CustomerAppointmentPattern.contact_phone == contact_phone,
-            CustomerAppointmentPattern.appointment_type_id == type_uuid,
-        )
+    pattern_query = select(CustomerAppointmentPattern).where(
+        CustomerAppointmentPattern.contact_phone == contact_phone,
+        CustomerAppointmentPattern.appointment_type_id == type_uuid,
     )
+    if tenant_id:
+        pattern_query = pattern_query.where(CustomerAppointmentPattern.tenant_id == tenant_id)
+    pattern_result = await db.execute(pattern_query)
     pattern = pattern_result.scalar_one_or_none()
 
     if not pattern:
+        # Resolve contact_id from phone
+        from app.models.contact import Contact
+        contact_query = select(Contact.id).where(Contact.phone == contact_phone)
+        if tenant_id:
+            contact_query = contact_query.where(Contact.tenant_id == tenant_id)
+        contact_result = await db.execute(contact_query)
+        contact_id = contact_result.scalar_one_or_none()
+
         pattern = CustomerAppointmentPattern(
             contact_phone=contact_phone,
+            contact_id=contact_id,
+            tenant_id=tenant_id,
             appointment_type_id=type_uuid,
         )
         db.add(pattern)

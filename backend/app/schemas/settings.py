@@ -31,6 +31,7 @@ class AdminUserResponse(BaseModel):
     id: uuid.UUID
     email: str
     role: str
+    tenant_id: uuid.UUID | None = None
     is_active: bool
     created_at: datetime
     last_login_at: datetime | None

@@ -1,71 +1,197 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Plus } from "lucide-react";
+import { Plus, ChevronLeft, ChevronRight, Calendar, List } from "lucide-react";
+import { startOfWeek, endOfWeek, addWeeks, subWeeks, format } from "date-fns";
 import { PageHeader } from "@/components/shared/page-header";
 import { Pagination } from "@/components/shared/pagination";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/use-auth";
 import { AdminRole } from "@/types/enums";
-import { BookingsFilters } from "../components/bookings-filters";
+import { WeeklyCalendar } from "../components/weekly-calendar";
 import { BookingsTable } from "../components/bookings-table";
+import { BookingsFilters } from "../components/bookings-filters";
 import { useBookings } from "../hooks/use-bookings";
+import { useAvailabilityRules, useBlockedDates } from "@/features/availability/hooks/use-availability";
+
+type ViewMode = "calendar" | "list";
 
 export function BookingsPage() {
   const navigate = useNavigate();
   const { hasRole } = useAuth();
+  const [view, setView] = useState<ViewMode>("calendar");
+
+  // Calendar state
+  const [weekStart, setWeekStart] = useState(() =>
+    startOfWeek(new Date(), { weekStartsOn: 0 })
+  );
+  const weekEnd = endOfWeek(weekStart, { weekStartsOn: 0 });
+
+  // List state
   const [page, setPage] = useState(1);
   const [status, setStatus] = useState("all");
   const [phone, setPhone] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
 
-  const bookings = useBookings({
-    page,
-    page_size: 20,
-    status: status === "all" ? undefined : status,
-    contact_phone: phone || undefined,
-    date_from: dateFrom || undefined,
-    date_to: dateTo || undefined,
-  });
+  const calendarBookings = useBookings(
+    view === "calendar"
+      ? {
+          page: 1,
+          page_size: 200,
+          date_from: format(weekStart, "yyyy-MM-dd'T'00:00:00"),
+          date_to: format(weekEnd, "yyyy-MM-dd'T'23:59:59"),
+        }
+      : { page: 1, page_size: 1 }
+  );
+
+  const listBookings = useBookings(
+    view === "list"
+      ? {
+          page,
+          page_size: 20,
+          status: status === "all" ? undefined : status,
+          contact_phone: phone || undefined,
+          date_from: dateFrom || undefined,
+          date_to: dateTo || undefined,
+        }
+      : { page: 1, page_size: 1 }
+  );
+
+  const availabilityRules = useAvailabilityRules();
+  const blockedDates = useBlockedDates();
 
   return (
-    <div>
+    <div className="space-y-4">
       <PageHeader
         title="Bookings"
         description="Manage all appointments."
         actions={
-          hasRole(AdminRole.MANAGER) ? (
-            <Button onClick={() => navigate("/bookings/new")}>
-              <Plus className="mr-2 h-4 w-4" />
-              New Booking
-            </Button>
-          ) : undefined
+          <div className="flex items-center gap-2">
+            <div className="flex border rounded-md overflow-hidden">
+              <Button
+                variant={view === "calendar" ? "default" : "ghost"}
+                size="sm"
+                className="rounded-none"
+                onClick={() => setView("calendar")}
+              >
+                <Calendar className="h-4 w-4 mr-1" />
+                Calendar
+              </Button>
+              <Button
+                variant={view === "list" ? "default" : "ghost"}
+                size="sm"
+                className="rounded-none"
+                onClick={() => setView("list")}
+              >
+                <List className="h-4 w-4 mr-1" />
+                List
+              </Button>
+            </div>
+            {hasRole(AdminRole.MANAGER) && (
+              <Button onClick={() => navigate("/bookings/new")}>
+                <Plus className="mr-2 h-4 w-4" />
+                New Booking
+              </Button>
+            )}
+          </div>
         }
       />
 
-      <BookingsFilters
-        status={status}
-        onStatusChange={(v) => { setStatus(v); setPage(1); }}
-        phone={phone}
-        onPhoneChange={(v) => { setPhone(v); setPage(1); }}
-        dateFrom={dateFrom}
-        onDateFromChange={(v) => { setDateFrom(v); setPage(1); }}
-        dateTo={dateTo}
-        onDateToChange={(v) => { setDateTo(v); setPage(1); }}
-      />
+      {view === "calendar" && (
+        <>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setWeekStart(subWeeks(weekStart, 1))}
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                setWeekStart(startOfWeek(new Date(), { weekStartsOn: 0 }))
+              }
+            >
+              Today
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setWeekStart(addWeeks(weekStart, 1))}
+            >
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+            <span className="text-sm font-medium text-muted-foreground ml-2">
+              {format(weekStart, "MMM d")} – {format(weekEnd, "MMM d, yyyy")}
+            </span>
+          </div>
 
-      <BookingsTable
-        data={bookings.data?.items ?? []}
-        isLoading={bookings.isLoading}
-      />
+          <div className="flex items-center gap-4 text-xs">
+            <div className="flex items-center gap-1">
+              <div className="w-3 h-3 rounded bg-green-100 border border-green-300" />
+              <span>Available</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <div className="w-3 h-3 rounded bg-blue-100 border border-blue-300" />
+              <span>Booked</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <div className="w-3 h-3 rounded bg-red-100 border border-red-300" />
+              <span>Blocked</span>
+            </div>
+          </div>
 
-      {bookings.data && (
-        <Pagination
-          page={page}
-          pageSize={20}
-          total={bookings.data.total}
-          onPageChange={setPage}
-        />
+          <WeeklyCalendar
+            weekStart={weekStart}
+            bookings={calendarBookings.data?.items ?? []}
+            availabilityRules={availabilityRules.data ?? []}
+            blockedDates={blockedDates.data ?? []}
+            isLoading={calendarBookings.isLoading}
+          />
+        </>
+      )}
+
+      {view === "list" && (
+        <>
+          <BookingsFilters
+            status={status}
+            onStatusChange={(v) => {
+              setStatus(v);
+              setPage(1);
+            }}
+            phone={phone}
+            onPhoneChange={(v) => {
+              setPhone(v);
+              setPage(1);
+            }}
+            dateFrom={dateFrom}
+            onDateFromChange={(v) => {
+              setDateFrom(v);
+              setPage(1);
+            }}
+            dateTo={dateTo}
+            onDateToChange={(v) => {
+              setDateTo(v);
+              setPage(1);
+            }}
+          />
+
+          <BookingsTable
+            data={listBookings.data?.items ?? []}
+            isLoading={listBookings.isLoading}
+          />
+
+          {listBookings.data && (
+            <Pagination
+              page={page}
+              pageSize={20}
+              total={listBookings.data.total}
+              onPageChange={setPage}
+            />
+          )}
+        </>
       )}
     </div>
   );

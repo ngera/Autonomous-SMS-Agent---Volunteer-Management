@@ -2,24 +2,29 @@ import asyncio
 
 import httpx
 
-from app.core.config import settings
 from app.core.logging import get_logger
+from app.models.tenant import Tenant
 
 logger = get_logger("sms")
 
-TWILIO_API_URL = f"https://api.twilio.com/2010-04-01/Accounts/{settings.twilio_account_sid}/Messages.json"
 MAX_RETRIES = 3
 BACKOFF_DELAYS = [1, 2, 4]
 
 
-async def send_sms(to: str, body: str) -> str | None:
+async def send_sms(to: str, body: str, tenant: Tenant) -> str | None:
     """Send an SMS via Twilio with exponential backoff retry.
 
     Returns the message SID on success, None on failure.
     """
+    if not tenant.twilio_account_sid or not tenant.twilio_auth_token or not tenant.twilio_phone_number:
+        logger.warning("Twilio credentials not configured for tenant %s, skipping SMS to %s", tenant.id, to)
+        return None
+
+    twilio_api_url = f"https://api.twilio.com/2010-04-01/Accounts/{tenant.twilio_account_sid}/Messages.json"
+
     payload = {
         "To": to,
-        "From": settings.twilio_phone_number,
+        "From": tenant.twilio_phone_number,
         "Body": body,
     }
 
@@ -27,9 +32,9 @@ async def send_sms(to: str, body: str) -> str | None:
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    TWILIO_API_URL,
+                    twilio_api_url,
                     data=payload,
-                    auth=(settings.twilio_account_sid, settings.twilio_auth_token),
+                    auth=(tenant.twilio_account_sid, tenant.twilio_auth_token),
                     timeout=10.0,
                 )
 
@@ -57,9 +62,13 @@ async def send_sms(to: str, body: str) -> str | None:
     return None
 
 
-def validate_twilio_signature(url: str, params: dict, signature: str) -> bool:
+def validate_twilio_signature(url: str, params: dict, signature: str, tenant: Tenant) -> bool:
     """Validate Twilio webhook signature using HMAC-SHA1."""
     from twilio.request_validator import RequestValidator
 
-    validator = RequestValidator(settings.twilio_auth_token)
+    if not tenant.twilio_auth_token:
+        logger.warning("Twilio auth token not configured for tenant %s, rejecting signature", tenant.id)
+        return False
+
+    validator = RequestValidator(tenant.twilio_auth_token)
     return validator.validate(url, params, signature)

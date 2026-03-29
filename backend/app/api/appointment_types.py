@@ -3,7 +3,7 @@ import uuid
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import select
 
-from app.core.dependencies import CurrentUser, DbSession, ManagerUser
+from app.core.dependencies import CurrentTenant, CurrentUser, DbSession, ManagerUser
 from app.models.appointment_type import AppointmentType
 from app.models.related_service import RelatedService
 from app.schemas.appointment_type import (
@@ -18,18 +18,20 @@ router = APIRouter(prefix="/api/v1/appointment-types", tags=["appointment-types"
 
 
 @router.get("", response_model=list[AppointmentTypeResponse])
-async def list_appointment_types(db: DbSession, current_user: CurrentUser):
+async def list_appointment_types(db: DbSession, current_user: CurrentUser, tenant: CurrentTenant):
     result = await db.execute(
-        select(AppointmentType).order_by(AppointmentType.name)
+        select(AppointmentType)
+        .where(AppointmentType.tenant_id == tenant.id)
+        .order_by(AppointmentType.name)
     )
     return result.scalars().all()
 
 
 @router.post("", response_model=AppointmentTypeResponse, status_code=status.HTTP_201_CREATED)
 async def create_appointment_type(
-    body: AppointmentTypeCreate, db: DbSession, current_user: ManagerUser
+    body: AppointmentTypeCreate, db: DbSession, current_user: ManagerUser, tenant: CurrentTenant
 ):
-    appt_type = AppointmentType(**body.model_dump())
+    appt_type = AppointmentType(tenant_id=tenant.id, **body.model_dump())
     db.add(appt_type)
     await db.flush()
     await db.refresh(appt_type)
@@ -38,10 +40,13 @@ async def create_appointment_type(
 
 @router.put("/{type_id}", response_model=AppointmentTypeResponse)
 async def update_appointment_type(
-    type_id: uuid.UUID, body: AppointmentTypeUpdate, db: DbSession, current_user: ManagerUser
+    type_id: uuid.UUID, body: AppointmentTypeUpdate, db: DbSession,
+    current_user: ManagerUser, tenant: CurrentTenant
 ):
     result = await db.execute(
-        select(AppointmentType).where(AppointmentType.id == type_id)
+        select(AppointmentType).where(
+            AppointmentType.id == type_id, AppointmentType.tenant_id == tenant.id
+        )
     )
     appt_type = result.scalar_one_or_none()
     if not appt_type:
@@ -57,10 +62,12 @@ async def update_appointment_type(
 
 @router.delete("/{type_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def archive_appointment_type(
-    type_id: uuid.UUID, db: DbSession, current_user: ManagerUser
+    type_id: uuid.UUID, db: DbSession, current_user: ManagerUser, tenant: CurrentTenant
 ):
     result = await db.execute(
-        select(AppointmentType).where(AppointmentType.id == type_id)
+        select(AppointmentType).where(
+            AppointmentType.id == type_id, AppointmentType.tenant_id == tenant.id
+        )
     )
     appt_type = result.scalar_one_or_none()
     if not appt_type:
@@ -72,19 +79,24 @@ async def archive_appointment_type(
 
 @router.get("/{type_id}/related", response_model=list[RelatedServiceResponse])
 async def list_related_services(
-    type_id: uuid.UUID, db: DbSession, current_user: CurrentUser
+    type_id: uuid.UUID, db: DbSession, current_user: CurrentUser, tenant: CurrentTenant
 ):
     result = await db.execute(
-        select(RelatedService).where(RelatedService.appointment_type_id == type_id)
+        select(RelatedService).where(
+            RelatedService.appointment_type_id == type_id,
+            RelatedService.tenant_id == tenant.id,
+        )
     )
     return result.scalars().all()
 
 
 @router.post("/{type_id}/related", response_model=RelatedServiceResponse, status_code=status.HTTP_201_CREATED)
 async def create_related_service(
-    type_id: uuid.UUID, body: RelatedServiceCreate, db: DbSession, current_user: ManagerUser
+    type_id: uuid.UUID, body: RelatedServiceCreate, db: DbSession,
+    current_user: ManagerUser, tenant: CurrentTenant
 ):
     related = RelatedService(
+        tenant_id=tenant.id,
         appointment_type_id=type_id,
         related_appointment_type_id=body.related_appointment_type_id,
         suggestion_message=body.suggestion_message,
@@ -97,12 +109,14 @@ async def create_related_service(
 
 @router.delete("/{type_id}/related/{related_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_related_service(
-    type_id: uuid.UUID, related_id: uuid.UUID, db: DbSession, current_user: ManagerUser
+    type_id: uuid.UUID, related_id: uuid.UUID, db: DbSession,
+    current_user: ManagerUser, tenant: CurrentTenant
 ):
     result = await db.execute(
         select(RelatedService).where(
             RelatedService.id == related_id,
             RelatedService.appointment_type_id == type_id,
+            RelatedService.tenant_id == tenant.id,
         )
     )
     related = result.scalar_one_or_none()

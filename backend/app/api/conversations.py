@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Query
 from sqlalchemy import func, select
 
-from app.core.dependencies import CurrentUser, DbSession
+from app.core.dependencies import CurrentTenant, CurrentUser, DbSession
 from app.models.contact import Contact
 from app.models.conversation import Conversation
 from app.schemas.conversation import ConversationListResponse, ConversationResponse
@@ -13,11 +13,12 @@ router = APIRouter(prefix="/api/v1/conversations", tags=["conversations"])
 async def list_conversations(
     db: DbSession,
     current_user: CurrentUser,
+    tenant: CurrentTenant,
     search: str | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
 ):
-    query = select(Conversation)
+    query = select(Conversation).where(Conversation.tenant_id == tenant.id)
 
     if search:
         search_filter = f"%{search}%"
