@@ -1,6 +1,8 @@
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   listCustomers,
+  listCustomersForTenant,
+  createCustomerForTenant,
   getCustomer,
   createCustomer,
   deleteCustomer,
@@ -18,48 +20,101 @@ import {
 import type {
   CustomerCreate,
   CustomerResponse,
+  CustomerWithTenant,
   CustomerUpdate,
   PatternOverrideRequest,
   OptOutRequest,
+  TenantResponse,
 } from "@/types/api";
+import { useActiveTenantId } from "@/hooks/use-active-tenant";
 
 export function useCustomers(filters: CustomerFilters) {
+  const tenantId = useActiveTenantId();
   return useQuery({
-    queryKey: ["customers", filters],
+    queryKey: ["customers", tenantId, filters],
     queryFn: () => listCustomers(filters),
     placeholderData: (prev) => prev,
+    enabled: tenantId !== "none",
+  });
+}
+
+export function useMultiTenantCustomers(
+  tenantIds: string[],
+  tenants: TenantResponse[],
+  filters: CustomerFilters
+) {
+  const results = useQueries({
+    queries: tenantIds.map((tid) => ({
+      queryKey: ["customers", tid, filters],
+      queryFn: () => listCustomersForTenant(tid, filters),
+    })),
+  });
+
+  const isLoading = results.some((r) => r.isLoading);
+  const tenantMap = new Map(tenants.map((t) => [t.id, t.name]));
+
+  const data: CustomerWithTenant[] = results.flatMap((r, i) =>
+    (r.data?.items ?? []).map((c) => ({
+      ...c,
+      tenant_id: tenantIds[i],
+      tenant_name: tenantMap.get(tenantIds[i]) ?? "Unknown",
+    }))
+  );
+
+  // Sort by tenant name, then by customer name
+  data.sort((a, b) => {
+    const t = a.tenant_name.localeCompare(b.tenant_name);
+    if (t !== 0) return t;
+    return (a.name ?? "").localeCompare(b.name ?? "");
+  });
+
+  return { data, isLoading };
+}
+
+export function useCreateCustomerForTenant() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ tenantId, body }: { tenantId: string; body: CustomerCreate }) =>
+      createCustomerForTenant(tenantId, body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["customers"] });
+    },
   });
 }
 
 export function useCustomer(phone: string) {
+  const tenantId = useActiveTenantId();
   return useQuery({
-    queryKey: ["customers", phone],
+    queryKey: ["customers", tenantId, phone],
     queryFn: () => getCustomer(phone),
-    enabled: !!phone,
+    enabled: !!phone && tenantId !== "none",
   });
 }
 
 export function useCustomerBookings(phone: string) {
+  const tenantId = useActiveTenantId();
   return useQuery({
-    queryKey: ["customers", phone, "bookings"],
+    queryKey: ["customers", tenantId, phone, "bookings"],
     queryFn: () => getCustomerBookings(phone),
-    enabled: !!phone,
+    enabled: !!phone && tenantId !== "none",
   });
 }
 
 export function useCustomerConversations(phone: string) {
+  const tenantId = useActiveTenantId();
   return useQuery({
-    queryKey: ["customers", phone, "conversations"],
+    queryKey: ["customers", tenantId, phone, "conversations"],
     queryFn: () => getCustomerConversations(phone),
-    enabled: !!phone,
+    enabled: !!phone && tenantId !== "none",
   });
 }
 
 export function useCustomerPattern(phone: string) {
+  const tenantId = useActiveTenantId();
   return useQuery({
-    queryKey: ["customers", phone, "pattern"],
+    queryKey: ["customers", tenantId, phone, "pattern"],
     queryFn: () => getCustomerPattern(phone),
-    enabled: !!phone,
+    enabled: !!phone && tenantId !== "none",
   });
 }
 
@@ -70,20 +125,7 @@ export function useUpdateCustomer() {
       updateCustomer(phone, body),
     onSuccess: (data, variables) => {
       qc.setQueryData<CustomerResponse>(["customers", variables.phone], data);
-      void qc.invalidateQueries({ queryKey: ["customers", variables.phone] });
-      void qc.invalidateQueries({
-        predicate: (query) => {
-          const key = query.queryKey;
-          return (
-            Array.isArray(key) &&
-            key[0] === "customers" &&
-            key.length > 1 &&
-            typeof key[1] === "object" &&
-            key[1] !== null &&
-            !Array.isArray(key[1])
-          );
-        },
-      });
+      void qc.invalidateQueries({ queryKey: ["customers"] });
     },
   });
 }

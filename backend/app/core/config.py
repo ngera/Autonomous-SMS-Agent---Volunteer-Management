@@ -1,11 +1,23 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_BACKEND_ROOT = Path(__file__).resolve().parents[2]
+_REPO_ROOT = _BACKEND_ROOT.parent
+# Monorepo root .env, then backend/.env — later files override when both exist
+_ENV_FILES: tuple[str, ...] = tuple(
+    str(p.resolve())
+    for p in (_REPO_ROOT / ".env", _BACKEND_ROOT / ".env")
+    if p.is_file()
+) or (".env",)
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_ENV_FILES,
         env_file_encoding="utf-8",
         case_sensitive=False,
+        extra="ignore",
     )
 
     # Database

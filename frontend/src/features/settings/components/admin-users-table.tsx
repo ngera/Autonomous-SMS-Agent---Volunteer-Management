@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Plus } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { DataTable, type Column } from "@/components/shared/data-table";
 import {
   Select,
@@ -25,6 +26,23 @@ export function AdminUsersTable() {
 
   const columns: Column<AdminUserResponse>[] = [
     { key: "email", header: "Email", render: (u) => u.email },
+    {
+      key: "phone",
+      header: "SMS Phone",
+      render: (u) => (
+        <Input
+          className="w-36 h-8 text-sm"
+          placeholder="Not set"
+          defaultValue={u.phone ?? ""}
+          onBlur={(e) => {
+            const val = e.target.value.trim() || null;
+            if (val !== u.phone) {
+              updateUser.mutate({ id: u.id, body: { phone: val } });
+            }
+          }}
+        />
+      ),
+    },
     {
       key: "role",
       header: "Role",

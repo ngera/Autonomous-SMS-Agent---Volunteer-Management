@@ -1,10 +1,13 @@
 """Prompts for the AI conversation booking engine."""
 
+import uuid
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # ── Default prompts (used when no DB override exists) ──
 
+# Legacy prompt-stuffing template (kept for reference / rollback)
 CONVERSATION_SYSTEM_PROMPT = (
     "You are a friendly appointment booking assistant for {business_name}.\n\n"
     "APPOINTMENT TYPES:\n{types_text}\n\n"
@@ -24,6 +27,30 @@ CONVERSATION_SYSTEM_PROMPT = (
     "- Never show the BOOKING_CONFIRMED signal to the customer.\n"
 )
 
+# ── Lightweight tool_use prompts ──
+
+CUSTOMER_SYSTEM_PROMPT = (
+    "You are a friendly appointment booking assistant for {business_name}.\n"
+    "Help customers book, reschedule, and cancel appointments via SMS.\n"
+    "Use the provided tools to check availability, look up information, and take actions.\n"
+    "Be conversational and concise — this is SMS, keep messages short.\n"
+    "Never share internal IDs or technical details with the customer.\n"
+    "Show times in a friendly format (e.g., \"Friday April 3rd at 9:00 AM\").\n"
+    "After booking, confirm the appointment type, date/time, price, and booking reference number (ref).\n"
+    "When a booking is created, rescheduled, or cancelled, the tool response includes a calendar_link and a ref.\n"
+    "Always share the ref and calendar_link with the customer so they can reference their booking and add/update/remove it from their calendar.\n"
+    "{custom_instructions}"
+)
+
+ADMIN_SYSTEM_PROMPT = (
+    "You are an admin assistant for {business_name}.\n"
+    "Help the admin manage bookings, customers, and availability via SMS.\n"
+    "Use the provided tools to look up information and take actions.\n"
+    "Be concise — this is SMS. Present data in a clear, scannable format.\n"
+    "Use bullet points or numbered lists for multiple items.\n"
+    "{custom_instructions}"
+)
+
 FALLBACK_MESSAGE = (
     "I'm sorry, I'm having trouble understanding. "
     "You can:\n"
@@ -41,6 +68,8 @@ TECHNICAL_ERROR_MESSAGE = (
 
 PROMPT_KEYS = {
     "prompt_conversation_system": CONVERSATION_SYSTEM_PROMPT,
+    "prompt_customer_system": CUSTOMER_SYSTEM_PROMPT,
+    "prompt_admin_system": ADMIN_SYSTEM_PROMPT,
     "prompt_screener_system": None,  # default lives in screener.py
     "prompt_fallback_message": FALLBACK_MESSAGE,
     "prompt_error_message": TECHNICAL_ERROR_MESSAGE,
@@ -49,23 +78,44 @@ PROMPT_KEYS = {
 
 # ── DB-aware getters ──
 
-async def _get_prompt(db: AsyncSession, key: str, default: str) -> str:
+async def _get_prompt(
+    db: AsyncSession, key: str, default: str, tenant_id: uuid.UUID | None = None,
+) -> str:
     from app.models.system_setting import SystemSetting
 
-    result = await db.execute(
-        select(SystemSetting).where(SystemSetting.key == key)
-    )
+    query = select(SystemSetting).where(SystemSetting.key == key)
+    if tenant_id:
+        query = query.where(SystemSetting.tenant_id == tenant_id)
+    result = await db.execute(query)
     setting = result.scalar_one_or_none()
     return setting.value if setting else default
 
 
-async def get_conversation_prompt(db: AsyncSession) -> str:
-    return await _get_prompt(db, "prompt_conversation_system", CONVERSATION_SYSTEM_PROMPT)
+async def get_conversation_prompt(
+    db: AsyncSession, tenant_id: uuid.UUID | None = None,
+) -> str:
+    return await _get_prompt(db, "prompt_conversation_system", CONVERSATION_SYSTEM_PROMPT, tenant_id)
 
 
-async def get_fallback_message(db: AsyncSession) -> str:
-    return await _get_prompt(db, "prompt_fallback_message", FALLBACK_MESSAGE)
+async def get_customer_system_prompt(
+    db: AsyncSession, tenant_id: uuid.UUID | None = None,
+) -> str:
+    return await _get_prompt(db, "prompt_customer_system", CUSTOMER_SYSTEM_PROMPT, tenant_id)
 
 
-async def get_error_message(db: AsyncSession) -> str:
-    return await _get_prompt(db, "prompt_error_message", TECHNICAL_ERROR_MESSAGE)
+async def get_admin_system_prompt(
+    db: AsyncSession, tenant_id: uuid.UUID | None = None,
+) -> str:
+    return await _get_prompt(db, "prompt_admin_system", ADMIN_SYSTEM_PROMPT, tenant_id)
+
+
+async def get_fallback_message(
+    db: AsyncSession, tenant_id: uuid.UUID | None = None,
+) -> str:
+    return await _get_prompt(db, "prompt_fallback_message", FALLBACK_MESSAGE, tenant_id)
+
+
+async def get_error_message(
+    db: AsyncSession, tenant_id: uuid.UUID | None = None,
+) -> str:
+    return await _get_prompt(db, "prompt_error_message", TECHNICAL_ERROR_MESSAGE, tenant_id)

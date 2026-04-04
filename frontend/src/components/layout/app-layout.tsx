@@ -2,9 +2,11 @@ import { useState } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import { Sidebar } from "./sidebar";
 import { Header } from "./header";
+import { TenantFilterProvider } from "@/context/tenant-filter-context";
 
 const PAGE_TITLES: Record<string, string> = {
   "/dashboard": "Dashboard",
+  "/tenant-dashboard": "Tenant Dashboard",
   "/bookings": "Bookings",
   "/customers": "Customers",
   "/appointment-types": "Appointment Types",
@@ -14,6 +16,9 @@ const PAGE_TITLES: Record<string, string> = {
   "/suspensions": "Suspensions",
   "/analytics": "Analytics",
   "/settings": "Settings",
+  "/announcements": "Announcements",
+  "/test-tool": "SMS Test Tool",
+  "/tenants": "Tenants",
 };
 
 function getPageTitle(pathname: string): string {
@@ -32,17 +37,19 @@ export function AppLayout() {
   const title = getPageTitle(location.pathname);
 
   return (
-    <div className="flex h-screen overflow-hidden">
-      <Sidebar
-        collapsed={sidebarCollapsed}
-        onToggle={() => setSidebarCollapsed(!sidebarCollapsed)}
-      />
-      <div className="flex flex-1 flex-col overflow-hidden">
-        <Header title={title} />
-        <main className="flex-1 overflow-y-auto p-6">
-          <Outlet />
-        </main>
+    <TenantFilterProvider>
+      <div className="flex h-screen overflow-hidden">
+        <Sidebar
+          collapsed={sidebarCollapsed}
+          onToggle={() => setSidebarCollapsed(!sidebarCollapsed)}
+        />
+        <div className="flex flex-1 flex-col overflow-hidden">
+          <Header title={title} />
+          <main className="flex-1 overflow-y-auto p-6">
+            <Outlet />
+          </main>
+        </div>
       </div>
-    </div>
+    </TenantFilterProvider>
   );
 }

@@ -13,6 +13,11 @@ api.interceptors.request.use((config) => {
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
+  // Super admin tenant context
+  const tenantId = sessionStorage.getItem("active_tenant_id");
+  if (tenantId) {
+    config.headers["X-Tenant-Id"] = tenantId;
+  }
   return config;
 });
 

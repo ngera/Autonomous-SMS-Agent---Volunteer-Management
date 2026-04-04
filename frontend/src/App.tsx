@@ -4,6 +4,7 @@ import { RoleGate } from "@/components/guards/role-gate";
 import { AppLayout } from "@/components/layout/app-layout";
 import { LoginPage } from "@/pages/login-page";
 import { DashboardPage } from "@/features/dashboard/pages/dashboard-page";
+import { TenantDashboardPage } from "@/features/tenants/pages/tenant-dashboard-page";
 import { BookingsPage } from "@/features/bookings/pages/bookings-page";
 import { BookingDetailPage } from "@/features/bookings/pages/booking-detail-page";
 import { BookingCreatePage } from "@/features/bookings/pages/booking-create-page";
@@ -17,9 +18,19 @@ import { SuspensionsPage } from "@/features/suspensions/pages/suspensions-page";
 import { AnalyticsPage } from "@/features/analytics/pages/analytics-page";
 import { SettingsPage } from "@/features/settings/pages/settings-page";
 import AnnouncementsPage from "@/features/announcements/pages/announcements-page";
+import { TestToolPage } from "@/features/test-tool/pages/test-tool-page";
 import { TenantsPage } from "@/features/tenants/pages/tenants-page";
 import { TenantDetailPage } from "@/features/tenants/pages/tenant-detail-page";
 import { AdminRole } from "@/types/enums";
+import { useAuth } from "@/hooks/use-auth";
+import { ROLE_HIERARCHY } from "@/lib/constants";
+
+function DefaultRedirect() {
+  const { user } = useAuth();
+  const isSuperAdmin =
+    user && ROLE_HIERARCHY[user.role] >= ROLE_HIERARCHY[AdminRole.SUPER_ADMIN];
+  return <Navigate to={isSuperAdmin ? "/tenant-dashboard" : "/dashboard"} replace />;
+}
 
 export default function App() {
   return (
@@ -29,8 +40,16 @@ export default function App() {
 
         <Route element={<ProtectedRoute />}>
           <Route element={<AppLayout />}>
-            <Route path="/" element={<Navigate to="/dashboard" replace />} />
+            <Route path="/" element={<DefaultRedirect />} />
             <Route path="/dashboard" element={<DashboardPage />} />
+            <Route
+              path="/tenant-dashboard"
+              element={
+                <RoleGate minimum={AdminRole.SUPER_ADMIN}>
+                  <TenantDashboardPage />
+                </RoleGate>
+              }
+            />
             <Route path="/bookings" element={<BookingsPage />} />
             <Route path="/bookings/new" element={<BookingCreatePage />} />
             <Route path="/bookings/:id" element={<BookingDetailPage />} />
@@ -47,6 +66,14 @@ export default function App() {
               element={
                 <RoleGate minimum={AdminRole.MANAGER}>
                   <AnnouncementsPage />
+                </RoleGate>
+              }
+            />
+            <Route
+              path="/test-tool"
+              element={
+                <RoleGate minimum={AdminRole.MANAGER}>
+                  <TestToolPage />
                 </RoleGate>
               }
             />

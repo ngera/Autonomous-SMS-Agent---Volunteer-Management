@@ -8,19 +8,23 @@ import {
   manualSuspend,
 } from "../api";
 import type { ReviewRequest, ManualSuspendRequest } from "@/types/api";
+import { useActiveTenantId } from "@/hooks/use-active-tenant";
 
 export function useSuspensions() {
+  const tenantId = useActiveTenantId();
   return useQuery({
-    queryKey: ["suspensions"],
+    queryKey: ["suspensions", tenantId],
     queryFn: listSuspensions,
+    enabled: tenantId !== "none",
   });
 }
 
 export function useSuspension(id: string) {
+  const tenantId = useActiveTenantId();
   return useQuery({
-    queryKey: ["suspensions", id],
+    queryKey: ["suspensions", tenantId, id],
     queryFn: () => getSuspension(id),
-    enabled: !!id,
+    enabled: !!id && tenantId !== "none",
   });
 }
 

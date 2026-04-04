@@ -4,17 +4,24 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { usePrompts, useUpdateSettings } from "../hooks/use-settings";
+import { useTenantFilter } from "@/context/tenant-filter-context";
 
 const PROMPT_LABELS: Record<string, string> = {
-  prompt_conversation_system: "Conversation System Prompt",
+  prompt_customer_system: "Customer SMS Prompt",
+  prompt_admin_system: "Admin SMS Prompt",
+  prompt_conversation_system: "Legacy Conversation Prompt",
   prompt_screener_system: "Message Screener Prompt",
   prompt_fallback_message: "Fallback Message",
   prompt_error_message: "Error Message",
 };
 
 const PROMPT_DESCRIPTIONS: Record<string, string> = {
+  prompt_customer_system:
+    "System prompt for customer SMS conversations (tool_use mode). Template variables: {business_name}, {custom_instructions}",
+  prompt_admin_system:
+    "System prompt for admin SMS conversations (tool_use mode). Template variables: {business_name}, {custom_instructions}",
   prompt_conversation_system:
-    "Main chatbot prompt. Template variables: {business_name}, {types_text}, {related_text}, {slots_text}, {history_text}, {custom_instructions}",
+    "Legacy chatbot prompt (kept for reference). Template variables: {business_name}, {types_text}, {related_text}, {slots_text}, {history_text}, {custom_instructions}",
   prompt_screener_system:
     "Classifies inbound messages as RELEVANT, IRRELEVANT, or ABUSIVE before reaching the chatbot.",
   prompt_fallback_message:
@@ -24,13 +31,16 @@ const PROMPT_DESCRIPTIONS: Record<string, string> = {
 };
 
 const PROMPT_ORDER = [
-  "prompt_conversation_system",
+  "prompt_customer_system",
+  "prompt_admin_system",
   "prompt_screener_system",
   "prompt_fallback_message",
   "prompt_error_message",
 ];
 
 export function PromptEditor() {
+  const { selectedTenantIds, isSuperAdmin } = useTenantFilter();
+  const hasTenant = !isSuperAdmin || selectedTenantIds.length === 1;
   const { data: prompts, isLoading } = usePrompts();
   const update = useUpdateSettings();
   const [values, setValues] = useState<Record<string, string>>({});
@@ -46,6 +56,10 @@ export function PromptEditor() {
       }
       setValues(valMap);
       setDefaults(defMap);
+    } else {
+      // Clear when no tenant is selected
+      setValues({});
+      setDefaults({});
     }
   }, [prompts]);
 
@@ -66,6 +80,16 @@ export function PromptEditor() {
     if (defaults[key]) {
       setValues((prev) => ({ ...prev, [key]: defaults[key] }));
     }
+  }
+
+  if (!hasTenant) {
+    return (
+      <Card>
+        <CardContent className="py-8 text-center text-sm text-muted-foreground">
+          Select a tenant from the filter above to view and edit AI prompts.
+        </CardContent>
+      </Card>
+    );
   }
 
   if (isLoading) {
@@ -112,7 +136,7 @@ export function PromptEditor() {
               onChange={(e) =>
                 setValues((prev) => ({ ...prev, [key]: e.target.value }))
               }
-              rows={key === "prompt_conversation_system" ? 12 : 4}
+              rows={key.includes("system") ? 8 : 4}
             />
           </div>
         ))}

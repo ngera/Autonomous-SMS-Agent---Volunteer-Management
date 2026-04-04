@@ -1,5 +1,6 @@
 import csv
 import io
+import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Query, UploadFile, status
@@ -7,6 +8,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import joinedload
 
 from app.core.dependencies import CurrentTenant, CurrentUser, DbSession, ManagerUser
+
+logger = logging.getLogger(__name__)
 from app.models.booking import Booking, BookingStatus
 from app.models.contact import Contact
 from app.models.contact_preferred_type import ContactPreferredType
@@ -145,36 +148,47 @@ async def get_customer(phone: str, db: DbSession, current_user: CurrentUser, ten
 async def create_customer(
     body: CustomerCreate, db: DbSession, current_user: ManagerUser, tenant: CurrentTenant
 ):
+    logger.info("CREATE CUSTOMER request body: %s", body.model_dump())
     existing = await db.execute(
         select(Contact).where(Contact.phone == body.phone, Contact.tenant_id == tenant.id)
     )
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Customer with this phone already exists")
 
-    contact = Contact(
-        tenant_id=tenant.id,
-        phone=body.phone,
-        name=body.name,
-        email=body.email,
-        sex=body.sex,
-        reminder_preference_days=body.reminder_preference_days,
-    )
-    db.add(contact)
-    await db.flush()
+    try:
+        contact = Contact(
+            tenant_id=tenant.id,
+            phone=body.phone,
+            name=body.name,
+            email=body.email,
+            sex=body.sex,
+            reminder_preference_days=body.reminder_preference_days,
+        )
+        db.add(contact)
+        await db.flush()
+        logger.info("Contact created: id=%s, phone=%s", contact.id, contact.phone)
 
-    consent = ContactConsent(
-        tenant_id=tenant.id,
-        contact_id=contact.id,
-        contact_phone=body.phone,
-        status=ConsentStatus.UNCONTACTED,
-    )
-    db.add(consent)
+        consent = ContactConsent(
+            tenant_id=tenant.id,
+            contact_id=contact.id,
+            contact_phone=body.phone,
+            status=ConsentStatus.UNCONTACTED,
+        )
+        db.add(consent)
+        logger.info("Consent created for contact %s", contact.id)
 
-    if body.preferred_appointment_type_ids:
-        await _sync_preferred_types(db, contact.id, tenant.id, body.preferred_appointment_type_ids)
+        if body.preferred_appointment_type_ids:
+            logger.info("Syncing preferred types: %s", body.preferred_appointment_type_ids)
+            await _sync_preferred_types(db, contact.id, tenant.id, body.preferred_appointment_type_ids)
+            logger.info("Preferred types synced successfully")
 
-    await db.flush()
-    await db.refresh(contact)
+        await db.flush()
+        await db.refresh(contact)
+        logger.info("Customer creation complete: %s", contact.id)
+    except Exception as e:
+        logger.error("Error creating customer: %s", e, exc_info=True)
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=f"Failed to create customer: {e}")
 
     return _build_customer_response(
         contact,
@@ -221,6 +235,36 @@ async def update_customer(
 
     update_data = body.model_dump(exclude_unset=True)
     pref_ids = update_data.pop("preferred_appointment_type_ids", None)
+    new_phone = update_data.pop("phone", None)
+
+    # Handle phone change
+    if new_phone and new_phone != contact.phone:
+        # Check uniqueness within tenant
+        existing = await db.execute(
+            select(Contact).where(
+                Contact.phone == new_phone, Contact.tenant_id == tenant.id
+            )
+        )
+        if existing.scalar_one_or_none():
+            raise HTTPException(
+                status_code=409,
+                detail=f"A customer with phone '{new_phone}' already exists for this tenant.",
+            )
+        old_phone = contact.phone
+        contact.phone = new_phone
+        # Update denormalized contact_phone on bookings and conversations
+        from app.models.booking import Booking
+        from app.models.conversation import Conversation
+        await db.execute(
+            Booking.__table__.update()
+            .where(Booking.contact_id == contact.id)
+            .values(contact_phone=new_phone)
+        )
+        await db.execute(
+            Conversation.__table__.update()
+            .where(Conversation.contact_id == contact.id)
+            .values(contact_phone=new_phone)
+        )
 
     for field, value in update_data.items():
         setattr(contact, field, value)

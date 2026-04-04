@@ -8,18 +8,23 @@ import {
   getReminderAnalytics,
 } from "../api";
 import type { ReminderTriggerRequest, ReminderUpdate, ReminderCancelRequest } from "@/types/api";
+import { useActiveTenantId } from "@/hooks/use-active-tenant";
 
 export function useUpcomingReminders() {
+  const tenantId = useActiveTenantId();
   return useQuery({
-    queryKey: ["reminders", "upcoming"],
+    queryKey: ["reminders", "upcoming", tenantId],
     queryFn: getUpcomingReminders,
+    enabled: tenantId !== "none",
   });
 }
 
 export function useReminderHistory(page: number, pageSize: number) {
+  const tenantId = useActiveTenantId();
   return useQuery({
-    queryKey: ["reminders", "history", page, pageSize],
+    queryKey: ["reminders", "history", tenantId, page, pageSize],
     queryFn: () => getReminderHistory(page, pageSize),
+    enabled: tenantId !== "none",
   });
 }
 
@@ -56,8 +61,10 @@ export function useCancelReminder() {
 }
 
 export function useReminderAnalytics() {
+  const tenantId = useActiveTenantId();
   return useQuery({
-    queryKey: ["reminders", "analytics"],
+    queryKey: ["reminders", "analytics", tenantId],
     queryFn: getReminderAnalytics,
+    enabled: tenantId !== "none",
   });
 }

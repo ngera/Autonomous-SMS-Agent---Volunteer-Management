@@ -8,11 +8,14 @@ import {
   getSlotPreview,
 } from "../api";
 import type { WeeklyScheduleUpdate, BlockedDateCreate } from "@/types/api";
+import { useActiveTenantId } from "@/hooks/use-active-tenant";
 
 export function useAvailabilityRules() {
+  const tenantId = useActiveTenantId();
   return useQuery({
-    queryKey: ["availability", "rules"],
+    queryKey: ["availability", "rules", tenantId],
     queryFn: getAvailabilityRules,
+    enabled: tenantId !== "none",
   });
 }
 
@@ -27,9 +30,11 @@ export function useUpdateAvailabilityRules() {
 }
 
 export function useBlockedDates() {
+  const tenantId = useActiveTenantId();
   return useQuery({
-    queryKey: ["availability", "blocked-dates"],
+    queryKey: ["availability", "blocked-dates", tenantId],
     queryFn: getBlockedDates,
+    enabled: tenantId !== "none",
   });
 }
 
@@ -54,9 +59,10 @@ export function useDeleteBlockedDate() {
 }
 
 export function useSlotPreview(date: string, appointmentTypeId: string) {
+  const tenantId = useActiveTenantId();
   return useQuery({
-    queryKey: ["availability", "slots", date, appointmentTypeId],
+    queryKey: ["availability", "slots", tenantId, date, appointmentTypeId],
     queryFn: () => getSlotPreview(date, appointmentTypeId),
-    enabled: !!date && !!appointmentTypeId,
+    enabled: !!date && !!appointmentTypeId && tenantId !== "none",
   });
 }

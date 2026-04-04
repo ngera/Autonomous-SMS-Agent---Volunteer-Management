@@ -12,11 +12,14 @@ import type {
   AdminUserCreate,
   AdminUserUpdate,
 } from "@/types/api";
+import { useActiveTenantId } from "@/hooks/use-active-tenant";
 
 export function useSettings() {
+  const tenantId = useActiveTenantId();
   return useQuery({
-    queryKey: ["settings"],
+    queryKey: ["settings", tenantId],
     queryFn: getSettings,
+    enabled: tenantId !== "none",
   });
 }
 
@@ -26,21 +29,26 @@ export function useUpdateSettings() {
     mutationFn: (body: SystemSettingsUpdate) => updateSettings(body),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["settings"] });
+      void qc.invalidateQueries({ queryKey: ["prompts"] });
     },
   });
 }
 
 export function usePrompts() {
+  const tenantId = useActiveTenantId();
   return useQuery({
-    queryKey: ["prompts"],
+    queryKey: ["prompts", tenantId],
     queryFn: getPrompts,
+    enabled: tenantId !== "none",
   });
 }
 
 export function useAdminUsers() {
+  const tenantId = useActiveTenantId();
   return useQuery({
-    queryKey: ["admin-users"],
+    queryKey: ["admin-users", tenantId],
     queryFn: listAdminUsers,
+    enabled: tenantId !== "none",
   });
 }
 

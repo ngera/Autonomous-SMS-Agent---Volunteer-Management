@@ -2,6 +2,7 @@ import type {
   AnnouncementStatus,
   BookingStatus,
   ConsentStatus,
+  ContactPreference,
   ContactSex,
   ContactStatus,
   ConversationStatus,
@@ -153,6 +154,11 @@ export interface CustomerResponse {
 
 export type CustomerListResponse = PaginatedResponse<CustomerResponse>;
 
+export interface CustomerWithTenant extends CustomerResponse {
+  tenant_id: string;
+  tenant_name: string;
+}
+
 export interface CustomerCreate {
   phone: string;
   name: string;
@@ -163,6 +169,7 @@ export interface CustomerCreate {
 }
 
 export interface CustomerUpdate {
+  phone?: string;
   name?: string;
   email?: string;
   sex?: ContactSex | null;
@@ -432,6 +439,7 @@ export interface AdminUserResponse {
   id: string;
   email: string;
   role: AdminRole;
+  phone: string | null;
   tenant_id: string | null;
   is_active: boolean;
   created_at: string;
@@ -442,11 +450,13 @@ export interface AdminUserCreate {
   email: string;
   password: string;
   role: AdminRole;
+  phone?: string | null;
 }
 
 export interface AdminUserUpdate {
   role?: AdminRole;
   is_active?: boolean;
+  phone?: string | null;
 }
 
 // ── Tenants ──
@@ -462,15 +472,42 @@ export interface TenantResponse {
   admin_panel_url: string;
   api_domain: string;
   twilio_phone_number: string | null;
+  phone: string | null;
+  email: string | null;
+  address_city: string | null;
+  address_state: string | null;
+  contact_name: string | null;
+  contact_email: string | null;
+  is_paused: boolean;
+  paused_at: string | null;
+  deactivated_at: string | null;
   created_at: string;
   updated_at: string;
 }
 
 export interface TenantDetailResponse extends TenantResponse {
+  address_street: string | null;
+  address_zip: string | null;
+  address_country: string | null;
+  billing_email: string | null;
+  billing_address_street: string | null;
+  billing_address_city: string | null;
+  billing_address_state: string | null;
+  billing_address_zip: string | null;
+  billing_address_country: string | null;
+  contact_phone: string | null;
+  contact_preference: ContactPreference | null;
   has_twilio: boolean;
   has_anthropic: boolean;
   has_google_calendar: boolean;
   has_resend: boolean;
+  twilio_account_sid_masked: string | null;
+  twilio_auth_token_masked: string | null;
+  anthropic_api_key_masked: string | null;
+  google_client_id_masked: string | null;
+  google_client_secret_masked: string | null;
+  google_refresh_token_masked: string | null;
+  resend_api_key_masked: string | null;
 }
 
 export interface TenantCreate {
@@ -481,6 +518,23 @@ export interface TenantCreate {
   business_timezone?: string;
   admin_panel_url?: string;
   api_domain?: string;
+  phone?: string;
+  email?: string;
+  address_street?: string;
+  address_city?: string;
+  address_state?: string;
+  address_zip?: string;
+  address_country?: string;
+  billing_email?: string;
+  billing_address_street?: string;
+  billing_address_city?: string;
+  billing_address_state?: string;
+  billing_address_zip?: string;
+  billing_address_country?: string;
+  contact_name?: string;
+  contact_phone?: string;
+  contact_email?: string;
+  contact_preference?: ContactPreference;
   twilio_account_sid?: string;
   twilio_auth_token?: string;
   twilio_phone_number?: string;
@@ -490,6 +544,8 @@ export interface TenantCreate {
   google_refresh_token?: string;
   resend_api_key?: string;
   resend_from_email?: string;
+  admin_email?: string;
+  admin_password?: string;
 }
 
 export interface TenantUpdate {
@@ -501,6 +557,24 @@ export interface TenantUpdate {
   business_timezone?: string;
   admin_panel_url?: string;
   api_domain?: string;
+  phone?: string;
+  email?: string;
+  address_street?: string;
+  address_city?: string;
+  address_state?: string;
+  address_zip?: string;
+  address_country?: string;
+  billing_email?: string;
+  billing_address_street?: string;
+  billing_address_city?: string;
+  billing_address_state?: string;
+  billing_address_zip?: string;
+  billing_address_country?: string;
+  contact_name?: string;
+  contact_phone?: string;
+  contact_email?: string;
+  contact_preference?: ContactPreference;
+  is_paused?: boolean;
   twilio_account_sid?: string;
   twilio_auth_token?: string;
   twilio_phone_number?: string;
@@ -515,6 +589,59 @@ export interface TenantUpdate {
 export interface TenantListResponse {
   items: TenantResponse[];
   total: number;
+}
+
+export interface TenantSummaryItem {
+  id: string;
+  name: string;
+  slug: string;
+  is_active: boolean;
+  is_paused: boolean;
+  customers: number;
+  bookings: number;
+  conversations: number;
+  reminders: number;
+  revenue: number;
+}
+
+export interface SuperAdminDashboardSummary {
+  total_tenants: number;
+  active_tenants: number;
+  paused_tenants: number;
+  total_customers: number;
+  total_bookings: number;
+  total_conversations: number;
+  total_reminders: number;
+  total_revenue: number;
+  tenants: TenantSummaryItem[];
+}
+
+export interface AdminUserResponse {
+  id: string;
+  email: string;
+  role: string;
+  phone: string | null;
+  tenant_id: string | null;
+  is_active: boolean;
+  created_at: string;
+  last_login_at: string | null;
+}
+
+export interface AdminUserCreate {
+  email: string;
+  password: string;
+  role: string;
+  phone?: string | null;
+}
+
+export interface AdminUserUpdate {
+  role?: string;
+  is_active?: boolean;
+  phone?: string | null;
+}
+
+export interface AdminUserPasswordUpdate {
+  password: string;
 }
 
 // ── Announcements ──

@@ -2,6 +2,9 @@
 
 Implements the 19-step message flow from spec Section 2.2.
 Each step can terminate processing early if appropriate.
+
+Admin SMS messages bypass the customer pipeline (no screener, consent, or strikes)
+and are routed to the admin tool_use conversation.
 """
 
 import uuid
@@ -12,8 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.models.booking import Booking, BookingStatus
-from app.models.booking_history import BookingEventType, BookingHistory, ChangedBy
+from app.models.admin_user import AdminUser
 from app.models.contact import Contact, ContactStatus
 from app.models.contact_consent import (
     ContactConsent,
@@ -28,9 +30,8 @@ from app.models.strike import ContactStrike
 from app.models.strike import ScreenerMethod as StrikeScreenerMethod
 from app.models.strike import StrikeClassification
 from app.models.suspension import ContactSuspension, SuspensionType
-from app.modules.conversation import get_ai_response
+from app.modules.conversation import get_ai_response_with_tools
 from app.modules.screener import Classification, screen_message
-from app.services.booking import process_booking_creation
 from app.services.notification import create_notification, notify_suspension
 from app.models.tenant import Tenant
 from app.services.sms import send_sms
@@ -64,6 +65,81 @@ OPT_OUT_CONFIRMATION = (
 )
 
 
+# ── Admin detection ──
+
+
+async def _check_admin_phone(
+    db: AsyncSession, phone: str, tenant_id: uuid.UUID | None,
+) -> AdminUser | None:
+    """Check if the phone belongs to an active admin user."""
+    if not tenant_id:
+        return None
+    result = await db.execute(
+        select(AdminUser).where(
+            AdminUser.phone == phone,
+            AdminUser.tenant_id == tenant_id,
+            AdminUser.is_active.is_(True),
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+# ── Admin message processing ──
+
+
+async def _process_admin_message(
+    db: AsyncSession,
+    from_phone: str,
+    message_body: str,
+    tenant: Tenant,
+    admin_user: AdminUser,
+) -> None:
+    """Process an SMS from an admin user — no screener, consent, or strikes."""
+    tenant_id = tenant.id
+
+    # Get or create admin conversation (separate from customer convos via sender_type)
+    conversation = await _get_or_create_conversation(
+        db, from_phone, tenant_id=tenant_id,
+        contact_id=None, sender_type="admin",
+    )
+
+    # Call AI with admin tools
+    ai_response = await get_ai_response_with_tools(
+        db=db,
+        contact_phone=from_phone,
+        contact_id=admin_user.id,  # Use admin user ID as contact_id for context
+        message_history=conversation.message_history or [],
+        user_message=message_body,
+        tenant=tenant,
+        is_admin=True,
+    )
+
+    # Send response SMS
+    await send_sms(to=from_phone, body=ai_response.message_to_user, tenant=tenant)
+
+    # Save conversation history
+    now = datetime.now(timezone.utc)
+    updated_history = list(conversation.message_history or [])
+    updated_history.append({
+        "role": "user",
+        "content": message_body,
+        "timestamp": now.isoformat(),
+    })
+    updated_history.append({
+        "role": "assistant",
+        "content": ai_response.message_to_user,
+        "timestamp": now.isoformat(),
+    })
+    conversation.message_history = updated_history
+    conversation.last_message_at = now
+
+    await db.flush()
+    logger.info("Admin message processed for %s (admin: %s)", from_phone, admin_user.email)
+
+
+# ── Main pipeline ──
+
+
 async def process_inbound_message(
     db: AsyncSession,
     from_phone: str,
@@ -79,6 +155,12 @@ async def process_inbound_message(
 
     # Step 5: Lookup or create contact
     contact = await _get_or_create_contact(db, from_phone, tenant_id=tenant_id)
+
+    # Step 5.5: Check if sender is an admin
+    admin_user = await _check_admin_phone(db, from_phone, tenant_id)
+    if admin_user and tenant:
+        await _process_admin_message(db, from_phone, message_body, tenant, admin_user)
+        return
 
     # Step 6: Check suspension status
     if contact.status in (ContactStatus.SUSPENDED, ContactStatus.BANNED):
@@ -117,49 +199,22 @@ async def process_inbound_message(
 
     # Step 11 handled inside _handle_strike
 
-    # Steps 12-13: Load/create conversation and fetch dynamic context
+    # Steps 12-13: Load/create conversation
     conversation = await _get_or_create_conversation(db, from_phone, tenant_id=tenant_id, contact_id=contact.id)
 
-    # Steps 14-15: Call full conversation AI
-    ai_response = await get_ai_response(
+    # Steps 14-15: Call conversation AI with tool_use
+    ai_response = await get_ai_response_with_tools(
         db=db,
         contact_phone=from_phone,
+        contact_id=contact.id,
         message_history=conversation.message_history or [],
         user_message=message_body,
         tenant=tenant,
+        is_admin=False,
     )
 
-    # Step 16-17: If booking confirmed, create booking
-    if ai_response.booking_confirmed and ai_response.appointment_type_id:
-        booking = Booking(
-            contact_phone=from_phone,
-            contact_id=contact.id,
-            tenant_id=tenant_id,
-            appointment_type_id=ai_response.appointment_type_id,
-            scheduled_at=ai_response.slot_datetime,
-            price_at_booking=ai_response.total_price or 0,
-            status=BookingStatus.SCHEDULED,
-            confirmed_at=datetime.now(timezone.utc),
-            conversation_id=conversation.id,
-        )
-        db.add(booking)
-        await db.flush()
-
-        # Record history
-        history = BookingHistory(
-            booking_id=booking.id,
-            event_type=BookingEventType.CREATED,
-            new_status=BookingStatus.SCHEDULED,
-            new_scheduled_at=ai_response.slot_datetime,
-            changed_by=ChangedBy.USER_SMS,
-            tenant_id=tenant_id,
-        )
-        db.add(history)
-        await db.flush()
-
-        # Calendar event, ICS URLs, SMS handled by booking service
-        await process_booking_creation(db, booking, tenant=tenant)
-
+    # Step 16-17: Check if a booking was created by the tool handler
+    if ai_response.booking_created:
         # Mark conversation as completed
         conversation.status = ConversationStatus.COMPLETED
 
@@ -168,32 +223,31 @@ async def process_inbound_message(
             db=db,
             notification_type=NotificationType.NEW_BOOKING,
             title=f"New booking from {from_phone}",
-            body=f"Booking confirmed via SMS conversation",
-            reference_id=booking.id,
+            body="Booking confirmed via SMS conversation",
+            reference_id=None,
             reference_type="booking",
             tenant_id=tenant_id,
         )
-    else:
-        # Step 18: Send SMS response
-        await send_sms(to=from_phone, body=ai_response.message_to_user, tenant=tenant)
+
+    # Step 18: Send SMS response (always — tool handler suppresses the old SMS,
+    # so Claude's text response IS the confirmation message)
+    await send_sms(to=from_phone, body=ai_response.message_to_user, tenant=tenant)
 
     # Step 19: Save conversation history
-    history_entry = {
+    now = datetime.now(timezone.utc)
+    updated_history = list(conversation.message_history or [])
+    updated_history.append({
         "role": "user",
         "content": message_body,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
-    assistant_entry = {
+        "timestamp": now.isoformat(),
+    })
+    updated_history.append({
         "role": "assistant",
         "content": ai_response.message_to_user,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
-
-    updated_history = list(conversation.message_history or [])
-    updated_history.append(history_entry)
-    updated_history.append(assistant_entry)
+        "timestamp": now.isoformat(),
+    })
     conversation.message_history = updated_history
-    conversation.last_message_at = datetime.now(timezone.utc)
+    conversation.last_message_at = now
 
     await db.flush()
 
@@ -483,12 +537,17 @@ async def _suspend_contact(
 
 
 async def _get_or_create_conversation(
-    db: AsyncSession, phone: str, tenant_id: uuid.UUID | None = None, contact_id: uuid.UUID | None = None,
+    db: AsyncSession,
+    phone: str,
+    tenant_id: uuid.UUID | None = None,
+    contact_id: uuid.UUID | None = None,
+    sender_type: str = "customer",
 ) -> Conversation:
     """Get active conversation or create a new one."""
     query = select(Conversation).where(
         Conversation.contact_phone == phone,
         Conversation.status == ConversationStatus.ACTIVE,
+        Conversation.sender_type == sender_type,
     )
     if tenant_id:
         query = query.where(Conversation.tenant_id == tenant_id)
@@ -500,6 +559,7 @@ async def _get_or_create_conversation(
             contact_phone=phone,
             contact_id=contact_id,
             tenant_id=tenant_id,
+            sender_type=sender_type,
             message_history=[],
             current_step="greeting",
             status=ConversationStatus.ACTIVE,

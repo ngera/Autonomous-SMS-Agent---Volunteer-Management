@@ -10,36 +10,42 @@ import {
   getAvailableSlots,
   type BookingFilters,
 } from "../api";
+import { useActiveTenantId } from "@/hooks/use-active-tenant";
 
 export function useBookings(filters: BookingFilters) {
+  const tenantId = useActiveTenantId();
   return useQuery({
-    queryKey: ["bookings", filters],
+    queryKey: ["bookings", tenantId, filters],
     queryFn: () => listBookings(filters),
     placeholderData: (prev) => prev,
+    enabled: tenantId !== "none",
   });
 }
 
 export function useBooking(id: string) {
+  const tenantId = useActiveTenantId();
   return useQuery({
-    queryKey: ["bookings", id],
+    queryKey: ["bookings", tenantId, id],
     queryFn: () => getBooking(id),
-    enabled: !!id,
+    enabled: !!id && tenantId !== "none",
   });
 }
 
 export function useBookingHistory(id: string) {
+  const tenantId = useActiveTenantId();
   return useQuery({
-    queryKey: ["bookings", id, "history"],
+    queryKey: ["bookings", tenantId, id, "history"],
     queryFn: () => getBookingHistory(id),
-    enabled: !!id,
+    enabled: !!id && tenantId !== "none",
   });
 }
 
 export function useAvailableSlots(date: string, appointmentTypeId: string) {
+  const tenantId = useActiveTenantId();
   return useQuery({
-    queryKey: ["availability", "slots", date, appointmentTypeId],
+    queryKey: ["availability", "slots", tenantId, date, appointmentTypeId],
     queryFn: () => getAvailableSlots(date, appointmentTypeId),
-    enabled: !!date && !!appointmentTypeId,
+    enabled: !!date && !!appointmentTypeId && tenantId !== "none",
   });
 }
 

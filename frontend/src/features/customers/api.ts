@@ -27,6 +27,17 @@ export async function listCustomers(
   return data;
 }
 
+export async function listCustomersForTenant(
+  tenantId: string,
+  filters: CustomerFilters = {}
+): Promise<CustomerListResponse> {
+  const { data } = await api.get<CustomerListResponse>("/customers", {
+    params: filters,
+    headers: { "X-Tenant-Id": tenantId },
+  });
+  return data;
+}
+
 export async function getCustomer(phone: string): Promise<CustomerResponse> {
   const { data } = await api.get<CustomerResponse>(
     `/customers/${encodeURIComponent(phone)}`
@@ -38,6 +49,16 @@ export async function createCustomer(
   body: CustomerCreate
 ): Promise<CustomerResponse> {
   const { data } = await api.post<CustomerResponse>("/customers", body);
+  return data;
+}
+
+export async function createCustomerForTenant(
+  tenantId: string,
+  body: CustomerCreate
+): Promise<CustomerResponse> {
+  const { data } = await api.post<CustomerResponse>("/customers", body, {
+    headers: { "X-Tenant-Id": tenantId },
+  });
   return data;
 }
 

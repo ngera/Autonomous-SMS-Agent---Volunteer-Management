@@ -1,9 +1,10 @@
+import { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { DataTable, type Column } from "@/components/shared/data-table";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { formatPhone, formatDate } from "@/lib/utils";
 import { ContactSex } from "@/types/enums";
-import type { CustomerResponse } from "@/types/api";
+import type { CustomerResponse, CustomerWithTenant } from "@/types/api";
 
 const SEX_LABELS: Record<string, string> = {
   [ContactSex.MALE]: "Male",
@@ -13,11 +14,12 @@ const SEX_LABELS: Record<string, string> = {
 };
 
 interface CustomersTableProps {
-  data: CustomerResponse[];
+  data: CustomerResponse[] | CustomerWithTenant[];
   isLoading: boolean;
+  showTenantColumn?: boolean;
 }
 
-const columns: Column<CustomerResponse>[] = [
+const baseColumns: Column<CustomerResponse>[] = [
   {
     key: "phone",
     header: "Phone",
@@ -55,8 +57,23 @@ const columns: Column<CustomerResponse>[] = [
   },
 ];
 
-export function CustomersTable({ data, isLoading }: CustomersTableProps) {
+const tenantColumn: Column<CustomerResponse> = {
+  key: "tenant",
+  header: "Tenant",
+  render: (c) => (c as CustomerWithTenant).tenant_name || "—",
+};
+
+export function CustomersTable({
+  data,
+  isLoading,
+  showTenantColumn,
+}: CustomersTableProps) {
   const navigate = useNavigate();
+
+  const columns = useMemo(
+    () => (showTenantColumn ? [tenantColumn, ...baseColumns] : baseColumns),
+    [showTenantColumn]
+  );
 
   return (
     <DataTable

@@ -3,8 +3,21 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useSettings, useUpdateSettings } from "../hooks/use-settings";
 import { formatDateTime } from "@/lib/utils";
+
+const AI_MODEL_OPTIONS = [
+  { value: "claude-haiku-4-5-20241022", label: "Claude Haiku 4.5 (default)" },
+  { value: "claude-sonnet-4-5-20250514", label: "Claude Sonnet 4.5" },
+  { value: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
+];
 
 export function SettingsForm() {
   const { data: settings, isLoading } = useSettings();
@@ -44,12 +57,35 @@ export function SettingsForm() {
         </Button>
       </CardHeader>
       <CardContent className="space-y-4">
-        {settings && settings.length === 0 && (
+        <div className="space-y-1">
+          <Label className="text-sm font-medium">AI Model</Label>
+          <p className="text-xs text-muted-foreground">
+            Claude model used for SMS conversations. Haiku is cheapest; Sonnet is more capable.
+          </p>
+          <Select
+            value={values["ai_model"] ?? "claude-haiku-4-5-20241022"}
+            onValueChange={(v) =>
+              setValues((prev) => ({ ...prev, ai_model: v }))
+            }
+          >
+            <SelectTrigger className="w-72">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {AI_MODEL_OPTIONS.map((opt) => (
+                <SelectItem key={opt.value} value={opt.value}>
+                  {opt.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        {settings && settings.filter((s) => s.key !== "ai_model").length === 0 && (
           <p className="text-sm text-muted-foreground">
-            No settings configured yet.
+            No additional settings configured.
           </p>
         )}
-        {settings?.map((s) => (
+        {settings?.filter((s) => s.key !== "ai_model").map((s) => (
           <div key={s.key} className="space-y-1">
             <div className="flex items-center justify-between">
               <Label className="text-sm font-medium">{s.key}</Label>

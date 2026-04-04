@@ -26,7 +26,7 @@ export const BOOKING_STATUS_COLORS: Record<BookingStatus, string> = {
 };
 
 export const CONSENT_STATUS_LABELS: Record<ConsentStatus, string> = {
-  [ConsentStatus.UNCONTACTED]: "Uncontacted",
+  [ConsentStatus.UNCONTACTED]: "Not Consented",
   [ConsentStatus.PENDING]: "Pending",
   [ConsentStatus.OPTED_IN]: "Opted In",
   [ConsentStatus.OPTED_OUT]: "Opted Out",

@@ -19,7 +19,7 @@ from app.services.sms import send_sms
 logger = get_logger("booking")
 
 
-async def process_booking_creation(db: AsyncSession, booking: Booking, tenant: Tenant) -> None:
+async def process_booking_creation(db: AsyncSession, booking: Booking, tenant: Tenant, send_sms_notification: bool = True) -> None:
     """After a booking is created: create calendar event, generate ICS URLs, send SMS."""
     # Load appointment type for duration
     appt_result = await db.execute(
@@ -68,19 +68,20 @@ async def process_booking_creation(db: AsyncSession, booking: Booking, tenant: T
     await db.flush()
 
     # Send SMS confirmation
-    time_str = booking.scheduled_at.strftime("%A %d %B at %I:%M%p")
-    await send_sms(
-        to=booking.contact_phone,
-        body=(
-            f"Your {appt_type.name} is confirmed for {time_str}. "
-            f"Price: £{booking.price_at_booking:.2f}. "
-            f"Add to your calendar: {booking.ics_new_url}"
-        ),
-        tenant=tenant,
-    )
+    if send_sms_notification:
+        time_str = booking.scheduled_at.strftime("%A %d %B at %I:%M%p")
+        await send_sms(
+            to=booking.contact_phone,
+            body=(
+                f"Your {appt_type.name} is confirmed for {time_str}. "
+                f"Price: £{booking.price_at_booking:.2f}. "
+                f"Add to your calendar: {booking.ics_new_url}"
+            ),
+            tenant=tenant,
+        )
 
 
-async def process_booking_reschedule(db: AsyncSession, booking: Booking, tenant: Tenant) -> None:
+async def process_booking_reschedule(db: AsyncSession, booking: Booking, tenant: Tenant, send_sms_notification: bool = True) -> None:
     """After a reschedule: update calendar event, send SMS + ICS update."""
     appt_result = await db.execute(
         select(AppointmentType).where(AppointmentType.id == booking.appointment_type_id)
@@ -104,19 +105,20 @@ async def process_booking_reschedule(db: AsyncSession, booking: Booking, tenant:
             logger.error("Failed to update calendar event: %s", e)
 
     # Send SMS
-    time_str = booking.scheduled_at.strftime("%A %d %B at %I:%M%p")
-    base_url = f"https://{tenant.api_domain}/api/v1/calendar/{booking.id}"
-    await send_sms(
-        to=booking.contact_phone,
-        body=(
-            f"Your appointment has been rescheduled to {time_str}. "
-            f"Update your calendar: {base_url}/update.ics"
-        ),
-        tenant=tenant,
-    )
+    if send_sms_notification:
+        time_str = booking.scheduled_at.strftime("%A %d %B at %I:%M%p")
+        base_url = f"https://{tenant.api_domain}/api/v1/calendar/{booking.id}"
+        await send_sms(
+            to=booking.contact_phone,
+            body=(
+                f"Your appointment has been rescheduled to {time_str}. "
+                f"Update your calendar: {base_url}/update.ics"
+            ),
+            tenant=tenant,
+        )
 
 
-async def process_booking_cancellation(db: AsyncSession, booking: Booking, tenant: Tenant) -> None:
+async def process_booking_cancellation(db: AsyncSession, booking: Booking, tenant: Tenant, send_sms_notification: bool = True) -> None:
     """After cancellation: delete calendar event, send SMS + ICS cancel."""
     appt_result = await db.execute(
         select(AppointmentType).where(AppointmentType.id == booking.appointment_type_id)
@@ -132,13 +134,14 @@ async def process_booking_cancellation(db: AsyncSession, booking: Booking, tenan
             logger.error("Failed to delete calendar event: %s", e)
 
     # Send SMS
-    time_str = booking.scheduled_at.strftime("%A %d %B")
-    base_url = f"https://{tenant.api_domain}/api/v1/calendar/{booking.id}"
-    await send_sms(
-        to=booking.contact_phone,
-        body=(
-            f"Your {appt_name} on {time_str} has been cancelled. "
-            f"Remove from your calendar: {base_url}/cancel.ics"
-        ),
-        tenant=tenant,
-    )
+    if send_sms_notification:
+        time_str = booking.scheduled_at.strftime("%A %d %B")
+        base_url = f"https://{tenant.api_domain}/api/v1/calendar/{booking.id}"
+        await send_sms(
+            to=booking.contact_phone,
+            body=(
+                f"Your {appt_name} on {time_str} has been cancelled. "
+                f"Remove from your calendar: {base_url}/cancel.ics"
+            ),
+            tenant=tenant,
+        )

@@ -101,3 +101,10 @@ export const ChangedBy = {
   SYSTEM: "system",
 } as const;
 export type ChangedBy = (typeof ChangedBy)[keyof typeof ChangedBy];
+
+export const ContactPreference = {
+  EMAIL: "email",
+  PHONE: "phone",
+  SMS: "sms",
+} as const;
+export type ContactPreference = (typeof ContactPreference)[keyof typeof ContactPreference];

@@ -103,22 +103,29 @@ booking-system/
 - Twilio account (for SMS)
 - Anthropic API key (for AI chatbot)
 
+### Environment file
+
+Put a single **`.env`** at the **repository root** (`booking-system/.env`) **or** in **`backend/.env`**. If both exist, `backend/.env` overrides. Copy from `backend/.env.example` and fill in real values. Extra keys in `.env` (e.g. split Postgres vars) are ignored.
+
 ### Backend Setup
 
 ```bash
 cd backend
 python -m venv .venv
-source .venv/bin/activate  # or .venv\Scripts\activate on Windows
+source .venv/bin/activate            # Linux/macOS
+# Windows: .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 
-# Configure environment variables (see .env.example)
-cp .env.example .env
-
-# Run database migrations
+# Migrations (PYTHONPATH required so `app` imports resolve)
+# Linux/macOS: export PYTHONPATH="$(pwd)"
+# Windows PowerShell: $env:PYTHONPATH = (Get-Location).Path
 alembic upgrade head
 
-# Start the server
-uvicorn app.main:app --reload
+# Or Windows: .\migrate.ps1  (uses .venv Python automatically)
+
+# Start the API
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+# Or Windows: .\run-dev.ps1
 ```
 
 ### Frontend Setup
@@ -126,8 +133,11 @@ uvicorn app.main:app --reload
 ```bash
 cd frontend
 npm install
+# Optional: copy .env.example to .env — defaults to http://localhost:8000/api/v1
 npm run dev
 ```
+
+Open **http://127.0.0.1:5173** (or the URL Vite prints). Set `ADMIN_PANEL_URL=http://localhost:5173` in backend `.env` so CORS allows the dev origin.
 
 ### Running Tests
 

@@ -19,7 +19,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { X } from "lucide-react";
 import { ContactSex } from "@/types/enums";
-import type { CustomerResponse } from "@/types/api";
+import type { CustomerResponse, TenantResponse } from "@/types/api";
 import { useAppointmentTypes } from "@/features/appointment-types/hooks/use-appointment-types";
 
 const SEX_LABELS: Record<string, string> = {
@@ -29,19 +29,24 @@ const SEX_LABELS: Record<string, string> = {
   [ContactSex.PREFER_NOT_TO_SAY]: "Prefer not to say",
 };
 
+export interface CustomerFormData {
+  phone: string;
+  name: string;
+  email?: string;
+  sex?: string | null;
+  reminder_preference_days?: number;
+  preferred_appointment_type_ids?: string[];
+  tenantId?: string;
+}
+
 interface CustomerFormProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   editItem?: CustomerResponse | null;
-  onSubmit: (data: {
-    phone: string;
-    name: string;
-    email?: string;
-    sex?: string | null;
-    reminder_preference_days?: number;
-    preferred_appointment_type_ids?: string[];
-  }) => void;
+  onSubmit: (data: CustomerFormData) => void;
   isLoading: boolean;
+  tenants?: TenantResponse[];
+  requireTenant?: boolean;
 }
 
 export function CustomerForm({
@@ -50,13 +55,18 @@ export function CustomerForm({
   editItem,
   onSubmit,
   isLoading,
+  tenants,
+  requireTenant,
 }: CustomerFormProps) {
   const [phone, setPhone] = useState("");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-  const [sex, setSex] = useState<string>("");
+  const [sex, setSex] = useState<string | undefined>(undefined);
   const [reminderDays, setReminderDays] = useState(7);
   const [selectedTypeIds, setSelectedTypeIds] = useState<string[]>([]);
+  const [selectedTenantId, setSelectedTenantId] = useState<string | undefined>(
+    undefined
+  );
 
   const { data: appointmentTypes } = useAppointmentTypes();
 
@@ -65,16 +75,17 @@ export function CustomerForm({
       setPhone(editItem.phone);
       setName(editItem.name ?? "");
       setEmail(editItem.email ?? "");
-      setSex(editItem.sex ?? "");
+      setSex(editItem.sex ?? undefined);
       setReminderDays(editItem.reminder_preference_days);
       setSelectedTypeIds(editItem.preferred_appointment_type_ids ?? []);
     } else {
       setPhone("");
       setName("");
       setEmail("");
-      setSex("");
+      setSex(undefined);
       setReminderDays(7);
       setSelectedTypeIds([]);
+      setSelectedTenantId(undefined);
     }
   }, [editItem, open]);
 
@@ -83,6 +94,10 @@ export function CustomerForm({
       prev.includes(id) ? prev.filter((t) => t !== id) : [...prev, id]
     );
   }
+
+  const needsTenant = requireTenant && !editItem;
+  const canSave =
+    !!phone && !!name && !isLoading && (!needsTenant || !!selectedTenantId);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -93,13 +108,32 @@ export function CustomerForm({
           </DialogTitle>
         </DialogHeader>
         <div className="space-y-4 py-2">
+          {needsTenant && tenants && (
+            <div className="space-y-2">
+              <Label>Tenant *</Label>
+              <Select
+                value={selectedTenantId ?? ""}
+                onValueChange={setSelectedTenantId}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a tenant..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {tenants.map((t) => (
+                    <SelectItem key={t.id} value={t.id}>
+                      {t.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
           <div className="space-y-2">
             <Label>Phone *</Label>
             <Input
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
               placeholder="+1..."
-              disabled={!!editItem}
             />
           </div>
           <div className="space-y-2">
@@ -121,15 +155,12 @@ export function CustomerForm({
           </div>
           <div className="space-y-2">
             <Label>Sex</Label>
-            <Select value={sex} onValueChange={setSex}>
-              <SelectTrigger className="w-full min-w-0">
-                <SelectValue placeholder="Select...">
-                  {(val) => {
-                    const v = val as string | null | undefined;
-                    if (v == null || v === "") return "Select...";
-                    return SEX_LABELS[v] ?? v;
-                  }}
-                </SelectValue>
+            <Select
+              value={sex ?? ""}
+              onValueChange={(v) => setSex(v || undefined)}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Select..." />
               </SelectTrigger>
               <SelectContent>
                 {Object.entries(SEX_LABELS).map(([value, label]) => (
@@ -169,8 +200,11 @@ export function CustomerForm({
                   );
                 })}
             </div>
-            {(!appointmentTypes || appointmentTypes.filter((t) => t.is_active).length === 0) && (
-              <p className="text-xs text-muted-foreground">No appointment types available</p>
+            {(!appointmentTypes ||
+              appointmentTypes.filter((t) => t.is_active).length === 0) && (
+              <p className="text-xs text-muted-foreground">
+                No appointment types available
+              </p>
             )}
           </div>
         </div>
@@ -191,9 +225,10 @@ export function CustomerForm({
                 sex: sex || undefined,
                 reminder_preference_days: reminderDays,
                 preferred_appointment_type_ids: selectedTypeIds,
+                tenantId: selectedTenantId,
               })
             }
-            disabled={!phone || !name || isLoading}
+            disabled={!canSave}
           >
             {isLoading ? "Saving..." : "Save"}
           </Button>

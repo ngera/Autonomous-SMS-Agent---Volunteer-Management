@@ -5,11 +5,14 @@ import {
   cancelAnnouncement,
 } from "../api";
 import type { AnnouncementCreate } from "@/types/api";
+import { useActiveTenantId } from "@/hooks/use-active-tenant";
 
 export function useAnnouncements(page = 1) {
+  const tenantId = useActiveTenantId();
   return useQuery({
-    queryKey: ["announcements", page],
+    queryKey: ["announcements", tenantId, page],
     queryFn: () => listAnnouncements(page),
+    enabled: tenantId !== "none",
   });
 }
 

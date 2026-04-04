@@ -12,6 +12,7 @@ import {
   Settings,
   Building2,
   Megaphone,
+  FlaskConical,
   ChevronLeft,
   ChevronRight,
 } from "lucide-react";
@@ -36,6 +37,7 @@ const navItems = [
   { to: "/suspensions", label: "Suspensions", icon: ShieldAlert },
   { to: "/analytics", label: "Analytics", icon: BarChart3 },
   { to: "/announcements", label: "Announcements", icon: Megaphone },
+  { to: "/test-tool", label: "SMS Test", icon: FlaskConical },
 ];
 
 export function Sidebar({ collapsed, onToggle }: SidebarProps) {
@@ -65,6 +67,24 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       </div>
 
       <nav className="flex-1 space-y-1 p-2 overflow-y-auto">
+        {hasRole(AdminRole.SUPER_ADMIN) && (
+          <NavLink
+            to="/tenant-dashboard"
+            className={({ isActive }) =>
+              cn(
+                "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                isActive
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                collapsed && "justify-center px-2"
+              )
+            }
+          >
+            <LayoutDashboard className="h-4 w-4 shrink-0" />
+            {!collapsed && <span>Tenant Dashboard</span>}
+          </NavLink>
+        )}
+
         {navItems.map((item) => (
           <NavLink
             key={item.to}

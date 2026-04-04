@@ -32,17 +32,19 @@ export function CreateAdminUserDialog({
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [role, setRole] = useState<string>("");
+  const [phone, setPhone] = useState("");
   const create = useCreateAdminUser();
 
   function handleSubmit() {
     if (!email || !password || !role) return;
     create.mutate(
-      { email, password, role: role as AdminRole },
+      { email, password, role: role as AdminRole, phone: phone || undefined },
       {
         onSuccess: () => {
           setEmail("");
           setPassword("");
           setRole("");
+          setPhone("");
           onClose();
         },
       }
@@ -93,6 +95,15 @@ export function CreateAdminUserDialog({
                 ))}
               </SelectContent>
             </Select>
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">Phone (for SMS admin access)</Label>
+            <Input
+              type="tel"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              placeholder="+1234567890 (optional)"
+            />
           </div>
         </div>
         <DialogFooter>

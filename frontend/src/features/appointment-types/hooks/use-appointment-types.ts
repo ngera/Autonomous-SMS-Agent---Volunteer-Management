@@ -13,19 +13,23 @@ import type {
   AppointmentTypeUpdate,
   RelatedServiceCreate,
 } from "@/types/api";
+import { useActiveTenantId } from "@/hooks/use-active-tenant";
 
 export function useAppointmentTypes() {
+  const tenantId = useActiveTenantId();
   return useQuery({
-    queryKey: ["appointment-types"],
+    queryKey: ["appointment-types", tenantId],
     queryFn: listAppointmentTypes,
+    enabled: tenantId !== "none",
   });
 }
 
 export function useRelatedServices(typeId: string) {
+  const tenantId = useActiveTenantId();
   return useQuery({
-    queryKey: ["appointment-types", typeId, "related"],
+    queryKey: ["appointment-types", tenantId, typeId, "related"],
     queryFn: () => getRelatedServices(typeId),
-    enabled: !!typeId,
+    enabled: !!typeId && tenantId !== "none",
   });
 }
 

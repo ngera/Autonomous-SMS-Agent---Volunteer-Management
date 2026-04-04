@@ -40,14 +40,21 @@ function decodeJwtPayload(token: string): Record<string, unknown> | null {
   }
 }
 
+const VALID_ROLES = new Set<string>(Object.values(AdminRole));
+
 function extractUserFromToken(token: string): AuthUser | null {
   const payload = decodeJwtPayload(token);
   if (!payload) return null;
 
+  // Supabase JWTs use role="authenticated" which is NOT a valid AdminRole.
+  // Default to STAFF if the JWT role isn't one of our app roles.
+  const rawRole = (payload.role as string) || "";
+  const role = VALID_ROLES.has(rawRole) ? (rawRole as AdminRole) : AdminRole.STAFF;
+
   return {
     id: (payload.sub as string) || "",
     email: (payload.email as string) || "",
-    role: ((payload.role as string) || "staff") as AdminRole,
+    role,
     tenant_id: null,
     tenant_name: null,
   };
@@ -62,14 +69,16 @@ async function fetchUserProfile(): Promise<AuthUser | null> {
       tenant_id: string | null;
       tenant_name: string | null;
     }>("/auth/me");
+    const rawRole = data.role.toLowerCase();
     return {
       id: data.id,
       email: data.email,
-      role: data.role.toLowerCase() as AdminRole,
+      role: VALID_ROLES.has(rawRole) ? (rawRole as AdminRole) : AdminRole.STAFF,
       tenant_id: data.tenant_id,
       tenant_name: data.tenant_name,
     };
-  } catch {
+  } catch (err) {
+    console.warn("[auth] Failed to fetch user profile:", err);
     return null;
   }
 }

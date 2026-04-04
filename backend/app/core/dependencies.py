@@ -1,7 +1,8 @@
+import uuid
 from typing import Annotated
 
 import httpx
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwk, jwt
 from sqlalchemy import select
@@ -143,15 +144,47 @@ def require_role(minimum_role: AdminRole):
 
 
 async def get_tenant(
+    request: Request,
     current_user: Annotated[AdminUser, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> Tenant:
-    """Resolve the tenant for the current user. Super-admins must specify tenant context."""
+    """Resolve the tenant for the current user.
+
+    Super-admins can specify tenant context via X-Tenant-Id header.
+    """
     if current_user.tenant_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Super-admin must specify a tenant context",
+        # Super admin — read X-Tenant-Id header
+        tenant_id_header = request.headers.get("X-Tenant-Id")
+        if not tenant_id_header:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Super-admin must specify a tenant context via X-Tenant-Id header",
+            )
+        try:
+            tenant_id = uuid.UUID(tenant_id_header)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid X-Tenant-Id header",
+            )
+        result = await db.execute(
+            select(Tenant).where(Tenant.id == tenant_id)
         )
+        tenant = result.scalar_one_or_none()
+        if not tenant:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Tenant not found",
+            )
+        if not tenant.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Tenant is deactivated",
+            )
+        # Super admin can access paused tenants
+        return tenant
+
+    # Normal user flow
     result = await db.execute(
         select(Tenant).where(Tenant.id == current_user.tenant_id)
     )
@@ -160,6 +193,11 @@ async def get_tenant(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Tenant not found or inactive",
+        )
+    if tenant.is_paused:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Tenant is paused. Contact your administrator.",
         )
     return tenant
 

@@ -39,3 +39,4 @@ class AdminUser(Base):
     locked_until: Mapped[DateTime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    phone: Mapped[str | None] = mapped_column(String(20), nullable=True)

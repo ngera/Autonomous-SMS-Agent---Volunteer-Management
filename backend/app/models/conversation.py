@@ -42,3 +42,6 @@ class Conversation(Base):
     last_message_at: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    sender_type: Mapped[str] = mapped_column(
+        String(10), default="customer", server_default="customer"
+    )

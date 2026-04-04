@@ -32,6 +32,7 @@ class CustomerCreate(BaseModel):
 
 
 class CustomerUpdate(BaseModel):
+    phone: str | None = None
     name: str | None = None
     email: str | None = None
     sex: ContactSex | None = None

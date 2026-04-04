@@ -5,25 +5,32 @@ import {
   getNotifications,
   markNotificationRead,
 } from "../api";
+import { useActiveTenantId } from "@/hooks/use-active-tenant";
 
 export function useDashboardSummary() {
+  const tenantId = useActiveTenantId();
   return useQuery({
-    queryKey: ["dashboard", "summary"],
+    queryKey: ["dashboard", "summary", tenantId],
     queryFn: getDashboardSummary,
+    enabled: tenantId !== "none",
   });
 }
 
 export function useTodaysBookings() {
+  const tenantId = useActiveTenantId();
   return useQuery({
-    queryKey: ["dashboard", "todays-bookings"],
+    queryKey: ["dashboard", "todays-bookings", tenantId],
     queryFn: getTodaysBookings,
+    enabled: tenantId !== "none",
   });
 }
 
 export function useNotifications() {
+  const tenantId = useActiveTenantId();
   return useQuery({
-    queryKey: ["dashboard", "notifications"],
+    queryKey: ["dashboard", "notifications", tenantId],
     queryFn: getNotifications,
+    enabled: tenantId !== "none",
   });
 }
 

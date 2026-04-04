@@ -37,7 +37,7 @@ class Contact(Base):
     name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     sex: Mapped[ContactSex | None] = mapped_column(
-        Enum(ContactSex, name="contact_sex"), nullable=True
+        Enum(ContactSex, name="contact_sex", values_callable=lambda e: [x.value for x in e]), nullable=True
     )
     status: Mapped[ContactStatus] = mapped_column(
         Enum(ContactStatus, name="contact_status"), default=ContactStatus.ACTIVE

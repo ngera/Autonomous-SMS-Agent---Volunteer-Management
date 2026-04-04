@@ -189,10 +189,12 @@ export function CustomerDetailPage() {
         onOpenChange={setShowEdit}
         editItem={c}
         onSubmit={(data) => {
+          const phoneChanged = data.phone !== phone;
           updateCustomer.mutate(
             {
               phone,
               body: {
+                phone: phoneChanged ? data.phone : undefined,
                 name: data.name,
                 email: data.email,
                 sex: data.sex,
@@ -203,7 +205,11 @@ export function CustomerDetailPage() {
             {
               onSuccess: () => {
                 setShowEdit(false);
-                void customer.refetch();
+                if (phoneChanged) {
+                  navigate(`/customers/${encodeURIComponent(data.phone)}`, { replace: true });
+                } else {
+                  void customer.refetch();
+                }
               },
             }
           );
