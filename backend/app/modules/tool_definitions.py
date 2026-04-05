@@ -24,7 +24,7 @@ CHECK_AVAILABILITY = {
             },
             "service_name": {
                 "type": "string",
-                "description": "Optional service name to filter slots (e.g., 'Haircut'). If omitted, shows slots for all services.",
+                "description": "Optional service name to filter slots (must match a name from list_services). If omitted, shows slots for all services.",
             },
         },
         "required": ["date"],
@@ -49,7 +49,7 @@ BOOK_APPOINTMENT = {
         "properties": {
             "service_name": {
                 "type": "string",
-                "description": "Name of the service (e.g., 'Haircut').",
+                "description": "Name of the service (must match a name from list_services).",
             },
             "date": {
                 "type": "string",
@@ -247,7 +247,7 @@ SEND_ANNOUNCEMENT = {
             },
             "service_name": {
                 "type": "string",
-                "description": "Only send to customers who have booked or prefer this service (e.g., 'Haircut').",
+                "description": "Only send to customers who have booked or prefer this service (must match a name from list_services).",
             },
             "booking_date": {
                 "type": "string",

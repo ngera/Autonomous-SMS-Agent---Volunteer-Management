@@ -1,6 +1,6 @@
 """Test conversation endpoint — lets admins test the AI tool_use flow without real SMS."""
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
@@ -9,10 +9,12 @@ from sqlalchemy import select
 from app.core.config import settings
 from app.core.dependencies import CurrentTenant, DbSession, ManagerUser
 from app.core.logging import get_logger
-from app.models.contact import Contact
+from app.models.contact import Contact, ContactStatus
 from app.models.conversation import Conversation, ConversationStatus
 from app.models.system_setting import SystemSetting
 from app.modules.conversation import get_ai_model
+from app.modules.screener import Classification, screen_message
+from app.modules.pipeline import _handle_strike, STRIKE_MESSAGES, SUSPENSION_MESSAGE
 from app.modules.tool_definitions import ADMIN_TOOLS, CUSTOMER_TOOLS
 from app.modules.tool_executor import run_tool_conversation
 from app.modules.tool_handlers import ToolContext
@@ -40,6 +42,8 @@ class ToolCallInfo(BaseModel):
 class TestConversationResponse(BaseModel):
     reply: str
     tool_calls: list[ToolCallInfo]
+    screened: bool = False
+    strike_number: int | None = None
 
 
 @router.post("", response_model=TestConversationResponse)
@@ -53,6 +57,7 @@ async def test_conversation(
 
     No SMS is sent. Tool calls are executed against real data but
     announcement SMS sending is skipped in test mode.
+    Screener and strike system are active for customer mode.
     """
     if body.mode not in ("customer", "admin"):
         raise HTTPException(
@@ -86,6 +91,60 @@ async def test_conversation(
             )
         contact_id = contact.id
         contact_phone = contact.phone
+
+        # Check if customer is suspended
+        if contact.status in (ContactStatus.SUSPENDED, ContactStatus.BANNED):
+            return TestConversationResponse(
+                reply=f"[SUSPENDED] This customer is {contact.status.value}. Messages are blocked.",
+                tool_calls=[],
+                screened=True,
+            )
+
+        # Run screener on customer messages
+        screener_result = await screen_message(body.message, db, tenant=tenant)
+
+        if screener_result.classification in (Classification.IRRELEVANT, Classification.ABUSIVE):
+            # Record strike and escalate
+            await _handle_strike(
+                db, contact, body.message,
+                screener_result.classification,
+                screener_result.method.value,
+                tenant=tenant,
+                tenant_id=tenant_id,
+                test_mode=True,
+            )
+            await db.flush()
+
+            # Refresh contact to get updated status
+            await db.refresh(contact)
+
+            # Determine the reply based on strike outcome
+            from sqlalchemy import func
+            from app.models.strike import ContactStrike
+            thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
+            strike_count_result = await db.execute(
+                select(func.count()).where(
+                    ContactStrike.contact_phone == contact.phone,
+                    ContactStrike.tenant_id == tenant_id,
+                    ContactStrike.decayed_at.is_(None),
+                    ContactStrike.created_at >= thirty_days_ago,
+                )
+            )
+            strike_count = strike_count_result.scalar() or 0
+
+            if contact.status == ContactStatus.SUSPENDED:
+                reply = f"[SCREENED — {screener_result.classification.value}] {SUSPENSION_MESSAGE}"
+            elif strike_count in STRIKE_MESSAGES:
+                reply = f"[SCREENED — {screener_result.classification.value}] {STRIKE_MESSAGES[strike_count]}"
+            else:
+                reply = f"[SCREENED — {screener_result.classification.value}] Strike {strike_count} recorded."
+
+            return TestConversationResponse(
+                reply=reply,
+                tool_calls=[],
+                screened=True,
+                strike_number=strike_count,
+            )
     else:
         contact_id = current_user.id
 

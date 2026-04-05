@@ -164,7 +164,12 @@ async def process_inbound_message(
 
     # Step 6: Check suspension status
     if contact.status in (ContactStatus.SUSPENDED, ContactStatus.BANNED):
-        logger.info("Message from suspended/banned contact %s — dropping silently", from_phone)
+        logger.info("Message from suspended/banned contact %s — sending suspension notice", from_phone)
+        await send_sms(
+            to=from_phone,
+            body="Your access is currently suspended. Please contact us directly for assistance.",
+            tenant=tenant,
+        )
         return
 
     # Step 7: Check opt-out keywords (before any AI call)
@@ -409,6 +414,44 @@ async def _handle_consent_flow(
     # For UNCONTACTED or OPTED_OUT, do nothing (no unsolicited messages)
 
 
+async def _get_suspension_settings(db: AsyncSession, tenant_id: uuid.UUID | None) -> dict:
+    """Load tenant-specific suspension settings with defaults."""
+    from app.models.system_setting import SystemSetting
+
+    defaults = {
+        "max_strikes": 4,
+        "strike_decay_days": 30,
+        "auto_suspend_abusive": True,
+        "suspension_message": SUSPENSION_MESSAGE,
+        "strike_message_1": STRIKE_MESSAGES.get(1, ""),
+        "strike_message_2": STRIKE_MESSAGES.get(2, ""),
+        "strike_message_3": STRIKE_MESSAGES.get(3, ""),
+    }
+    if not tenant_id:
+        return defaults
+
+    keys = [f"suspension_{k}" for k in defaults]
+    result = await db.execute(
+        select(SystemSetting).where(
+            SystemSetting.tenant_id == tenant_id,
+            SystemSetting.key.in_(keys),
+        )
+    )
+    for setting in result.scalars().all():
+        short_key = setting.key.replace("suspension_", "", 1)
+        if short_key in ("max_strikes", "strike_decay_days"):
+            try:
+                defaults[short_key] = int(setting.value)
+            except ValueError:
+                pass
+        elif short_key == "auto_suspend_abusive":
+            defaults[short_key] = setting.value.lower() in ("true", "1", "yes")
+        else:
+            defaults[short_key] = setting.value
+
+    return defaults
+
+
 async def _handle_strike(
     db: AsyncSession,
     contact: Contact,
@@ -417,16 +460,28 @@ async def _handle_strike(
     screener_method: str,
     tenant: "Tenant | None" = None,
     tenant_id: uuid.UUID | None = None,
+    test_mode: bool = False,
 ) -> None:
     """Record a strike and take escalation action."""
+    cfg = await _get_suspension_settings(db, tenant_id)
+    max_strikes = cfg["max_strikes"]
+    decay_days = cfg["strike_decay_days"]
+    auto_suspend_abusive = cfg["auto_suspend_abusive"]
+    suspension_msg = cfg["suspension_message"]
+    strike_messages = {
+        i: cfg[f"strike_message_{i}"]
+        for i in (1, 2, 3)
+        if cfg.get(f"strike_message_{i}")
+    }
+
     now = datetime.now(timezone.utc)
-    thirty_days_ago = now - timedelta(days=30)
+    decay_cutoff = now - timedelta(days=decay_days)
 
     # Count active (non-decayed) strikes
     strike_query = select(func.count()).where(
         ContactStrike.contact_phone == contact.phone,
         ContactStrike.decayed_at.is_(None),
-        ContactStrike.created_at >= thirty_days_ago,
+        ContactStrike.created_at >= decay_cutoff,
     )
     if tenant_id:
         strike_query = strike_query.where(ContactStrike.tenant_id == tenant_id)
@@ -453,25 +508,28 @@ async def _handle_strike(
     await db.flush()
 
     # Immediate suspension for ABUSIVE
-    if classification == Classification.ABUSIVE:
+    if classification == Classification.ABUSIVE and auto_suspend_abusive:
         await _suspend_contact(db, contact, strike, "Abusive message detected", tenant=tenant, tenant_id=tenant_id)
-        await send_sms(to=contact.phone, body=SUSPENSION_MESSAGE, tenant=tenant)
+        if not test_mode:
+            await send_sms(to=contact.phone, body=suspension_msg, tenant=tenant)
         return
 
     # Strike escalation for IRRELEVANT
-    if new_strike_number >= 4:
+    if new_strike_number >= max_strikes:
         await _suspend_contact(db, contact, strike, f"Strike {new_strike_number}: repeated irrelevant messages", tenant=tenant, tenant_id=tenant_id)
-        await send_sms(to=contact.phone, body=SUSPENSION_MESSAGE, tenant=tenant)
-    elif new_strike_number in STRIKE_MESSAGES:
-        await send_sms(to=contact.phone, body=STRIKE_MESSAGES[new_strike_number], tenant=tenant)
+        if not test_mode:
+            await send_sms(to=contact.phone, body=suspension_msg, tenant=tenant)
+    elif new_strike_number in strike_messages:
+        if not test_mode:
+            await send_sms(to=contact.phone, body=strike_messages[new_strike_number], tenant=tenant)
 
-    # Strike 3 warning notification
-    if new_strike_number == 3:
+    # Warning notification one strike before suspension
+    if new_strike_number == max_strikes - 1:
         await create_notification(
             db=db,
             notification_type=NotificationType.STRIKE_WARNING,
-            title=f"Strike 3 issued: {contact.phone}",
-            body="Final warning sent — next offense will suspend the account",
+            title=f"Strike {new_strike_number} issued: {contact.phone}",
+            body=f"Final warning sent — next offense will suspend the account (threshold: {max_strikes})",
             tenant_id=tenant_id,
         )
 

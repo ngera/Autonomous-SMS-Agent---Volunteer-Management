@@ -117,7 +117,7 @@ async def stage2_ai_classify(
             response = await client.post(
                 "https://api.anthropic.com/v1/messages",
                 json={
-                    "model": "claude-haiku-4-5-20241022",
+                    "model": "claude-haiku-4-5-20251001",
                     "max_tokens": 10,
                     "messages": [{"role": "user", "content": message}],
                     "system": prompt,

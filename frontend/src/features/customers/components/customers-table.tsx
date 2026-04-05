@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { DataTable, type Column } from "@/components/shared/data-table";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { formatPhone, formatDate } from "@/lib/utils";
-import { ContactSex } from "@/types/enums";
+import { ContactSex, ContactStatus } from "@/types/enums";
 import type { CustomerResponse, CustomerWithTenant } from "@/types/api";
 
 const SEX_LABELS: Record<string, string> = {
@@ -28,7 +28,17 @@ const baseColumns: Column<CustomerResponse>[] = [
   {
     key: "name",
     header: "Name",
-    render: (c) => c.name || "—",
+    render: (c) => (
+      <span className="flex items-center gap-1.5">
+        {c.name || "—"}
+        {c.status === ContactStatus.SUSPENDED && (
+          <span className="inline-flex items-center rounded-full bg-red-100 px-1.5 py-0.5 text-[10px] font-medium text-red-700">Suspended</span>
+        )}
+        {c.status === ContactStatus.BANNED && (
+          <span className="inline-flex items-center rounded-full bg-red-200 px-1.5 py-0.5 text-[10px] font-medium text-red-900">Banned</span>
+        )}
+      </span>
+    ),
   },
   {
     key: "email",

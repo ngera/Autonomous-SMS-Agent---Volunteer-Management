@@ -159,7 +159,7 @@ export function TestConversation() {
                 <Label className="text-sm font-medium whitespace-nowrap">
                   Customer
                 </Label>
-                <Select value={selectedPhone || null} onValueChange={(v) => setSelectedPhone(v ?? "")}>
+                <Select value={selectedPhone || null} onValueChange={(v) => { setSelectedPhone(v ?? ""); setMessages([]); setExpandedTools({}); }}>
                   <SelectTrigger className="w-64">
                     <SelectValue placeholder="Select a customer..." />
                   </SelectTrigger>
@@ -220,7 +220,7 @@ export function TestConversation() {
                     <>
                       <Button variant="outline" size="sm" className="text-xs h-6" onClick={() => setInput("What services do you offer?")}>What services do you offer?</Button>
                       <Button variant="outline" size="sm" className="text-xs h-6" onClick={() => setInput("Do you have any openings tomorrow?")}>Any openings tomorrow?</Button>
-                      <Button variant="outline" size="sm" className="text-xs h-6" onClick={() => setInput("I'd like to book a haircut")}>Book a haircut</Button>
+                      <Button variant="outline" size="sm" className="text-xs h-6" onClick={() => setInput("I'd like to book an appointment")}>Book an appointment</Button>
                       <Button variant="outline" size="sm" className="text-xs h-6" onClick={() => setInput("What are my upcoming appointments?")}>My appointments</Button>
                     </>
                   ) : (

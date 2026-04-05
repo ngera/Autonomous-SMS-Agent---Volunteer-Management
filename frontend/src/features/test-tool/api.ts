@@ -17,6 +17,8 @@ export interface TestConversationRequest {
 export interface TestConversationResponse {
   reply: string;
   tool_calls: ToolCallInfo[];
+  screened?: boolean;
+  strike_number?: number | null;
 }
 
 export async function sendTestMessage(
