@@ -192,7 +192,10 @@ async def manual_suspend(
     phone: str, body: ManualSuspendRequest, db: DbSession, current_user: ManagerUser, tenant: CurrentTenant
 ):
     contact_result = await db.execute(
-        select(Contact).where(Contact.phone == phone)
+        select(Contact).where(
+            Contact.phone == phone,
+            Contact.tenant_id == tenant.id,
+        )
     )
     contact = contact_result.scalar_one_or_none()
     if not contact:
@@ -203,6 +206,7 @@ async def manual_suspend(
 
     suspension = ContactSuspension(
         tenant_id=tenant.id,
+        contact_id=contact.id,
         contact_phone=phone,
         suspension_type=SuspensionType.MANUAL,
         reason=body.reason,
@@ -212,7 +216,10 @@ async def manual_suspend(
 
     # Update consent
     consent_result = await db.execute(
-        select(ContactConsent).where(ContactConsent.contact_phone == phone)
+        select(ContactConsent).where(
+            ContactConsent.contact_id == contact.id,
+            ContactConsent.tenant_id == tenant.id,
+        )
     )
     consent = consent_result.scalar_one_or_none()
     if consent:

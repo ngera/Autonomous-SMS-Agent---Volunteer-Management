@@ -435,6 +435,66 @@ async def handle_block_date(ctx: ToolContext, tool_input: dict) -> str:
     if date_to < date_from:
         return json.dumps({"error": "End date must be on or after start date."})
 
+    cancel_existing = tool_input.get("cancel_existing")
+
+    # Check for existing bookings in the date range
+    import zoneinfo
+    tz = zoneinfo.ZoneInfo(ctx.tenant.business_timezone or "America/New_York")
+    range_start = datetime.combine(date_from, datetime.min.time()).replace(tzinfo=tz)
+    range_end = datetime.combine(date_to, datetime.max.time()).replace(tzinfo=tz)
+
+    bookings_result = await ctx.db.execute(
+        select(Booking).where(
+            Booking.tenant_id == ctx.tenant.id,
+            Booking.scheduled_at >= range_start,
+            Booking.scheduled_at <= range_end,
+            Booking.status.in_([BookingStatus.SCHEDULED, BookingStatus.RESCHEDULED]),
+        )
+    )
+    affected_bookings = bookings_result.scalars().all()
+
+    # If there are bookings and admin hasn't decided yet, return the conflict
+    if affected_bookings and cancel_existing is None:
+        booking_list = []
+        for b in affected_bookings:
+            appt = await ctx.db.execute(
+                select(AppointmentType).where(AppointmentType.id == b.appointment_type_id)
+            )
+            appt_type = appt.scalar_one_or_none()
+            booking_list.append({
+                "ref": _booking_ref(b.id),
+                "customer_phone": b.contact_phone,
+                "service": appt_type.name if appt_type else "Unknown",
+                "date": b.scheduled_at.strftime("%A %B %d"),
+                "time": b.scheduled_at.strftime("%I:%M %p"),
+            })
+        return json.dumps({
+            "conflict": True,
+            "affected_bookings": booking_list,
+            "total_affected": len(booking_list),
+            "message": f"There are {len(booking_list)} existing booking(s) in this date range. Ask the admin if they should be cancelled or kept as-is, then call block_date again with cancel_existing set to true or false.",
+        })
+
+    # Cancel affected bookings if requested
+    cancelled_count = 0
+    if affected_bookings and cancel_existing:
+        for b in affected_bookings:
+            b.status = BookingStatus.CANCELLED
+            history = BookingHistory(
+                booking_id=b.id,
+                event_type=BookingEventType.STATUS_CHANGE,
+                new_status=BookingStatus.CANCELLED,
+                changed_by=ChangedBy.ADMIN,
+                tenant_id=ctx.tenant.id,
+            )
+            ctx.db.add(history)
+            try:
+                await process_booking_cancellation(ctx.db, b, ctx.tenant, send_sms_notification=not ctx.test_mode)
+            except Exception as e:
+                logger.error("Failed to process cancellation for booking %s: %s", b.id, e)
+            cancelled_count += 1
+
+    # Create the blocked date
     blocked = BlockedDate(
         tenant_id=ctx.tenant.id,
         date_from=date_from,
@@ -444,12 +504,18 @@ async def handle_block_date(ctx: ToolContext, tool_input: dict) -> str:
     ctx.db.add(blocked)
     await ctx.db.flush()
 
-    return json.dumps({
+    result = {
         "success": True,
         "date_from": str(date_from),
         "date_to": str(date_to),
         "reason": tool_input.get("reason", ""),
-    })
+    }
+    if cancelled_count > 0:
+        result["cancelled_bookings"] = cancelled_count
+    if affected_bookings and not cancel_existing:
+        result["kept_bookings"] = len(affected_bookings)
+
+    return json.dumps(result)
 
 
 async def handle_unblock_date(ctx: ToolContext, tool_input: dict) -> str:
@@ -761,6 +827,87 @@ async def handle_send_announcement(ctx: ToolContext, tool_input: dict) -> str:
     })
 
 
+async def handle_suspend_customer(ctx: ToolContext, tool_input: dict) -> str:
+    phone = tool_input.get("phone", "")
+    reason = tool_input.get("reason", "")
+
+    result = await ctx.db.execute(
+        select(Contact).where(
+            Contact.phone == phone,
+            Contact.tenant_id == ctx.tenant.id,
+        )
+    )
+    contact = result.scalar_one_or_none()
+    if not contact:
+        return json.dumps({"error": f"No customer found with phone '{phone}'."})
+
+    if contact.status == ContactStatus.SUSPENDED:
+        return json.dumps({"error": f"Customer {phone} is already suspended."})
+    if contact.status == ContactStatus.BANNED:
+        return json.dumps({"error": f"Customer {phone} is banned."})
+
+    from app.models.suspension import ContactSuspension, SuspensionType
+
+    contact.status = ContactStatus.SUSPENDED
+
+    suspension = ContactSuspension(
+        tenant_id=ctx.tenant.id,
+        contact_id=contact.id,
+        contact_phone=phone,
+        suspension_type=SuspensionType.MANUAL,
+        reason=reason,
+        notification_sent_at=datetime.now(timezone.utc),
+    )
+    ctx.db.add(suspension)
+    await ctx.db.flush()
+
+    return json.dumps({
+        "success": True,
+        "phone": phone,
+        "reason": reason,
+        "message": f"Customer {phone} has been suspended.",
+    })
+
+
+async def handle_unsuspend_customer(ctx: ToolContext, tool_input: dict) -> str:
+    phone = tool_input.get("phone", "")
+
+    result = await ctx.db.execute(
+        select(Contact).where(
+            Contact.phone == phone,
+            Contact.tenant_id == ctx.tenant.id,
+        )
+    )
+    contact = result.scalar_one_or_none()
+    if not contact:
+        return json.dumps({"error": f"No customer found with phone '{phone}'."})
+
+    if contact.status != ContactStatus.SUSPENDED:
+        return json.dumps({"error": f"Customer {phone} is not suspended (status: {contact.status.value})."})
+
+    contact.status = ContactStatus.ACTIVE
+
+    # Restore consent if blocked
+    consent_result = await ctx.db.execute(
+        select(ContactConsent).where(
+            ContactConsent.contact_id == contact.id,
+            ContactConsent.tenant_id == ctx.tenant.id,
+        )
+    )
+    consent = consent_result.scalar_one_or_none()
+    if consent and consent.status == ConsentStatus.BLOCKED:
+        consent.status = ConsentStatus.OPTED_IN
+        consent.last_status_change_at = datetime.now(timezone.utc)
+
+    await ctx.db.flush()
+
+    return json.dumps({
+        "success": True,
+        "phone": phone,
+        "message": f"Customer {phone} has been unsuspended and can book again.",
+    })
+
+
 # ── Handler registry ──
 
 TOOL_HANDLERS = {
@@ -777,4 +924,6 @@ TOOL_HANDLERS = {
     "get_schedule": handle_get_schedule,
     "manage_service": handle_manage_service,
     "send_announcement": handle_send_announcement,
+    "suspend_customer": handle_suspend_customer,
+    "unsuspend_customer": handle_unsuspend_customer,
 }

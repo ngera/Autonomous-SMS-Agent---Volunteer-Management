@@ -148,7 +148,12 @@ LOOKUP_CUSTOMER = {
 
 BLOCK_DATE = {
     "name": "block_date",
-    "description": "Block a date range so no appointments can be booked during that period.",
+    "description": (
+        "Block a date range so no appointments can be booked during that period. "
+        "If there are existing bookings in the range and cancel_existing is not set, "
+        "the tool will return the list of affected bookings and ask the admin to confirm. "
+        "Call again with cancel_existing=true to cancel them, or cancel_existing=false to block without cancelling."
+    ),
     "input_schema": {
         "type": "object",
         "properties": {
@@ -163,6 +168,10 @@ BLOCK_DATE = {
             "reason": {
                 "type": "string",
                 "description": "Reason for blocking (e.g., 'Holiday', 'Maintenance').",
+            },
+            "cancel_existing": {
+                "type": "boolean",
+                "description": "If true, cancel all existing bookings in the date range. If false, block without cancelling. Omit to check for conflicts first.",
             },
         },
         "required": ["date_from", "date_to"],
@@ -263,6 +272,44 @@ SEND_ANNOUNCEMENT = {
     },
 }
 
+SUSPEND_CUSTOMER = {
+    "name": "suspend_customer",
+    "description": (
+        "Suspend a customer by phone number. The customer will be blocked from booking "
+        "and will receive a suspension notice if they message. "
+        "Always confirm the phone number and reason with the admin before suspending."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "phone": {
+                "type": "string",
+                "description": "Customer phone number.",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Reason for suspension.",
+            },
+        },
+        "required": ["phone", "reason"],
+    },
+}
+
+UNSUSPEND_CUSTOMER = {
+    "name": "unsuspend_customer",
+    "description": "Lift a suspension for a customer, restoring their ability to book appointments.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "phone": {
+                "type": "string",
+                "description": "Customer phone number.",
+            },
+        },
+        "required": ["phone"],
+    },
+}
+
 # ── Tool sets ──
 
 CUSTOMER_TOOLS = [
@@ -288,4 +335,6 @@ ADMIN_TOOLS = [
     GET_SCHEDULE,
     MANAGE_SERVICE,
     SEND_ANNOUNCEMENT,
+    SUSPEND_CUSTOMER,
+    UNSUSPEND_CUSTOMER,
 ]
