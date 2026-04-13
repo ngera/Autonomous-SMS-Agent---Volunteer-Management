@@ -16,9 +16,11 @@ from app.modules.conversation import get_ai_model
 from app.modules.screener import Classification, screen_message
 from app.modules.pipeline import _handle_strike, STRIKE_MESSAGES, SUSPENSION_MESSAGE
 from app.modules.tool_definitions import ADMIN_TOOLS, CUSTOMER_TOOLS
+from app.models.token_usage import TokenUsageSource
 from app.modules.tool_executor import run_tool_conversation
 from app.modules.tool_handlers import ToolContext
 from app.prompts.conversation import get_admin_system_prompt, get_customer_system_prompt
+from app.services.token_usage import record_token_usage
 
 logger = get_logger("test_conversation")
 
@@ -101,7 +103,10 @@ async def test_conversation(
             )
 
         # Run screener on customer messages
-        screener_result = await screen_message(body.message, db, tenant=tenant)
+        screener_result = await screen_message(
+            body.message, db, tenant=tenant,
+            contact_id=contact_id, contact_phone=contact_phone,
+        )
 
         if screener_result.classification in (Classification.IRRELEVANT, Classification.ABUSIVE):
             # Record strike and escalate
@@ -215,13 +220,27 @@ async def test_conversation(
         )
 
     try:
-        result_text = await run_tool_conversation(
+        result = await run_tool_conversation(
             system_prompt=system_prompt,
             tools=tools,
             messages=api_messages,
             ctx=ctx,
             api_key=api_key,
             model=model,
+        )
+        result_text = result.text
+
+        # Record token usage for test tool
+        await record_token_usage(
+            db=db,
+            tenant_id=tenant_id,
+            source=TokenUsageSource.TEST_TOOL,
+            model=result.model,
+            input_tokens=result.total_input_tokens,
+            output_tokens=result.total_output_tokens,
+            contact_id=contact_id if not is_admin else None,
+            contact_phone=contact_phone,
+            tool_calls=ctx.tool_calls if ctx.tool_calls else None,
         )
     except Exception as e:
         logger.exception("Test conversation failed: %s", e)

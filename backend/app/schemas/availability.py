@@ -1,8 +1,25 @@
 import uuid
 from datetime import date, datetime, time
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
+
+class ServiceSlotConfig(BaseModel):
+    """Per-service config within an availability window."""
+    appointment_type_id: uuid.UUID
+    min_required: int = 1
+    max_allowed: int = 1
+
+    @model_validator(mode="after")
+    def validate_min_max(self):
+        if self.min_required < 1:
+            raise ValueError("min_required must be at least 1")
+        if self.max_allowed < self.min_required:
+            raise ValueError(f"max_allowed ({self.max_allowed}) must be >= min_required ({self.min_required})")
+        return self
+
+
+# ── Weekly rules ──
 
 class AvailabilityRuleResponse(BaseModel):
     id: uuid.UUID
@@ -10,27 +27,53 @@ class AvailabilityRuleResponse(BaseModel):
     label: str | None
     start_time: time
     end_time: time
-    slot_duration_minutes: int
     buffer_minutes: int
+    service_config: list[ServiceSlotConfig] | None
     is_active: bool
 
     model_config = {"from_attributes": True}
 
 
 class AvailabilityRuleUpdate(BaseModel):
-    """A single slot within a day's schedule."""
     day_of_week: int
     label: str | None = None
     start_time: time
     end_time: time
-    slot_duration_minutes: int
     buffer_minutes: int = 0
+    service_config: list[ServiceSlotConfig] | None = None
     is_active: bool = True
 
 
 class WeeklyScheduleUpdate(BaseModel):
     rules: list[AvailabilityRuleUpdate]
 
+
+# ── Specific date slots / events ──
+
+class SpecificDateSlotResponse(BaseModel):
+    id: uuid.UUID
+    date: date
+    label: str | None
+    start_time: time
+    end_time: time
+    buffer_minutes: int
+    service_config: list[ServiceSlotConfig] | None
+    is_active: bool
+
+    model_config = {"from_attributes": True}
+
+
+class SpecificDateSlotCreate(BaseModel):
+    date: date
+    label: str | None = None
+    start_time: time
+    end_time: time
+    buffer_minutes: int = 0
+    service_config: list[ServiceSlotConfig] | None = None
+    is_active: bool = True
+
+
+# ── Blocked dates ──
 
 class BlockedDateCreate(BaseModel):
     date_from: date
@@ -51,3 +94,6 @@ class BlockedDateResponse(BaseModel):
 class SlotResponse(BaseModel):
     start: datetime
     end: datetime
+    booked: int = 0
+    min_required: int = 1
+    max_allowed: int = 1

@@ -13,6 +13,7 @@ import {
   Building2,
   Megaphone,
   FlaskConical,
+  Coins,
   ChevronLeft,
   ChevronRight,
 } from "lucide-react";
@@ -29,13 +30,14 @@ interface SidebarProps {
 const navItems = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/bookings", label: "Bookings", icon: Calendar },
-  { to: "/customers", label: "Customers", icon: Users },
+  { to: "/customers", label: "Volunteers", icon: Users },
   { to: "/appointment-types", label: "Types", icon: ClipboardList },
   { to: "/availability", label: "Availability", icon: Clock },
   { to: "/reminders", label: "Reminders", icon: Bell },
   { to: "/conversations", label: "Conversations", icon: MessageSquare },
   { to: "/suspensions", label: "Suspensions", icon: ShieldAlert },
   { to: "/analytics", label: "Analytics", icon: BarChart3 },
+  { to: "/token-usage", label: "Token Usage", icon: Coins },
   { to: "/announcements", label: "Announcements", icon: Megaphone },
   { to: "/test-tool", label: "SMS Test", icon: FlaskConical },
 ];

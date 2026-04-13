@@ -5,6 +5,7 @@ Stage 2: AI micro-prompt (~60-100 tokens) — classifies as RELEVANT/IRRELEVANT/
 """
 
 import re
+import uuid
 from dataclasses import dataclass
 from enum import Enum
 
@@ -56,7 +57,9 @@ INJECTION_PATTERNS = re.compile(
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.token_usage import TokenUsageSource
 from app.prompts.screener import SCREENER_SYSTEM_PROMPT, get_screener_prompt
+from app.services.token_usage import record_token_usage
 
 
 def stage1_rule_based(message: str) -> ScreenerResult | None:
@@ -104,22 +107,47 @@ def stage1_rule_based(message: str) -> ScreenerResult | None:
 
 async def stage2_ai_classify(
     message: str, db: AsyncSession | None = None, tenant: Tenant | None = None,
+    contact_id: "uuid.UUID | None" = None, contact_phone: str | None = None,
+    conversation_history: list[dict] | None = None,
 ) -> ScreenerResult:
     """Stage 2: AI micro-prompt classification (~60-100 tokens).
 
+    When conversation_history is provided, includes recent context so that
+    short contextual replies (e.g. "yes", "tomorrow") are not misclassified.
     On API error, defaults to RELEVANT to avoid blocking legitimate users.
     """
     api_key = tenant.anthropic_api_key if tenant else settings.anthropic_api_key
 
     try:
         prompt = await get_screener_prompt(db) if db else SCREENER_SYSTEM_PROMPT
+
+        # Build messages with conversation context if available
+        api_messages: list[dict] = []
+        if conversation_history:
+            # Include the last few turns for context (keep token usage low)
+            recent = conversation_history[-6:]
+            context_lines = []
+            for msg in recent:
+                role_label = "Volunteer" if msg.get("role") == "user" else "Assistant"
+                context_lines.append(f"{role_label}: {msg.get('content', '')}")
+            context_text = "\n".join(context_lines)
+            api_messages.append({
+                "role": "user",
+                "content": (
+                    f"Recent conversation context:\n{context_text}\n\n"
+                    f"New message to classify: {message}"
+                ),
+            })
+        else:
+            api_messages.append({"role": "user", "content": message})
+
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 "https://api.anthropic.com/v1/messages",
                 json={
                     "model": "claude-haiku-4-5-20251001",
                     "max_tokens": 10,
-                    "messages": [{"role": "user", "content": message}],
+                    "messages": api_messages,
                     "system": prompt,
                 },
                 headers={
@@ -138,6 +166,21 @@ async def stage2_ai_classify(
             )
 
         data = response.json()
+
+        # Record token usage for screener
+        usage = data.get("usage", {})
+        if db and tenant:
+            await record_token_usage(
+                db=db,
+                tenant_id=tenant.id,
+                source=TokenUsageSource.SCREENER,
+                model="claude-haiku-4-5-20251001",
+                input_tokens=usage.get("input_tokens", 0),
+                output_tokens=usage.get("output_tokens", 0),
+                contact_id=contact_id,
+                contact_phone=contact_phone,
+            )
+
         raw_text = data["content"][0]["text"].strip().strip(".").upper()
 
         if raw_text in ("RELEVANT", "IRRELEVANT", "ABUSIVE"):
@@ -163,6 +206,8 @@ async def stage2_ai_classify(
 
 async def screen_message(
     message: str, db: AsyncSession | None = None, tenant: Tenant | None = None,
+    contact_id: "uuid.UUID | None" = None, contact_phone: str | None = None,
+    conversation_history: list[dict] | None = None,
 ) -> ScreenerResult:
     """Run the full two-stage screening pipeline."""
     # Stage 1
@@ -171,4 +216,8 @@ async def screen_message(
         return result
 
     # Stage 2
-    return await stage2_ai_classify(message, db, tenant=tenant)
+    return await stage2_ai_classify(
+        message, db, tenant=tenant,
+        contact_id=contact_id, contact_phone=contact_phone,
+        conversation_history=conversation_history,
+    )

@@ -76,6 +76,7 @@ def _build_customer_response(contact, consent_status, preferred_type_ids=None):
         email=contact.email,
         sex=contact.sex,
         status=contact.status,
+        all_services_enabled=contact.all_services_enabled,
         reminder_preference_days=contact.reminder_preference_days,
         consent_status=consent_status,
         preferred_appointment_type_ids=preferred_type_ids or [],
@@ -162,6 +163,7 @@ async def create_customer(
             name=body.name,
             email=body.email,
             sex=body.sex,
+            all_services_enabled=body.all_services_enabled,
             reminder_preference_days=body.reminder_preference_days,
         )
         db.add(contact)

@@ -2,11 +2,9 @@ import {
   Calendar,
   TrendingUp,
   UserCheck,
-  PoundSterling,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { formatCurrency } from "@/lib/utils";
 import type { DashboardSummary } from "@/types/api";
 
 interface KpiCardsProps {
@@ -23,27 +21,21 @@ export function KpiCards({ data, isLoading }: KpiCardsProps) {
       icon: Calendar,
     },
     {
-      title: "Monthly Revenue",
-      value: data?.monthly_revenue ?? 0,
-      format: formatCurrency,
-      icon: PoundSterling,
-    },
-    {
       title: "Opt-in Rate",
       value: data?.opt_in_rate ?? 0,
-      format: (v: number) => `${(v * 100).toFixed(1)}%`,
+      format: (v: number) => `${v.toFixed(1)}%`,
       icon: UserCheck,
     },
     {
       title: "Reminder Conversion",
       value: data?.reminder_conversion_rate ?? 0,
-      format: (v: number) => `${(v * 100).toFixed(1)}%`,
+      format: (v: number) => `${v.toFixed(1)}%`,
       icon: TrendingUp,
     },
   ];
 
   return (
-    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    <div className="grid gap-4 sm:grid-cols-3">
       {cards.map((card) => (
         <Card key={card.title}>
           <CardHeader className="flex flex-row items-center justify-between pb-2">

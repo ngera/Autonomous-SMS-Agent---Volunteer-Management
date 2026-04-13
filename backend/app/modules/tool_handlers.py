@@ -17,12 +17,18 @@ from app.models.contact import Contact, ContactStatus
 from app.models.contact_consent import ContactConsent, ConsentStatus
 from app.models.contact_preferred_type import ContactPreferredType
 from app.models.tenant import Tenant
-from app.services.availability import compute_available_slots
+from app.services.availability import (
+    compute_available_slots,
+    count_bookings_at_slot,
+    get_service_limits_for_booking,
+)
 from app.services.booking import (
     process_booking_creation,
     process_booking_cancellation,
     process_booking_reschedule,
 )
+from app.models.notification import NotificationType
+from app.services.notification import create_notification
 from app.services.sms import send_sms
 
 import logging
@@ -49,6 +55,53 @@ class ToolContext:
 def _booking_ref(booking_id: uuid.UUID) -> str:
     """Generate short reference from booking UUID (last 8 hex chars)."""
     return str(booking_id).replace("-", "")[-8:]
+
+
+async def _get_allowed_service_ids(ctx: ToolContext) -> list[uuid.UUID] | None:
+    """Get the list of service IDs a volunteer is allowed to book.
+
+    Returns:
+        None — volunteer can book any service (all_services_enabled=True)
+        list[UUID] — specific services allowed (may be empty = none allowed)
+    """
+    # Check if volunteer has all_services_enabled
+    contact_result = await ctx.db.execute(
+        select(Contact.all_services_enabled).where(Contact.id == ctx.contact_id)
+    )
+    all_services = contact_result.scalar_one_or_none()
+    if all_services:
+        return None  # All services allowed
+
+    # Check specific assignments
+    pref_result = await ctx.db.execute(
+        select(ContactPreferredType.appointment_type_id).where(
+            ContactPreferredType.contact_id == ctx.contact_id,
+            ContactPreferredType.tenant_id == ctx.tenant.id,
+        )
+    )
+    return list(pref_result.scalars().all())
+
+
+async def _notify_unassigned_booking_attempt(ctx: ToolContext, service_name: str) -> None:
+    """Send an admin notification when a volunteer tries to book an unassigned service."""
+    # Look up volunteer name
+    contact_result = await ctx.db.execute(
+        select(Contact.name, Contact.phone).where(Contact.id == ctx.contact_id)
+    )
+    row = contact_result.one_or_none()
+    vol_name = row.name if row and row.name else "Unknown"
+    vol_phone = row.phone if row else ctx.contact_phone
+
+    await create_notification(
+        db=ctx.db,
+        notification_type=NotificationType.UNASSIGNED_SERVICE,
+        title=f"Unassigned service booking attempt: {vol_name}",
+        body=(
+            f"Volunteer {vol_name} ({vol_phone}) tried to book '{service_name}' "
+            f"but has no services assigned. Please review their service assignments."
+        ),
+        tenant_id=ctx.tenant.id,
+    )
 
 
 async def _resolve_appointment_type(db: AsyncSession, tenant_id: uuid.UUID, name: str) -> AppointmentType | None:
@@ -82,12 +135,18 @@ async def _resolve_booking_by_ref(
 
 
 async def handle_list_services(ctx: ToolContext, tool_input: dict) -> str:
-    result = await ctx.db.execute(
-        select(AppointmentType).where(
-            AppointmentType.tenant_id == ctx.tenant.id,
-            AppointmentType.is_active.is_(True),
-        )
+    query = select(AppointmentType).where(
+        AppointmentType.tenant_id == ctx.tenant.id,
+        AppointmentType.is_active.is_(True),
     )
+    # Filter by volunteer's allowed services (if not admin)
+    if not ctx.is_admin:
+        allowed_ids = await _get_allowed_service_ids(ctx)
+        if allowed_ids is not None:
+            if not allowed_ids:
+                return json.dumps({"services": [], "message": "You do not have any services assigned yet. Please contact the administrator to get services assigned."})
+            query = query.where(AppointmentType.id.in_(allowed_ids))
+    result = await ctx.db.execute(query)
     types = result.scalars().all()
     items = [
         {
@@ -109,6 +168,13 @@ async def handle_check_availability(ctx: ToolContext, tool_input: dict) -> str:
 
     service_name = tool_input.get("service_name")
 
+    # Get volunteer's allowed services (if not admin)
+    allowed_ids = None
+    if not ctx.is_admin:
+        allowed_ids = await _get_allowed_service_ids(ctx)
+        if allowed_ids is not None and not allowed_ids:
+            return json.dumps({"error": "You do not have any services assigned yet. Please contact the administrator to get services assigned."})
+
     # Get appointment types to check
     query = select(AppointmentType).where(
         AppointmentType.tenant_id == ctx.tenant.id,
@@ -116,11 +182,15 @@ async def handle_check_availability(ctx: ToolContext, tool_input: dict) -> str:
     )
     if service_name:
         query = query.where(func.lower(AppointmentType.name) == service_name.lower())
+    if allowed_ids is not None:
+        query = query.where(AppointmentType.id.in_(allowed_ids))
     result = await ctx.db.execute(query)
     types = result.scalars().all()
 
     if not types:
-        return json.dumps({"error": f"No service found matching '{service_name}'." if service_name else "No services available."})
+        if service_name:
+            return json.dumps({"error": f"Service '{service_name}' is not available for you."})
+        return json.dumps({"error": "No services available for you."})
 
     all_slots = []
     for appt_type in types:
@@ -129,11 +199,20 @@ async def handle_check_availability(ctx: ToolContext, tool_input: dict) -> str:
         )
         for slot in slots:
             start = slot["start"]
-            all_slots.append({
+            booked = slot.get("booked", 0)
+            min_req = slot.get("min_required", 1)
+            max_allow = slot.get("max_allowed", 1)
+            remaining = max_allow - booked
+            needs_more = max(0, min_req - booked)
+            slot_info = {
                 "service": appt_type.name,
                 "time": start.strftime("%I:%M %p"),
                 "price": float(appt_type.price),
-            })
+                "spots_remaining": remaining,
+            }
+            if needs_more > 0:
+                slot_info["needs_more_to_confirm"] = needs_more
+            all_slots.append(slot_info)
 
     if not all_slots:
         return json.dumps({"message": f"No available slots on {target_date.strftime('%A %B %d')}."})
@@ -183,6 +262,19 @@ async def handle_book_appointment(ctx: ToolContext, tool_input: dict) -> str:
     if not appt_type:
         return json.dumps({"error": f"Service '{service_name}' not found."})
 
+    # Check volunteer is allowed to book this type
+    if not ctx.is_admin:
+        allowed_ids = await _get_allowed_service_ids(ctx)
+        if allowed_ids is not None:
+            if not allowed_ids:
+                # No services assigned at all — notify admin
+                await _notify_unassigned_booking_attempt(ctx, service_name)
+                return json.dumps({"error": "You do not have any services assigned yet. Please contact the administrator to get services assigned."})
+            if appt_type.id not in allowed_ids:
+                # Has some services but not this one — notify admin
+                await _notify_unassigned_booking_attempt(ctx, service_name)
+                return json.dumps({"error": f"You are not registered to participate in '{service_name}'. Please contact the administrator."})
+
     try:
         scheduled_at = datetime.fromisoformat(f"{date_str}T{time_str}:00")
         # Apply tenant timezone
@@ -191,6 +283,34 @@ async def handle_book_appointment(ctx: ToolContext, tool_input: dict) -> str:
         scheduled_at = scheduled_at.replace(tzinfo=tz)
     except (ValueError, KeyError):
         return json.dumps({"error": "Invalid date or time format."})
+
+    # Check slot capacity before booking
+    min_required, max_allowed = await get_service_limits_for_booking(
+        ctx.db, ctx.tenant, str(appt_type.id), scheduled_at
+    )
+    current_count = await count_bookings_at_slot(
+        ctx.db, ctx.tenant.id, str(appt_type.id), scheduled_at, appt_type.duration_minutes
+    )
+    if current_count >= max_allowed:
+        # Suggest alternative slots
+        alt_slots = await compute_available_slots(
+            ctx.db, scheduled_at.date(), appt_type.id, ctx.tenant, max_slots=3
+        )
+        alternatives = [
+            {"time": s["start"].strftime("%I:%M %p"), "date": s["start"].strftime("%A %B %d")}
+            for s in alt_slots
+        ]
+        return json.dumps({
+            "error": "This time slot is fully booked.",
+            "max_allowed": max_allowed,
+            "current_bookings": current_count,
+            "alternative_slots": alternatives,
+        })
+
+    if max_allowed == 0:
+        return json.dumps({
+            "error": f"'{appt_type.name}' is not available during this time slot.",
+        })
 
     # Create booking
     booking = Booking(
@@ -604,7 +724,6 @@ async def handle_manage_service(ctx: ToolContext, tool_input: dict) -> str:
         if not duration or price is None:
             return json.dumps({"error": "duration_minutes and price are required for creating a service."})
 
-        # Check if name already exists
         existing = await _resolve_appointment_type(ctx.db, ctx.tenant.id, name)
         if existing:
             return json.dumps({"error": f"Service '{name}' already exists."})
@@ -908,6 +1027,161 @@ async def handle_unsuspend_customer(ctx: ToolContext, tool_input: dict) -> str:
     })
 
 
+async def handle_manage_availability(ctx: ToolContext, tool_input: dict) -> str:
+    from app.models.availability import AvailabilityRule
+
+    action = tool_input.get("action", "")
+    days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+    if action == "list":
+        rules_result = await ctx.db.execute(
+            select(AvailabilityRule).where(
+                AvailabilityRule.tenant_id == ctx.tenant.id,
+                AvailabilityRule.is_active.is_(True),
+            ).order_by(AvailabilityRule.day_of_week, AvailabilityRule.start_time)
+        )
+        rules = rules_result.scalars().all()
+        items = []
+        for r in rules:
+            services = []
+            if r.service_config:
+                for cfg in r.service_config:
+                    appt = await ctx.db.execute(
+                        select(AppointmentType).where(AppointmentType.id == cfg.get("appointment_type_id"))
+                    )
+                    at = appt.scalar_one_or_none()
+                    services.append({
+                        "service": at.name if at else "Unknown",
+                        "min_required": cfg.get("min_required", 1),
+                        "max_allowed": cfg.get("max_allowed", 1),
+                    })
+            items.append({
+                "id": str(r.id),
+                "day": days[r.day_of_week],
+                "label": r.label or "",
+                "start": str(r.start_time)[:5],
+                "end": str(r.end_time)[:5],
+                "buffer_minutes": r.buffer_minutes,
+                "services": services if services else "All services (min 1, max 1)",
+            })
+        if not items:
+            return json.dumps({"message": "No availability rules configured."})
+        return json.dumps({"rules": items})
+
+    elif action == "set":
+        day = tool_input.get("day_of_week")
+        start = tool_input.get("start_time")
+        end = tool_input.get("end_time")
+        if day is None or not start or not end:
+            return json.dumps({"error": "day_of_week, start_time, and end_time are required."})
+
+        from datetime import time as dt_time
+        try:
+            start_time = dt_time.fromisoformat(start)
+            end_time = dt_time.fromisoformat(end)
+        except ValueError:
+            return json.dumps({"error": "Invalid time format. Use HH:MM."})
+
+        # Build service_config
+        svc_config = None
+        services_input = tool_input.get("services")
+        if services_input:
+            svc_config = []
+            for svc in services_input:
+                appt_type = await _resolve_appointment_type(ctx.db, ctx.tenant.id, svc.get("service_name", ""))
+                if not appt_type:
+                    return json.dumps({"error": f"Service '{svc.get('service_name')}' not found."})
+                min_req = svc.get("min_required", 1)
+                max_allow = svc.get("max_allowed", min_req)
+                if min_req < 1:
+                    return json.dumps({"error": f"min_required must be at least 1 for '{svc.get('service_name')}'."})
+                if max_allow < min_req:
+                    return json.dumps({"error": f"max_allowed ({max_allow}) must be >= min_required ({min_req}) for '{svc.get('service_name')}'."})
+                svc_config.append({
+                    "appointment_type_id": str(appt_type.id),
+                    "min_required": min_req,
+                    "max_allowed": max_allow,
+                })
+
+        rule = AvailabilityRule(
+            tenant_id=ctx.tenant.id,
+            day_of_week=day,
+            label=tool_input.get("label"),
+            start_time=start_time,
+            end_time=end_time,
+            buffer_minutes=tool_input.get("buffer_minutes", 0),
+            service_config=svc_config,
+            is_active=True,
+        )
+        ctx.db.add(rule)
+        await ctx.db.flush()
+
+        return json.dumps({
+            "success": True,
+            "id": str(rule.id),
+            "day": days[day],
+            "start": start,
+            "end": end,
+        })
+
+    return json.dumps({"error": f"Unknown action '{action}'. Use 'list' or 'set'."})
+
+
+async def handle_add_specific_date_slot(ctx: ToolContext, tool_input: dict) -> str:
+    from app.models.availability import SpecificDateSlot
+
+    date_str = tool_input.get("date", "")
+    start = tool_input.get("start_time", "")
+    end = tool_input.get("end_time", "")
+
+    if not date_str or not start or not end:
+        return json.dumps({"error": "date, start_time, and end_time are required."})
+
+    from datetime import time as dt_time
+    try:
+        slot_date = date.fromisoformat(date_str)
+        start_time = dt_time.fromisoformat(start)
+        end_time = dt_time.fromisoformat(end)
+    except ValueError:
+        return json.dumps({"error": "Invalid date or time format."})
+
+    # Build service_config
+    svc_config = None
+    services_input = tool_input.get("services")
+    if services_input:
+        svc_config = []
+        for svc in services_input:
+            appt_type = await _resolve_appointment_type(ctx.db, ctx.tenant.id, svc.get("service_name", ""))
+            if not appt_type:
+                return json.dumps({"error": f"Service '{svc.get('service_name')}' not found."})
+            svc_config.append({
+                "appointment_type_id": str(appt_type.id),
+                "min_required": svc.get("min_required", 1),
+                "max_allowed": svc.get("max_allowed", svc.get("min_required", 1)),
+            })
+
+    slot = SpecificDateSlot(
+        tenant_id=ctx.tenant.id,
+        date=slot_date,
+        label=tool_input.get("label"),
+        start_time=start_time,
+        end_time=end_time,
+        buffer_minutes=tool_input.get("buffer_minutes", 0),
+        service_config=svc_config,
+        is_active=True,
+    )
+    ctx.db.add(slot)
+    await ctx.db.flush()
+
+    return json.dumps({
+        "success": True,
+        "date": date_str,
+        "start": start,
+        "end": end,
+        "label": tool_input.get("label", ""),
+    })
+
+
 # ── Handler registry ──
 
 TOOL_HANDLERS = {
@@ -923,6 +1197,8 @@ TOOL_HANDLERS = {
     "unblock_date": handle_unblock_date,
     "get_schedule": handle_get_schedule,
     "manage_service": handle_manage_service,
+    "manage_availability": handle_manage_availability,
+    "add_specific_date_slot": handle_add_specific_date_slot,
     "send_announcement": handle_send_announcement,
     "suspend_customer": handle_suspend_customer,
     "unsuspend_customer": handle_unsuspend_customer,

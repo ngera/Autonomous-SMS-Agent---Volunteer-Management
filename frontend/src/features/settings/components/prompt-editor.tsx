@@ -7,7 +7,7 @@ import { usePrompts, useUpdateSettings } from "../hooks/use-settings";
 import { useTenantFilter } from "@/context/tenant-filter-context";
 
 const PROMPT_LABELS: Record<string, string> = {
-  prompt_customer_system: "Customer SMS Prompt",
+  prompt_customer_system: "Volunteer SMS Prompt",
   prompt_admin_system: "Admin SMS Prompt",
   prompt_conversation_system: "Legacy Conversation Prompt",
   prompt_screener_system: "Message Screener Prompt",

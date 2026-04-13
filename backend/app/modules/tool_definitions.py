@@ -14,7 +14,10 @@ LIST_SERVICES = {
 
 CHECK_AVAILABILITY = {
     "name": "check_availability",
-    "description": "Check available appointment slots for a specific date. Optionally filter by service name.",
+    "description": (
+        "Check available appointment slots for a specific date. Optionally filter by service name. "
+        "Each slot shows remaining capacity. A slot only appears if it has capacity for the requested service."
+    ),
     "input_schema": {
         "type": "object",
         "properties": {
@@ -210,7 +213,11 @@ GET_SCHEDULE = {
 
 MANAGE_SERVICE = {
     "name": "manage_service",
-    "description": "Create, update, or deactivate an appointment type/service.",
+    "description": (
+        "Create, update, or deactivate a service/appointment type. "
+        "Each service defines its minimum duration and price. "
+        "Min/max participants are configured per availability window via manage_availability."
+    ),
     "input_schema": {
         "type": "object",
         "properties": {
@@ -225,11 +232,11 @@ MANAGE_SERVICE = {
             },
             "duration_minutes": {
                 "type": "integer",
-                "description": "Duration in minutes (required for create, optional for update).",
+                "description": "Minimum slot duration in minutes (required for create).",
             },
             "price": {
                 "type": "number",
-                "description": "Price (required for create, optional for update).",
+                "description": "Price (required for create).",
             },
             "description": {
                 "type": "string",
@@ -269,6 +276,91 @@ SEND_ANNOUNCEMENT = {
             },
         },
         "required": ["message"],
+    },
+}
+
+MANAGE_AVAILABILITY = {
+    "name": "manage_availability",
+    "description": (
+        "View or manage weekly schedule windows. Each window can specify which services are needed "
+        "with minimum and maximum participants per service. "
+        "Use 'list' to see current schedule. Use 'set' to add a new window."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["list", "set"],
+                "description": "Action: 'list' to view, 'set' to add a window.",
+            },
+            "day_of_week": {
+                "type": "integer",
+                "description": "Day of week (0=Monday, 6=Sunday). Required for 'set'.",
+            },
+            "label": {
+                "type": "string",
+                "description": "Label (optional).",
+            },
+            "start_time": {
+                "type": "string",
+                "description": "Start time HH:MM. Required for 'set'.",
+            },
+            "end_time": {
+                "type": "string",
+                "description": "End time HH:MM. Required for 'set'.",
+            },
+            "buffer_minutes": {
+                "type": "integer",
+                "description": "Buffer between appointments (default 0).",
+            },
+            "services": {
+                "type": "array",
+                "description": "Services needed during this window with min/max participants. If omitted, all services allowed (min 1, max 1).",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "service_name": {"type": "string", "description": "Service name (must match list_services)."},
+                        "min_required": {"type": "integer", "description": "Minimum participants needed (default 1)."},
+                        "max_allowed": {"type": "integer", "description": "Maximum participants allowed (default = min_required)."},
+                    },
+                    "required": ["service_name"],
+                },
+            },
+        },
+        "required": ["action"],
+    },
+}
+
+ADD_SPECIFIC_DATE_SLOT = {
+    "name": "add_specific_date_slot",
+    "description": (
+        "Add a one-off event or special availability on a specific date. "
+        "Can specify which services are needed with min/max participants."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "date": {"type": "string", "description": "Date YYYY-MM-DD."},
+            "start_time": {"type": "string", "description": "Start time HH:MM."},
+            "end_time": {"type": "string", "description": "End time HH:MM."},
+            "label": {"type": "string", "description": "Event name/label (optional)."},
+            "buffer_minutes": {"type": "integer", "description": "Buffer between appointments (default 0)."},
+            "services": {
+                "type": "array",
+                "description": "Services needed for this event with min/max participants.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "service_name": {"type": "string", "description": "Service name."},
+                        "min_required": {"type": "integer", "description": "Minimum participants."},
+                        "max_allowed": {"type": "integer", "description": "Maximum participants."},
+                    },
+                    "required": ["service_name"],
+                },
+            },
+        },
+        "required": ["date", "start_time", "end_time"],
     },
 }
 
@@ -334,6 +426,8 @@ ADMIN_TOOLS = [
     UNBLOCK_DATE,
     GET_SCHEDULE,
     MANAGE_SERVICE,
+    MANAGE_AVAILABILITY,
+    ADD_SPECIFIC_DATE_SLOT,
     SEND_ANNOUNCEMENT,
     SUSPEND_CUSTOMER,
     UNSUSPEND_CUSTOMER,

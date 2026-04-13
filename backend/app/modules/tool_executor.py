@@ -6,6 +6,7 @@ final text response or the round limit is reached.
 """
 
 import asyncio
+from dataclasses import dataclass, field
 
 import httpx
 
@@ -19,6 +20,16 @@ ANTHROPIC_VERSION = "2023-06-01"
 DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 
 
+@dataclass
+class ConversationResult:
+    """Result from a tool_use conversation loop."""
+    text: str
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    model: str = DEFAULT_MODEL
+    rounds: int = 0
+
+
 async def run_tool_conversation(
     system_prompt: str,
     tools: list[dict],
@@ -27,20 +38,23 @@ async def run_tool_conversation(
     api_key: str,
     model: str = DEFAULT_MODEL,
     max_rounds: int = 5,
-) -> str:
+) -> ConversationResult:
     """Run a tool_use conversation loop with the Anthropic API.
 
     Calls the API, executes any tool_use requests via handlers, appends
     tool_results, and loops until Claude emits a final text response
     or `max_rounds` is exhausted.
 
-    Returns the final text message for the user.
+    Returns a ConversationResult with the text and cumulative token usage.
     """
     headers = {
         "x-api-key": api_key,
         "anthropic-version": ANTHROPIC_VERSION,
         "Content-Type": "application/json",
     }
+
+    total_input = 0
+    total_output = 0
 
     for round_num in range(max_rounds):
         # Call the Anthropic API
@@ -68,7 +82,7 @@ async def run_tool_conversation(
                 if round_num == 0 and response.status_code >= 500:
                     await asyncio.sleep(1)
                     continue
-                return _fallback_message()
+                return ConversationResult(text=_fallback_message(), total_input_tokens=total_input, total_output_tokens=total_output, model=model, rounds=round_num + 1)
 
             data = response.json()
 
@@ -77,14 +91,19 @@ async def run_tool_conversation(
             if round_num == 0:
                 await asyncio.sleep(1)
                 continue
-            return _fallback_message()
+            return ConversationResult(text=_fallback_message(), total_input_tokens=total_input, total_output_tokens=total_output, model=model, rounds=round_num + 1)
+
+        # Accumulate token usage
+        usage = data.get("usage", {})
+        total_input += usage.get("input_tokens", 0)
+        total_output += usage.get("output_tokens", 0)
 
         stop_reason = data.get("stop_reason")
         content_blocks = data.get("content", [])
 
         # If Claude is done talking, extract the text
         if stop_reason == "end_turn":
-            return _extract_text(content_blocks)
+            return ConversationResult(text=_extract_text(content_blocks), total_input_tokens=total_input, total_output_tokens=total_output, model=model, rounds=round_num + 1)
 
         # If Claude wants to use tools, execute them
         if stop_reason == "tool_use":
@@ -122,11 +141,13 @@ async def run_tool_conversation(
         # Unexpected stop reason — extract whatever text we got
         logger.warning("Unexpected stop_reason: %s", stop_reason)
         text = _extract_text(content_blocks)
-        return text if text else _fallback_message()
+        final_text = text if text else _fallback_message()
+        return ConversationResult(text=final_text, total_input_tokens=total_input, total_output_tokens=total_output, model=model, rounds=round_num + 1)
 
     # Exceeded max rounds
     logger.warning("Tool conversation exceeded %d rounds", max_rounds)
-    return _extract_text(content_blocks) if content_blocks else _fallback_message()
+    final_text = _extract_text(content_blocks) if content_blocks else _fallback_message()
+    return ConversationResult(text=final_text, total_input_tokens=total_input, total_output_tokens=total_output, model=model, rounds=round_num + 1)
 
 
 async def _execute_tool(ctx: ToolContext, tool_name: str, tool_input: dict) -> str:

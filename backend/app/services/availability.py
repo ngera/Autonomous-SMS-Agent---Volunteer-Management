@@ -1,27 +1,50 @@
-"""Slot computation engine.
+"""Slot computation engine for volunteer/non-profit scheduling.
 
-Computes available appointment slots by:
-1. Loading working hours (availability_rules) for the requested date
-2. Querying Google Calendar freeBusy for busy periods
-3. Checking blocked dates
-4. Subtracting busy periods + buffer from working hours
-5. Returning gaps that fit the requested appointment duration
+Each availability window (weekly rule or specific date event) defines:
+- When it runs (day/date, start, end)
+- Which services are needed, with min_required and max_allowed per service
+
+Example: Monday 9am-12pm needs "Kitchen Help" (min 3, max 6) and "Front Desk" (min 1, max 2).
+
+Slots are generated using each service's duration_minutes.
+A slot shows as available if current bookings < max_allowed.
+A slot shows "needs X more" if current bookings < min_required.
 """
 
-from datetime import date, datetime, time, timedelta, timezone
+import uuid as uuid_mod
+from datetime import date, datetime, time, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
 from app.models.appointment_type import AppointmentType
-from app.models.availability import AvailabilityRule
+from app.models.availability import AvailabilityRule, SpecificDateSlot
 from app.models.blocked_date import BlockedDate
 from app.models.booking import Booking, BookingStatus
 from app.models.tenant import Tenant
 from app.services.calendar import get_busy_periods
 
 logger = get_logger("availability")
+
+
+def _get_service_limits(service_config: list | None, appointment_type_id: str) -> tuple[int, int] | None:
+    """Get (min_required, max_allowed) for a service from the config.
+
+    Returns None if the service is not in this window's config.
+    Returns (1, 1) as default if config is NULL (all services, no min).
+    """
+    if not service_config:
+        return (1, 1)
+
+    appt_str = str(appointment_type_id)
+    for entry in service_config:
+        if str(entry.get("appointment_type_id", "")) == appt_str:
+            return (
+                entry.get("min_required", 1),
+                entry.get("max_allowed", entry.get("min_required", 1)),
+            )
+    return None  # Service not configured for this window
 
 
 async def compute_available_slots(
@@ -31,15 +54,15 @@ async def compute_available_slots(
     tenant: Tenant,
     max_slots: int = 0,
 ) -> list[dict]:
-    """Compute available time slots for a given date and appointment type.
+    """Compute available slots for a service on a date.
 
-    Returns up to max_slots available slots as [{"start": datetime, "end": datetime}].
+    Returns slots with capacity info:
+      {"start": datetime, "end": datetime, "booked": int, "min_required": int, "max_allowed": int}
     """
     import pytz
-
     tz = pytz.timezone(tenant.business_timezone)
 
-    # Check if date is blocked
+    # Check blocked dates
     blocked = await db.execute(
         select(BlockedDate).where(
             BlockedDate.tenant_id == tenant.id,
@@ -50,20 +73,7 @@ async def compute_available_slots(
     if blocked.scalar_one_or_none():
         return []
 
-    # Get working hours for this day of week (0=Monday)
-    day_of_week = target_date.weekday()
-    rules_result = await db.execute(
-        select(AvailabilityRule).where(
-            AvailabilityRule.tenant_id == tenant.id,
-            AvailabilityRule.day_of_week == day_of_week,
-            AvailabilityRule.is_active.is_(True),
-        )
-    )
-    rules = rules_result.scalars().all()
-    if not rules:
-        return []
-
-    # Get appointment type duration
+    # Load appointment type
     appt_result = await db.execute(
         select(AppointmentType).where(AppointmentType.id == appointment_type_id)
     )
@@ -73,86 +83,200 @@ async def compute_available_slots(
 
     duration = timedelta(minutes=appt_type.duration_minutes)
 
-    # Build working hour windows
-    working_windows = []
-    for rule in rules:
+    # Collect windows: (start_dt, end_dt, buffer, min_required, max_allowed)
+    windows = []
+
+    # Weekly rules
+    day_of_week = target_date.weekday()
+    rules_result = await db.execute(
+        select(AvailabilityRule).where(
+            AvailabilityRule.tenant_id == tenant.id,
+            AvailabilityRule.day_of_week == day_of_week,
+            AvailabilityRule.is_active.is_(True),
+        )
+    )
+    for rule in rules_result.scalars().all():
+        limits = _get_service_limits(rule.service_config, appointment_type_id)
+        if limits is None:
+            continue
+        min_req, max_allow = limits
         start_dt = tz.localize(datetime.combine(target_date, rule.start_time))
         end_dt = tz.localize(datetime.combine(target_date, rule.end_time))
         buffer = timedelta(minutes=rule.buffer_minutes)
-        slot_step = timedelta(minutes=rule.slot_duration_minutes)
-        working_windows.append((start_dt, end_dt, buffer, slot_step))
+        windows.append((start_dt, end_dt, buffer, min_req, max_allow))
 
-    if not working_windows:
+    # Specific date slots
+    specific_result = await db.execute(
+        select(SpecificDateSlot).where(
+            SpecificDateSlot.tenant_id == tenant.id,
+            SpecificDateSlot.date == target_date,
+            SpecificDateSlot.is_active.is_(True),
+        )
+    )
+    for sds in specific_result.scalars().all():
+        limits = _get_service_limits(sds.service_config, appointment_type_id)
+        if limits is None:
+            continue
+        min_req, max_allow = limits
+        start_dt = tz.localize(datetime.combine(target_date, sds.start_time))
+        end_dt = tz.localize(datetime.combine(target_date, sds.end_time))
+        buffer = timedelta(minutes=sds.buffer_minutes)
+        windows.append((start_dt, end_dt, buffer, min_req, max_allow))
+
+    if not windows:
         return []
 
-    # Get busy periods from Google Calendar
+    # Google Calendar busy periods
     day_start = tz.localize(datetime.combine(target_date, time.min))
     day_end = tz.localize(datetime.combine(target_date, time.max))
 
     try:
         busy_periods = await get_busy_periods(day_start, day_end, tenant=tenant)
     except Exception:
-        logger.warning("Failed to fetch busy periods from Google Calendar, assuming none")
+        logger.warning("Google Calendar unavailable, assuming no busy periods")
         busy_periods = []
 
-    # Parse busy periods
-    busy_ranges = []
-    for period in busy_periods:
-        busy_start = datetime.fromisoformat(period["start"])
-        busy_end = datetime.fromisoformat(period["end"])
-        busy_ranges.append((busy_start, busy_end))
+    busy_ranges = [
+        (datetime.fromisoformat(p["start"]), datetime.fromisoformat(p["end"]))
+        for p in busy_periods
+    ]
 
-    # Get existing bookings for this date (exclude cancelled)
+    # Existing bookings of this type on this date
+    appt_uuid = uuid_mod.UUID(str(appointment_type_id))
     active_statuses = [BookingStatus.SCHEDULED, BookingStatus.RESCHEDULED, BookingStatus.COMPLETED]
     bookings_result = await db.execute(
-        select(Booking, AppointmentType.duration_minutes)
-        .join(AppointmentType, Booking.appointment_type_id == AppointmentType.id)
-        .where(
+        select(Booking).where(
             Booking.tenant_id == tenant.id,
+            Booking.appointment_type_id == appt_uuid,
             Booking.scheduled_at >= day_start,
             Booking.scheduled_at <= day_end,
             Booking.status.in_(active_statuses),
         )
     )
-    for booking, dur_minutes in bookings_result.all():
-        busy_ranges.append((
-            booking.scheduled_at,
-            booking.scheduled_at + timedelta(minutes=dur_minutes),
-        ))
+    existing_bookings = [
+        (b.scheduled_at, b.scheduled_at + duration)
+        for b in bookings_result.scalars().all()
+    ]
 
-    # Compute available slots
-    # Use the larger of slot_step and duration to avoid overlapping slots
+    # Generate slots
     slots = []
-    for window_start, window_end, buffer, slot_step in working_windows:
-        effective_step = max(slot_step, duration)
+    for window_start, window_end, buffer, min_required, max_allowed in windows:
         cursor = window_start
 
         while cursor + duration <= window_end:
+            slot_start = cursor
             slot_end = cursor + duration
 
-            # Check overlap with busy periods (including buffer)
+            # Skip if Google Calendar busy
             is_busy = False
             for busy_start, busy_end in busy_ranges:
-                buffered_busy_start = busy_start - buffer
-                buffered_busy_end = busy_end + buffer
-                if cursor < buffered_busy_end and slot_end > buffered_busy_start:
+                if slot_start < (busy_end + buffer) and slot_end > (busy_start - buffer):
                     is_busy = True
-                    # Jump past this busy period
                     cursor = busy_end + buffer
-                    # Align to next slot step boundary
-                    elapsed = (cursor - window_start).total_seconds()
-                    step_secs = slot_step.total_seconds()
-                    if step_secs > 0 and elapsed % step_secs != 0:
-                        cursor = window_start + timedelta(
-                            seconds=((elapsed // step_secs) + 1) * step_secs
-                        )
                     break
+            if is_busy:
+                continue
 
-            if not is_busy:
-                slots.append({"start": cursor, "end": slot_end})
-                cursor += effective_step
+            # Count existing bookings overlapping this slot
+            booked = sum(1 for (bs, be) in existing_bookings if slot_start < be and slot_end > bs)
 
+            if booked < max_allowed:
+                slots.append({
+                    "start": slot_start,
+                    "end": slot_end,
+                    "booked": booked,
+                    "min_required": min_required,
+                    "max_allowed": max_allowed,
+                })
                 if max_slots and len(slots) >= max_slots:
                     return slots
 
+            cursor += duration + buffer
+
     return slots
+
+
+async def count_bookings_at_slot(
+    db: AsyncSession,
+    tenant_id,
+    appointment_type_id: str,
+    scheduled_at: datetime,
+    duration_minutes: int,
+) -> int:
+    """Count active bookings of the same type overlapping a slot."""
+    slot_end = scheduled_at + timedelta(minutes=duration_minutes)
+    appt_uuid = uuid_mod.UUID(str(appointment_type_id))
+    active_statuses = [BookingStatus.SCHEDULED, BookingStatus.RESCHEDULED]
+
+    result = await db.execute(
+        select(func.count()).select_from(Booking).where(
+            Booking.tenant_id == tenant_id,
+            Booking.appointment_type_id == appt_uuid,
+            Booking.status.in_(active_statuses),
+            Booking.scheduled_at < slot_end,
+            (Booking.scheduled_at + func.make_interval(0, 0, 0, 0, 0, duration_minutes)) > scheduled_at,
+        )
+    )
+    return result.scalar() or 0
+
+
+async def get_service_limits_for_booking(
+    db: AsyncSession,
+    tenant: Tenant,
+    appointment_type_id: str,
+    scheduled_at: datetime,
+) -> tuple[int, int]:
+    """Get (min_required, max_allowed) for a service at a given time.
+
+    Returns (0, 0) if the service is not available at this time.
+    """
+    import pytz
+    tz = pytz.timezone(tenant.business_timezone)
+    local_dt = scheduled_at.astimezone(tz)
+    slot_time = local_dt.time()
+    slot_date = local_dt.date()
+    day_of_week = local_dt.weekday()
+
+    # Load appointment type for duration
+    appt_result = await db.execute(
+        select(AppointmentType).where(AppointmentType.id == appointment_type_id)
+    )
+    appt_type = appt_result.scalar_one_or_none()
+    if not appt_type:
+        return (0, 0)
+
+    slot_end_time = (datetime.combine(slot_date, slot_time) + timedelta(minutes=appt_type.duration_minutes)).time()
+
+    best = (0, 0)
+
+    # Check weekly rules
+    rules_result = await db.execute(
+        select(AvailabilityRule).where(
+            AvailabilityRule.tenant_id == tenant.id,
+            AvailabilityRule.day_of_week == day_of_week,
+            AvailabilityRule.is_active.is_(True),
+            AvailabilityRule.start_time <= slot_time,
+            AvailabilityRule.end_time >= slot_end_time,
+        )
+    )
+    for rule in rules_result.scalars().all():
+        limits = _get_service_limits(rule.service_config, appointment_type_id)
+        if limits and limits[1] > best[1]:
+            best = limits
+
+    # Check specific date slots
+    specific_result = await db.execute(
+        select(SpecificDateSlot).where(
+            SpecificDateSlot.tenant_id == tenant.id,
+            SpecificDateSlot.date == slot_date,
+            SpecificDateSlot.is_active.is_(True),
+            SpecificDateSlot.start_time <= slot_time,
+            SpecificDateSlot.end_time >= slot_end_time,
+        )
+    )
+    for sds in specific_result.scalars().all():
+        limits = _get_service_limits(sds.service_config, appointment_type_id)
+        if limits and limits[1] > best[1]:
+            best = limits
+
+    return best

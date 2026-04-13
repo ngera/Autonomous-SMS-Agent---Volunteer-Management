@@ -16,6 +16,7 @@ import { RemindersPage } from "@/features/reminders/pages/reminders-page";
 import { ConversationsPage } from "@/features/conversations/pages/conversations-page";
 import { SuspensionsPage } from "@/features/suspensions/pages/suspensions-page";
 import { AnalyticsPage } from "@/features/analytics/pages/analytics-page";
+import { TokenUsagePage } from "@/features/token-usage/pages/token-usage-page";
 import { SettingsPage } from "@/features/settings/pages/settings-page";
 import AnnouncementsPage from "@/features/announcements/pages/announcements-page";
 import { TestToolPage } from "@/features/test-tool/pages/test-tool-page";
@@ -61,6 +62,14 @@ export default function App() {
             <Route path="/conversations" element={<ConversationsPage />} />
             <Route path="/suspensions" element={<SuspensionsPage />} />
             <Route path="/analytics" element={<AnalyticsPage />} />
+            <Route
+              path="/token-usage"
+              element={
+                <RoleGate minimum={AdminRole.MANAGER}>
+                  <TokenUsagePage />
+                </RoleGate>
+              }
+            />
             <Route
               path="/announcements"
               element={

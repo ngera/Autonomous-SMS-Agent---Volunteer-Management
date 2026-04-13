@@ -21,6 +21,7 @@ from app.api.settings import router as settings_router
 from app.api.suspensions import router as suspensions_router
 from app.api.tenants import router as tenants_router
 from app.api.test_conversation import router as test_conversation_router
+from app.api.token_usage import router as token_usage_router
 from app.api.webhook import router as webhook_router
 from app.core.config import settings
 from app.core.logging import get_logger, setup_logging
@@ -122,6 +123,7 @@ app.include_router(webhook_router)
 app.include_router(tenants_router)
 app.include_router(announcements_router)
 app.include_router(test_conversation_router)
+app.include_router(token_usage_router)
 
 
 @app.get("/health")

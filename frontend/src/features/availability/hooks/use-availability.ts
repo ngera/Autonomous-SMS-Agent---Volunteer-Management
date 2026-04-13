@@ -5,9 +5,12 @@ import {
   getBlockedDates,
   createBlockedDate,
   deleteBlockedDate,
+  listSpecificDateSlots,
+  createSpecificDateSlot,
+  deleteSpecificDateSlot,
   getSlotPreview,
 } from "../api";
-import type { WeeklyScheduleUpdate, BlockedDateCreate } from "@/types/api";
+import type { WeeklyScheduleUpdate, BlockedDateCreate, SpecificDateSlotCreate } from "@/types/api";
 import { useActiveTenantId } from "@/hooks/use-active-tenant";
 
 export function useAvailabilityRules() {
@@ -54,6 +57,35 @@ export function useDeleteBlockedDate() {
     mutationFn: deleteBlockedDate,
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["availability", "blocked-dates"] });
+    },
+  });
+}
+
+export function useSpecificDateSlots() {
+  const tenantId = useActiveTenantId();
+  return useQuery({
+    queryKey: ["availability", "specific-slots", tenantId],
+    queryFn: listSpecificDateSlots,
+    enabled: tenantId !== "none",
+  });
+}
+
+export function useCreateSpecificDateSlot() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: SpecificDateSlotCreate) => createSpecificDateSlot(body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["availability", "specific-slots"] });
+    },
+  });
+}
+
+export function useDeleteSpecificDateSlot() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: deleteSpecificDateSlot,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["availability", "specific-slots"] });
     },
   });
 }

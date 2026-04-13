@@ -18,6 +18,7 @@ from app.models.strike import ContactStrike
 from app.models.suspension import ContactSuspension
 from app.models.system_setting import SystemSetting
 from app.models.tenant import Tenant
+from app.models.token_usage import TokenUsage
 
 __all__ = [
     "AdminUser",
@@ -40,4 +41,5 @@ __all__ = [
     "ContactSuspension",
     "SystemSetting",
     "Tenant",
+    "TokenUsage",
 ]

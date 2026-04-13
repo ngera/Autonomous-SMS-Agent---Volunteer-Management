@@ -15,6 +15,7 @@ class NotificationType(str, enum.Enum):
     CALENDAR_ERROR = "calendar_error"
     NEW_BOOKING = "new_booking"
     OPT_OUT = "opt_out"
+    UNASSIGNED_SERVICE = "unassigned_service"
 
 
 class AdminNotification(Base):

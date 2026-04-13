@@ -4,6 +4,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { AdminRole } from "@/types/enums";
 import { WeeklyScheduleBuilder } from "../components/weekly-schedule-builder";
 import { BlockedDatesPanel } from "../components/blocked-dates-panel";
+import { SpecificDateSlotsPanel } from "../components/specific-date-slots-panel";
 import { SlotPreview } from "../components/slot-preview";
 import {
   useAvailabilityRules,
@@ -26,6 +27,7 @@ export function AvailabilityPage() {
       <Tabs defaultValue="schedule">
         <TabsList>
           <TabsTrigger value="schedule">Weekly Schedule</TabsTrigger>
+          <TabsTrigger value="specific">Specific Dates</TabsTrigger>
           <TabsTrigger value="blocked">Blocked Dates</TabsTrigger>
           <TabsTrigger value="preview">Slot Preview</TabsTrigger>
         </TabsList>
@@ -37,6 +39,10 @@ export function AvailabilityPage() {
             isSaving={updateRules.isPending}
             canEdit={canEdit}
           />
+        </TabsContent>
+
+        <TabsContent value="specific" className="mt-4">
+          <SpecificDateSlotsPanel canEdit={canEdit} />
         </TabsContent>
 
         <TabsContent value="blocked" className="mt-4">

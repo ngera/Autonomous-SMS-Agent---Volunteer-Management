@@ -18,7 +18,7 @@ const columns: Column<TodaysBooking>[] = [
   },
   {
     key: "customer",
-    header: "Customer",
+    header: "Volunteer",
     render: (b) => b.contact_name || formatPhone(b.contact_phone),
   },
   {

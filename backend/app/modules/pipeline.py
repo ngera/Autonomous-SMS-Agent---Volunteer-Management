@@ -186,7 +186,25 @@ async def process_inbound_message(
         return
 
     # Steps 9-10: Pre-screener (Stage 1 rule-based + Stage 2 AI)
-    screener_result = await screen_message(message_body, db, tenant=tenant)
+    # Fetch active conversation context so the screener can evaluate
+    # short replies like "yes" / "tomorrow" in context.
+    conv_query = select(Conversation).where(
+        Conversation.contact_phone == from_phone,
+        Conversation.status == ConversationStatus.ACTIVE,
+        Conversation.sender_type == "customer",
+    )
+    if tenant_id:
+        conv_query = conv_query.where(Conversation.tenant_id == tenant_id)
+    conv_result = await db.execute(conv_query)
+    active_conversation = conv_result.scalar_one_or_none()
+
+    conversation_history = active_conversation.message_history if active_conversation else None
+
+    screener_result = await screen_message(
+        message_body, db, tenant=tenant,
+        contact_id=contact.id, contact_phone=from_phone,
+        conversation_history=conversation_history,
+    )
 
     if screener_result.is_opt_out:
         await _process_opt_out(db, contact, tenant=tenant, tenant_id=tenant_id)
@@ -202,10 +220,8 @@ async def process_inbound_message(
         )
         return
 
-    # Step 11 handled inside _handle_strike
-
     # Steps 12-13: Load/create conversation
-    conversation = await _get_or_create_conversation(db, from_phone, tenant_id=tenant_id, contact_id=contact.id)
+    conversation = active_conversation or await _get_or_create_conversation(db, from_phone, tenant_id=tenant_id, contact_id=contact.id)
 
     # Steps 14-15: Call conversation AI with tool_use
     ai_response = await get_ai_response_with_tools(

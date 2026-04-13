@@ -18,7 +18,7 @@ const columns: Column<BookingResponse>[] = [
   },
   {
     key: "contact_phone",
-    header: "Customer",
+    header: "Volunteer",
     render: (b) => (
       <div>
         {b.contact_name && <div className="font-medium">{b.contact_name}</div>}

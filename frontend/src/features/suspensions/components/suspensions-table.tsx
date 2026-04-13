@@ -12,7 +12,7 @@ interface SuspensionsTableProps {
 const columns: Column<SuspensionResponse>[] = [
   {
     key: "customer",
-    header: "Customer",
+    header: "Volunteer",
     render: (s) => (
       <div>
         {s.contact_name && <div className="font-medium">{s.contact_name}</div>}

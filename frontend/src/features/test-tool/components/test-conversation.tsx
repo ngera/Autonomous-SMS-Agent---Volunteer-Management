@@ -1,18 +1,12 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
-import { Send, RotateCcw, User, Bot, Wrench, ChevronDown, ChevronRight } from "lucide-react";
+import { Send, RotateCcw, User, Bot, Wrench, ChevronDown, ChevronRight, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTestConversation } from "../hooks/use-test-conversation";
 import { useCustomers } from "@/features/customers/hooks/use-customers";
@@ -34,9 +28,46 @@ export function TestConversation() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  const [volunteerSearch, setVolunteerSearch] = useState("");
+  const [volunteerDropdownOpen, setVolunteerDropdownOpen] = useState(false);
+  const [highlightedIndex, setHighlightedIndex] = useState(-1);
+  const volunteerDropdownRef = useRef<HTMLDivElement>(null);
+  const volunteerListRef = useRef<HTMLDivElement>(null);
+
   const mutation = useTestConversation();
   const { data: customersData } = useCustomers({ page: 1, page_size: 100 });
   const customers = customersData?.items ?? [];
+
+  const selectedCustomer = useMemo(
+    () => customers.find((c) => c.phone === selectedPhone),
+    [customers, selectedPhone],
+  );
+
+  const filteredCustomers = useMemo(() => {
+    if (!volunteerSearch.trim()) return customers;
+    const q = volunteerSearch.toLowerCase();
+    return customers.filter(
+      (c) =>
+        (c.name && c.name.toLowerCase().includes(q)) ||
+        c.phone.includes(q),
+    );
+  }, [customers, volunteerSearch]);
+
+  // Reset highlight when filtered list changes
+  useEffect(() => {
+    setHighlightedIndex(-1);
+  }, [filteredCustomers.length, volunteerSearch]);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (volunteerDropdownRef.current && !volunteerDropdownRef.current.contains(e.target as Node)) {
+        setVolunteerDropdownOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -138,8 +169,8 @@ export function TestConversation() {
   return (
     <div className="flex flex-col h-[calc(100vh-8rem)]">
       {/* Controls */}
-      <Card className="mb-4">
-        <CardContent className="py-3">
+      <Card className="mb-4 overflow-visible">
+        <CardContent className="py-3 overflow-visible">
           <div className="flex items-center gap-4 flex-wrap">
             <div className="flex items-center gap-2">
               <Label className="text-sm font-medium whitespace-nowrap">Mode</Label>
@@ -148,7 +179,7 @@ export function TestConversation() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="customer">Customer</SelectItem>
+                  <SelectItem value="customer">Volunteer</SelectItem>
                   <SelectItem value="admin">Admin</SelectItem>
                 </SelectContent>
               </Select>
@@ -157,25 +188,110 @@ export function TestConversation() {
             {mode === "customer" && (
               <div className="flex items-center gap-2">
                 <Label className="text-sm font-medium whitespace-nowrap">
-                  Customer
+                  Volunteer
                 </Label>
-                <Select value={selectedPhone || null} onValueChange={(v) => { setSelectedPhone(v ?? ""); setMessages([]); setExpandedTools({}); }}>
-                  <SelectTrigger className="w-64">
-                    <SelectValue placeholder="Select a customer..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {customers.map((c) => (
-                      <SelectItem key={c.phone} value={c.phone}>
-                        {c.name || "Unnamed"} — {c.phone}
-                      </SelectItem>
-                    ))}
-                    {customers.length === 0 && (
-                      <div className="px-2 py-4 text-sm text-center text-muted-foreground">
-                        No customers found. Select a tenant first.
-                      </div>
+                <div className="relative w-72" ref={volunteerDropdownRef}>
+                  <div
+                    className="flex items-center gap-2 h-9 rounded-md border border-input bg-background px-3 text-sm cursor-pointer hover:bg-accent/50 transition-colors"
+                    onClick={() => setVolunteerDropdownOpen((o) => !o)}
+                  >
+                    <Search className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                    {selectedPhone && !volunteerDropdownOpen ? (
+                      <span className="flex-1 truncate">
+                        {selectedCustomer?.name || "Unnamed"} — {selectedPhone}
+                      </span>
+                    ) : (
+                      <input
+                        className="flex-1 bg-transparent outline-none placeholder:text-muted-foreground text-sm"
+                        placeholder="Search volunteers..."
+                        value={volunteerSearch}
+                        onChange={(e) => {
+                          setVolunteerSearch(e.target.value);
+                          setVolunteerDropdownOpen(true);
+                        }}
+                        onFocus={() => setVolunteerDropdownOpen(true)}
+                        onClick={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => {
+                          if (!volunteerDropdownOpen || filteredCustomers.length === 0) return;
+                          if (e.key === "ArrowDown") {
+                            e.preventDefault();
+                            setHighlightedIndex((prev) => {
+                              const next = prev < filteredCustomers.length - 1 ? prev + 1 : 0;
+                              volunteerListRef.current?.children[next]?.scrollIntoView({ block: "nearest" });
+                              return next;
+                            });
+                          } else if (e.key === "ArrowUp") {
+                            e.preventDefault();
+                            setHighlightedIndex((prev) => {
+                              const next = prev > 0 ? prev - 1 : filteredCustomers.length - 1;
+                              volunteerListRef.current?.children[next]?.scrollIntoView({ block: "nearest" });
+                              return next;
+                            });
+                          } else if (e.key === "Enter" && highlightedIndex >= 0) {
+                            e.preventDefault();
+                            const c = filteredCustomers[highlightedIndex];
+                            setSelectedPhone(c.phone);
+                            setVolunteerSearch("");
+                            setVolunteerDropdownOpen(false);
+                            setHighlightedIndex(-1);
+                            setMessages([]);
+                            setExpandedTools({});
+                          } else if (e.key === "Escape") {
+                            setVolunteerDropdownOpen(false);
+                            setHighlightedIndex(-1);
+                          }
+                        }}
+                      />
                     )}
-                  </SelectContent>
-                </Select>
+                    {selectedPhone && (
+                      <button
+                        className="text-muted-foreground hover:text-foreground"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedPhone("");
+                          setVolunteerSearch("");
+                          setMessages([]);
+                          setExpandedTools({});
+                        }}
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
+                  {volunteerDropdownOpen && (
+                    <div ref={volunteerListRef} className="absolute z-50 mt-1 w-full rounded-md border bg-popover shadow-md max-h-56 overflow-y-auto">
+                      {filteredCustomers.length === 0 ? (
+                        <div className="px-3 py-4 text-sm text-center text-muted-foreground">
+                          {customers.length === 0
+                            ? "No volunteers found. Select a tenant first."
+                            : "No matching volunteers."}
+                        </div>
+                      ) : (
+                        filteredCustomers.map((c, idx) => (
+                          <button
+                            key={c.phone}
+                            className={cn(
+                              "flex flex-col w-full px-3 py-2 text-left text-sm hover:bg-accent transition-colors",
+                              c.phone === selectedPhone && "bg-accent",
+                              idx === highlightedIndex && "bg-accent"
+                            )}
+                            onMouseEnter={() => setHighlightedIndex(idx)}
+                            onClick={() => {
+                              setSelectedPhone(c.phone);
+                              setVolunteerSearch("");
+                              setVolunteerDropdownOpen(false);
+                              setMessages([]);
+                              setExpandedTools({});
+                            }}
+                          >
+                            <span className="font-medium">{c.name || "Unnamed"}</span>
+                            <span className="text-xs text-muted-foreground">{c.phone}</span>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 
@@ -203,7 +319,7 @@ export function TestConversation() {
       <Card className="flex-1 flex flex-col min-h-0">
         <CardHeader className="py-3 border-b">
           <CardTitle className="text-sm font-medium">
-            {mode === "customer" ? "Customer SMS Simulation" : "Admin SMS Simulation"}
+            {mode === "customer" ? "Volunteer SMS Simulation" : "Admin SMS Simulation"}
           </CardTitle>
         </CardHeader>
         <CardContent className="flex-1 overflow-y-auto p-4 space-y-4">
@@ -212,7 +328,7 @@ export function TestConversation() {
               <div className="text-center space-y-2">
                 <p>
                   {mode === "customer"
-                    ? "Simulate a customer SMS conversation. Try booking, checking availability, or cancelling."
+                    ? "Simulate a volunteer SMS conversation. Try booking, checking availability, or cancelling."
                     : "Simulate an admin SMS conversation. Try searching bookings, managing services, or sending announcements."}
                 </p>
                 <div className="flex flex-wrap gap-1 justify-center">
@@ -327,7 +443,7 @@ export function TestConversation() {
               onKeyDown={handleKeyDown}
               placeholder={
                 mode === "customer"
-                  ? "Type a message as a customer..."
+                  ? "Type a message as a volunteer..."
                   : "Type a message as an admin..."
               }
               disabled={mutation.isPending}

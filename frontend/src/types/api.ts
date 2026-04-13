@@ -52,15 +52,37 @@ export interface MessageResponse {
 
 // ── Dashboard ──
 
+export interface VolunteersByService {
+  service_name: string;
+  available: number;
+  min_per_slot: number;
+  max_per_slot: number;
+  occurrences_30d: number;
+  buffer: number;
+  buffer_pct: number;
+}
+
 export interface DashboardSummary {
   todays_bookings_count: number;
-  pending_conversations_count: number;
-  reminders_today_count: number;
   unreviewed_suspensions_count: number;
   monthly_bookings: number;
-  monthly_revenue: number;
-  opt_in_rate: number;
-  reminder_conversion_rate: number;
+  slots_needing_bookings: number;
+  total_volunteers: number;
+  volunteers_by_service: VolunteersByService[];
+}
+
+export interface WeeklySlotStatus {
+  date: string;
+  day_name: string;
+  window_label: string | null;
+  window_time: string;
+  service_name: string;
+  appointment_type_id: string;
+  min_required: number;
+  max_allowed: number;
+  booked: number;
+  status: "needs_more" | "met_minimum" | "full";
+  last_reminder_sent: string | null;
 }
 
 export interface TodaysBooking {
@@ -145,6 +167,7 @@ export interface CustomerResponse {
   email: string | null;
   sex: ContactSex | null;
   status: ContactStatus;
+  all_services_enabled: boolean;
   reminder_preference_days: number;
   consent_status: ConsentStatus | null;
   preferred_appointment_type_ids: string[];
@@ -164,6 +187,7 @@ export interface CustomerCreate {
   name: string;
   email?: string;
   sex?: ContactSex;
+  all_services_enabled?: boolean;
   reminder_preference_days?: number;
   preferred_appointment_type_ids?: string[];
 }
@@ -173,6 +197,7 @@ export interface CustomerUpdate {
   name?: string;
   email?: string;
   sex?: ContactSex | null;
+  all_services_enabled?: boolean;
   reminder_preference_days?: number;
   preferred_appointment_type_ids?: string[];
 }
@@ -255,14 +280,20 @@ export interface RelatedServiceCreate {
 
 // ── Availability ──
 
+export interface ServiceSlotConfig {
+  appointment_type_id: string;
+  min_required: number;
+  max_allowed: number;
+}
+
 export interface AvailabilityRuleResponse {
   id: string;
   day_of_week: number;
   label: string | null;
   start_time: string;
   end_time: string;
-  slot_duration_minutes: number;
   buffer_minutes: number;
+  service_config: ServiceSlotConfig[] | null;
   is_active: boolean;
 }
 
@@ -271,8 +302,29 @@ export interface AvailabilityRuleUpdate {
   label?: string;
   start_time: string;
   end_time: string;
-  slot_duration_minutes: number;
   buffer_minutes?: number;
+  service_config?: ServiceSlotConfig[] | null;
+  is_active?: boolean;
+}
+
+export interface SpecificDateSlotResponse {
+  id: string;
+  date: string;
+  label: string | null;
+  start_time: string;
+  end_time: string;
+  buffer_minutes: number;
+  service_config: ServiceSlotConfig[] | null;
+  is_active: boolean;
+}
+
+export interface SpecificDateSlotCreate {
+  date: string;
+  label?: string;
+  start_time: string;
+  end_time: string;
+  buffer_minutes?: number;
+  service_config?: ServiceSlotConfig[] | null;
   is_active?: boolean;
 }
 

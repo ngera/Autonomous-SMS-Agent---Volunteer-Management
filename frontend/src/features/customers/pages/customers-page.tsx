@@ -15,7 +15,6 @@ import {
   useCustomers,
   useMultiTenantCustomers,
   useCreateCustomer,
-  useCreateCustomerForTenant,
 } from "../hooks/use-customers";
 
 export function CustomersPage() {
@@ -52,7 +51,6 @@ export function CustomersPage() {
   );
 
   const createCustomer = useCreateCustomer();
-  const createCustomerForTenant = useCreateCustomerForTenant();
 
   const tableData = isMultiTenant
     ? multiTenantResult.data
@@ -62,48 +60,30 @@ export function CustomersPage() {
     : singleTenantResult.isLoading;
 
   function handleCreate(data: CustomerFormData) {
-    const { tenantId, ...body } = data;
-
-    if (isSuperAdmin && tenantId) {
-      createCustomerForTenant.mutate(
-        { tenantId, body },
-        {
-          onSuccess: () => setShowCreate(false),
-          onError: (error: unknown) => {
-            const msg =
-              (error as { response?: { data?: { detail?: string } } })
-                ?.response?.data?.detail || "Failed to create customer";
-            alert(msg);
-          },
-        }
-      );
-    } else {
-      createCustomer.mutate(body, {
-        onSuccess: () => setShowCreate(false),
-        onError: (error: unknown) => {
-          const msg =
-            (error as { response?: { data?: { detail?: string } } })?.response
-              ?.data?.detail || "Failed to create customer";
-          alert(msg);
-        },
-      });
-    }
+    createCustomer.mutate(data, {
+      onSuccess: () => setShowCreate(false),
+      onError: (error: unknown) => {
+        const msg =
+          (error as { response?: { data?: { detail?: string } } })?.response
+            ?.data?.detail || "Failed to create volunteer";
+        alert(msg);
+      },
+    });
   }
 
-  const isSaving =
-    createCustomer.isPending || createCustomerForTenant.isPending;
+  const isSaving = createCustomer.isPending;
 
   return (
     <div>
       <PageHeader
-        title="Customers"
-        description="View and manage customer contacts."
+        title="Volunteers"
+        description="View and manage volunteers."
         actions={
           hasRole(AdminRole.MANAGER) ? (
             <div className="flex gap-2">
               <Button onClick={() => setShowCreate(true)}>
                 <Plus className="mr-2 h-4 w-4" />
-                New Customer
+                New Volunteer
               </Button>
               <Button variant="outline" onClick={() => setShowImport(true)}>
                 <Upload className="mr-2 h-4 w-4" />
@@ -147,8 +127,6 @@ export function CustomersPage() {
         onOpenChange={setShowCreate}
         onSubmit={handleCreate}
         isLoading={isSaving}
-        tenants={isSuperAdmin ? tenants : undefined}
-        requireTenant={isSuperAdmin}
       />
     </div>
   );

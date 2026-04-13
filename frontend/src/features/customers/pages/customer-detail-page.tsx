@@ -23,6 +23,7 @@ import type { BookingResponse, ConversationResponse } from "@/types/api";
 import { CustomerInfoCard } from "../components/customer-info-card";
 import { CustomerPatternCard } from "../components/customer-pattern-card";
 import { CustomerForm } from "../components/customer-form";
+import { VolunteerServicesTab } from "../components/volunteer-services-tab";
 import {
   useCustomer,
   useCustomerBookings,
@@ -148,10 +149,19 @@ export function CustomerDetailPage() {
         <div className="lg:col-span-2">
           <Tabs defaultValue="bookings">
             <TabsList>
+              <TabsTrigger value="services">Services</TabsTrigger>
               <TabsTrigger value="bookings">Bookings</TabsTrigger>
               <TabsTrigger value="conversations">Conversations</TabsTrigger>
               <TabsTrigger value="pattern">Pattern</TabsTrigger>
             </TabsList>
+
+            <TabsContent value="services" className="mt-4">
+              <VolunteerServicesTab
+                customer={c}
+                canEdit={canEdit}
+                onUpdated={() => void customer.refetch()}
+              />
+            </TabsContent>
 
             <TabsContent value="bookings" className="mt-4">
               <DataTable
@@ -220,7 +230,7 @@ export function CustomerDetailPage() {
       <ConfirmDialog
         open={showDelete}
         onOpenChange={setShowDelete}
-        title="Delete Customer"
+        title="Delete Volunteer"
         description={`Are you sure you want to delete ${c.name || formatPhone(c.phone)}? This cannot be undone. Customers with active bookings cannot be deleted.`}
         confirmLabel="Delete"
         variant="destructive"

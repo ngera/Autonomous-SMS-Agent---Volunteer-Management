@@ -4,15 +4,38 @@ from datetime import datetime
 from pydantic import BaseModel
 
 
+class VolunteersByService(BaseModel):
+    service_name: str
+    available: int  # volunteers who can participate
+    min_per_slot: int  # minimum needed each occurrence
+    max_per_slot: int  # maximum allowed each occurrence
+    occurrences_30d: int  # how many times this service runs in 30 days
+    buffer: int  # available - min_per_slot (how many can be absent and still meet min)
+    buffer_pct: float  # buffer as percentage of min_per_slot
+
+
 class DashboardSummary(BaseModel):
     todays_bookings_count: int
-    pending_conversations_count: int
-    reminders_today_count: int
     unreviewed_suspensions_count: int
     monthly_bookings: int
-    monthly_revenue: float
-    opt_in_rate: float
-    reminder_conversion_rate: float
+    slots_needing_bookings: int
+    total_volunteers: int
+    volunteers_by_service: list[VolunteersByService]
+
+
+class WeeklySlotStatus(BaseModel):
+    """Status of a service within an availability window for a specific date."""
+    date: str
+    day_name: str
+    window_label: str | None
+    window_time: str
+    service_name: str
+    appointment_type_id: str
+    min_required: int
+    max_allowed: int
+    booked: int
+    status: str  # "needs_more", "met_minimum", "full"
+    last_reminder_sent: datetime | None = None
 
 
 class TodaysBooking(BaseModel):

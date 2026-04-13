@@ -1,10 +1,5 @@
 import { useNavigate } from "react-router-dom";
-import {
-  MessageSquare,
-  ShieldAlert,
-  Calendar,
-  Bell,
-} from "lucide-react";
+import { AlertTriangle, ShieldAlert, Users } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
@@ -20,25 +15,18 @@ export function PendingAlerts({ data, isLoading }: PendingAlertsProps) {
 
   const alerts = [
     {
-      label: "Today's Bookings",
-      count: data?.todays_bookings_count ?? 0,
-      icon: Calendar,
-      to: "/bookings",
+      label: "Total Volunteers",
+      count: data?.total_volunteers ?? 0,
+      icon: Users,
+      to: "/customers",
       urgent: false,
     },
     {
-      label: "Pending Conversations",
-      count: data?.pending_conversations_count ?? 0,
-      icon: MessageSquare,
-      to: "/conversations",
-      urgent: false,
-    },
-    {
-      label: "Reminders Today",
-      count: data?.reminders_today_count ?? 0,
-      icon: Bell,
-      to: "/reminders",
-      urgent: false,
+      label: "Slots Needing Volunteers",
+      count: data?.slots_needing_bookings ?? 0,
+      icon: AlertTriangle,
+      to: "/availability",
+      urgent: true,
     },
     {
       label: "Unreviewed Suspensions",
@@ -50,7 +38,7 @@ export function PendingAlerts({ data, isLoading }: PendingAlertsProps) {
   ];
 
   return (
-    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    <div className="grid gap-4 sm:grid-cols-3">
       {alerts.map((alert) => (
         <Card
           key={alert.label}

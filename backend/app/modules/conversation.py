@@ -16,6 +16,7 @@ from app.core.logging import get_logger
 from app.models.contact import Contact
 from app.models.system_setting import SystemSetting
 from app.models.tenant import Tenant
+from app.models.token_usage import TokenUsageSource
 from app.modules.tool_definitions import ADMIN_TOOLS, CUSTOMER_TOOLS
 from app.modules.tool_executor import DEFAULT_MODEL, run_tool_conversation
 from app.modules.tool_handlers import ToolContext
@@ -26,6 +27,7 @@ from app.prompts.conversation import (
     get_admin_system_prompt,
     get_error_message,
 )
+from app.services.token_usage import record_token_usage
 
 logger = get_logger("conversation")
 
@@ -141,13 +143,28 @@ async def get_ai_response_with_tools(
 
     # Run the conversation loop
     try:
-        result_text = await run_tool_conversation(
+        result = await run_tool_conversation(
             system_prompt=system_prompt,
             tools=tools,
             messages=api_messages,
             ctx=ctx,
             api_key=api_key,
             model=model,
+        )
+        result_text = result.text
+
+        # Record token usage
+        source = TokenUsageSource.TEST_TOOL if is_admin else TokenUsageSource.CONVERSATION
+        await record_token_usage(
+            db=db,
+            tenant_id=tenant_id,
+            source=source,
+            model=result.model,
+            input_tokens=result.total_input_tokens,
+            output_tokens=result.total_output_tokens,
+            contact_id=contact_id,
+            contact_phone=contact_phone,
+            tool_calls=ctx.tool_calls if ctx.tool_calls else None,
         )
     except Exception as e:
         logger.error("Tool conversation failed: %s", e)

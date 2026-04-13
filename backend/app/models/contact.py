@@ -1,7 +1,7 @@
 import enum
 import uuid
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -41,6 +41,9 @@ class Contact(Base):
     )
     status: Mapped[ContactStatus] = mapped_column(
         Enum(ContactStatus, name="contact_status"), default=ContactStatus.ACTIVE
+    )
+    all_services_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
     )
     reminder_preference_days: Mapped[int] = mapped_column(Integer, default=7)
     created_at: Mapped[DateTime] = mapped_column(

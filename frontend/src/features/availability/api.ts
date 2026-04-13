@@ -4,6 +4,8 @@ import type {
   WeeklyScheduleUpdate,
   BlockedDateResponse,
   BlockedDateCreate,
+  SpecificDateSlotResponse,
+  SpecificDateSlotCreate,
   SlotResponse,
 } from "@/types/api";
 
@@ -31,6 +33,20 @@ export async function createBlockedDate(body: BlockedDateCreate): Promise<Blocke
 
 export async function deleteBlockedDate(id: string): Promise<void> {
   await api.delete(`/availability/blocked-dates/${id}`);
+}
+
+export async function listSpecificDateSlots(): Promise<SpecificDateSlotResponse[]> {
+  const { data } = await api.get<SpecificDateSlotResponse[]>("/availability/specific-slots");
+  return data;
+}
+
+export async function createSpecificDateSlot(body: SpecificDateSlotCreate): Promise<SpecificDateSlotResponse> {
+  const { data } = await api.post<SpecificDateSlotResponse>("/availability/specific-slots", body);
+  return data;
+}
+
+export async function deleteSpecificDateSlot(id: string): Promise<void> {
+  await api.delete(`/availability/specific-slots/${id}`);
 }
 
 export async function getSlotPreview(
