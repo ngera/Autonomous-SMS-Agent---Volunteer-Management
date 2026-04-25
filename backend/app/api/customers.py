@@ -80,6 +80,9 @@ def _build_customer_response(contact, consent_status, preferred_type_ids=None):
         reminder_preference_days=contact.reminder_preference_days,
         consent_status=consent_status,
         preferred_appointment_type_ids=preferred_type_ids or [],
+        preferences=contact.preferences,
+        notes=contact.notes,
+        memory_updated_at=contact.memory_updated_at,
         created_at=contact.created_at,
         updated_at=contact.updated_at,
     )

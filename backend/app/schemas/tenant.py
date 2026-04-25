@@ -150,6 +150,7 @@ class TenantDetailResponse(TenantResponse):
     google_client_secret_masked: str | None = None
     google_refresh_token_masked: str | None = None
     resend_api_key_masked: str | None = None
+    resend_from_email: str | None = None
 
 
 class TenantListResponse(BaseModel):

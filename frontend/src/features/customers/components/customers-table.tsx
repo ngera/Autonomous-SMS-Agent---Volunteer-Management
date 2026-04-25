@@ -58,9 +58,12 @@ export function CustomersTable({
       key: "services",
       header: "Services",
       render: (c) => {
+        if (c.all_services_enabled) {
+          return <Badge variant="default" className="text-xs">All Services</Badge>;
+        }
         const ids = c.preferred_appointment_type_ids;
         if (!ids || ids.length === 0) {
-          return <span className="text-xs text-muted-foreground italic">All services</span>;
+          return <span className="text-xs text-amber-600 italic">None assigned</span>;
         }
         return (
           <div className="flex flex-wrap gap-1">

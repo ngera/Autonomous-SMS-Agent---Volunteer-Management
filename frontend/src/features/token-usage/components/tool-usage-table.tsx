@@ -21,6 +21,7 @@ const TOOL_LABELS: Record<string, string> = {
   send_announcement: "Send Announcement",
   list_customers: "List Customers",
   manage_suspension: "Manage Suspension",
+  screener: "Screener (Pre-filter)",
 };
 
 interface Props {

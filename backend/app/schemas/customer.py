@@ -17,6 +17,9 @@ class CustomerResponse(BaseModel):
     reminder_preference_days: int
     consent_status: ConsentStatus | None = None
     preferred_appointment_type_ids: list[uuid.UUID] = []
+    preferences: dict | None = None
+    notes: str | None = None
+    memory_updated_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -41,6 +44,8 @@ class CustomerUpdate(BaseModel):
     all_services_enabled: bool | None = None
     reminder_preference_days: int | None = None
     preferred_appointment_type_ids: list[uuid.UUID] | None = None
+    preferences: dict | None = None
+    notes: str | None = None
 
 
 class CustomerListResponse(BaseModel):

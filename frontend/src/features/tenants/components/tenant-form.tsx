@@ -53,7 +53,7 @@ export function TenantForm({ tenant, onSubmit, isLoading }: TenantFormProps) {
     google_client_secret: "",
     google_refresh_token: "",
     resend_api_key: "",
-    resend_from_email: "",
+    resend_from_email: tenant?.resend_from_email || "",
     admin_email: "",
     admin_password: "",
   });

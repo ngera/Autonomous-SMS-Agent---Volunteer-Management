@@ -31,6 +31,7 @@ async def _enrich_suspension(db: DbSession, suspension: ContactSuspension) -> Su
         suspended_at=suspension.suspended_at,
         suspension_type=suspension.suspension_type,
         reason=suspension.reason,
+        triggering_message=suspension.triggering_message,
         strike_ids=suspension.strike_ids,
         conversation_id=suspension.conversation_id,
         notification_sent_at=suspension.notification_sent_at,

@@ -32,6 +32,7 @@ class TestConversationRequest(BaseModel):
     mode: str  # "customer" or "admin"
     history: list[dict] = []
     phone: str | None = None  # optional phone for customer simulation
+    use_test_user: bool = False  # simulate a new unknown volunteer
     save_conversation: bool = False
 
 
@@ -74,82 +75,90 @@ async def test_conversation(
     contact_phone = body.phone or "+10000000000"
 
     if not is_admin:
-        if not body.phone:
+        if body.use_test_user:
+            # Simulate an unknown new volunteer — create a temporary in-memory contact
+            import uuid as _uuid
+            contact_id = _uuid.uuid4()
+            contact_phone = "+10000000000"
+            # Skip screener/suspension for test user — go straight to AI
+        elif not body.phone:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Customer phone is required in customer mode.",
             )
-        result = await db.execute(
-            select(Contact).where(
-                Contact.phone == body.phone,
-                Contact.tenant_id == tenant_id,
-            )
-        )
-        contact = result.scalar_one_or_none()
-        if not contact:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"No customer found with phone '{body.phone}' for this tenant.",
-            )
-        contact_id = contact.id
-        contact_phone = contact.phone
-
-        # Check if customer is suspended
-        if contact.status in (ContactStatus.SUSPENDED, ContactStatus.BANNED):
-            return TestConversationResponse(
-                reply=f"[SUSPENDED] This customer is {contact.status.value}. Messages are blocked.",
-                tool_calls=[],
-                screened=True,
-            )
-
-        # Run screener on customer messages
-        screener_result = await screen_message(
-            body.message, db, tenant=tenant,
-            contact_id=contact_id, contact_phone=contact_phone,
-        )
-
-        if screener_result.classification in (Classification.IRRELEVANT, Classification.ABUSIVE):
-            # Record strike and escalate
-            await _handle_strike(
-                db, contact, body.message,
-                screener_result.classification,
-                screener_result.method.value,
-                tenant=tenant,
-                tenant_id=tenant_id,
-                test_mode=True,
-            )
-            await db.flush()
-
-            # Refresh contact to get updated status
-            await db.refresh(contact)
-
-            # Determine the reply based on strike outcome
-            from sqlalchemy import func
-            from app.models.strike import ContactStrike
-            thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
-            strike_count_result = await db.execute(
-                select(func.count()).where(
-                    ContactStrike.contact_phone == contact.phone,
-                    ContactStrike.tenant_id == tenant_id,
-                    ContactStrike.decayed_at.is_(None),
-                    ContactStrike.created_at >= thirty_days_ago,
+        else:
+            result = await db.execute(
+                select(Contact).where(
+                    Contact.phone == body.phone,
+                    Contact.tenant_id == tenant_id,
                 )
             )
-            strike_count = strike_count_result.scalar() or 0
+            contact = result.scalar_one_or_none()
+            if not contact:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"No customer found with phone '{body.phone}' for this tenant.",
+                )
+            contact_id = contact.id
+            contact_phone = contact.phone
 
-            if contact.status == ContactStatus.SUSPENDED:
-                reply = f"[SCREENED — {screener_result.classification.value}] {SUSPENSION_MESSAGE}"
-            elif strike_count in STRIKE_MESSAGES:
-                reply = f"[SCREENED — {screener_result.classification.value}] {STRIKE_MESSAGES[strike_count]}"
-            else:
-                reply = f"[SCREENED — {screener_result.classification.value}] Strike {strike_count} recorded."
+            # Check if customer is suspended
+            if contact.status in (ContactStatus.SUSPENDED, ContactStatus.BANNED):
+                return TestConversationResponse(
+                    reply=f"[SUSPENDED] This customer is {contact.status.value}. Messages are blocked.",
+                    tool_calls=[],
+                    screened=True,
+                )
 
-            return TestConversationResponse(
-                reply=reply,
-                tool_calls=[],
-                screened=True,
-                strike_number=strike_count,
+        # Run screener on customer messages (skip for test user)
+        if not body.use_test_user:
+            screener_result = await screen_message(
+                body.message, db, tenant=tenant,
+                contact_id=contact_id, contact_phone=contact_phone,
             )
+
+            if screener_result.classification in (Classification.IRRELEVANT, Classification.ABUSIVE):
+                # Record strike and escalate
+                await _handle_strike(
+                    db, contact, body.message,
+                    screener_result.classification,
+                    screener_result.method.value,
+                    tenant=tenant,
+                    tenant_id=tenant_id,
+                    test_mode=True,
+                )
+                await db.flush()
+
+                # Refresh contact to get updated status
+                await db.refresh(contact)
+
+                # Determine the reply based on strike outcome
+                from sqlalchemy import func
+                from app.models.strike import ContactStrike
+                thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
+                strike_count_result = await db.execute(
+                    select(func.count()).where(
+                        ContactStrike.contact_phone == contact.phone,
+                        ContactStrike.tenant_id == tenant_id,
+                        ContactStrike.decayed_at.is_(None),
+                        ContactStrike.created_at >= thirty_days_ago,
+                    )
+                )
+                strike_count = strike_count_result.scalar() or 0
+
+                if contact.status == ContactStatus.SUSPENDED:
+                    reply = f"[SCREENED — {screener_result.classification.value}] {SUSPENSION_MESSAGE}"
+                elif strike_count in STRIKE_MESSAGES:
+                    reply = f"[SCREENED — {screener_result.classification.value}] {STRIKE_MESSAGES[strike_count]}"
+                else:
+                    reply = f"[SCREENED — {screener_result.classification.value}] Strike {strike_count} recorded."
+
+                return TestConversationResponse(
+                    reply=reply,
+                    tool_calls=[],
+                    screened=True,
+                    strike_number=strike_count,
+                )
     else:
         contact_id = current_user.id
 
@@ -176,16 +185,18 @@ async def test_conversation(
     system_prompt += f"\nToday's date is {today.strftime('%A %B %d, %Y')}."
     system_prompt += "\n[TEST MODE] This is a test conversation. No real SMS will be sent."
 
-    if not is_admin and body.phone:
+    if not is_admin and body.use_test_user:
+        system_prompt += "\nThis is a new volunteer who is not yet in the system."
+    elif not is_admin and body.phone:
         result = await db.execute(
             select(Contact).where(
                 Contact.phone == body.phone,
                 Contact.tenant_id == tenant_id,
             )
         )
-        contact = result.scalar_one_or_none()
-        if contact and contact.name:
-            system_prompt += f"\nThe customer's name is {contact.name}."
+        contact_for_name = result.scalar_one_or_none()
+        if contact_for_name and contact_for_name.name:
+            system_prompt += f"\nThe customer's name is {contact_for_name.name}."
 
     # Select tools
     tools = ADMIN_TOOLS if is_admin else CUSTOMER_TOOLS
@@ -249,8 +260,8 @@ async def test_conversation(
             detail=f"Conversation engine error: {str(e)}",
         )
 
-    # Save conversation if requested (customer mode only — admin has no contact FK)
-    if body.save_conversation and not is_admin:
+    # Save conversation if requested (customer mode only — skip for test user)
+    if body.save_conversation and not is_admin and not body.use_test_user:
         try:
             full_history = list(body.history)
             full_history.append({"role": "user", "content": body.message})

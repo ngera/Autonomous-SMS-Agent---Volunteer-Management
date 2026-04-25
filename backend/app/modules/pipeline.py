@@ -7,6 +7,7 @@ Admin SMS messages bypass the customer pipeline (no screener, consent, or strike
 and are routed to the admin tool_use conversation.
 """
 
+import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -31,6 +32,7 @@ from app.models.strike import ScreenerMethod as StrikeScreenerMethod
 from app.models.strike import StrikeClassification
 from app.models.suspension import ContactSuspension, SuspensionType
 from app.modules.conversation import get_ai_response_with_tools
+from app.modules.memory_extraction import extract_and_save_memory
 from app.modules.screener import Classification, screen_message
 from app.services.notification import create_notification, notify_suspension
 from app.models.tenant import Tenant
@@ -188,10 +190,15 @@ async def process_inbound_message(
     # Steps 9-10: Pre-screener (Stage 1 rule-based + Stage 2 AI)
     # Fetch active conversation context so the screener can evaluate
     # short replies like "yes" / "tomorrow" in context.
-    conv_query = select(Conversation).where(
-        Conversation.contact_phone == from_phone,
-        Conversation.status == ConversationStatus.ACTIVE,
-        Conversation.sender_type == "customer",
+    conv_query = (
+        select(Conversation)
+        .where(
+            Conversation.contact_phone == from_phone,
+            Conversation.status == ConversationStatus.ACTIVE,
+            Conversation.sender_type == "customer",
+        )
+        .order_by(Conversation.last_message_at.desc())
+        .limit(1)
     )
     if tenant_id:
         conv_query = conv_query.where(Conversation.tenant_id == tenant_id)
@@ -271,6 +278,18 @@ async def process_inbound_message(
     conversation.last_message_at = now
 
     await db.flush()
+
+    # Long-term memory extraction — fire-and-forget after a booking closes
+    # the conversation. Runs on its own DB session so it doesn't block the
+    # SMS response path or share state with this request.
+    if ai_response.booking_created and tenant_id:
+        asyncio.create_task(
+            extract_and_save_memory(
+                contact_id=contact.id,
+                tenant_id=tenant_id,
+                message_history=updated_history,
+            )
+        )
 
 
 async def _get_or_create_contact(
@@ -525,14 +544,14 @@ async def _handle_strike(
 
     # Immediate suspension for ABUSIVE
     if classification == Classification.ABUSIVE and auto_suspend_abusive:
-        await _suspend_contact(db, contact, strike, "Abusive message detected", tenant=tenant, tenant_id=tenant_id)
+        await _suspend_contact(db, contact, strike, "Abusive message detected", tenant=tenant, tenant_id=tenant_id, triggering_message=message)
         if not test_mode:
             await send_sms(to=contact.phone, body=suspension_msg, tenant=tenant)
         return
 
     # Strike escalation for IRRELEVANT
     if new_strike_number >= max_strikes:
-        await _suspend_contact(db, contact, strike, f"Strike {new_strike_number}: repeated irrelevant messages", tenant=tenant, tenant_id=tenant_id)
+        await _suspend_contact(db, contact, strike, f"Strike {new_strike_number}: repeated irrelevant messages", tenant=tenant, tenant_id=tenant_id, triggering_message=message)
         if not test_mode:
             await send_sms(to=contact.phone, body=suspension_msg, tenant=tenant)
     elif new_strike_number in strike_messages:
@@ -559,6 +578,7 @@ async def _suspend_contact(
     reason: str,
     tenant: "Tenant | None" = None,
     tenant_id: uuid.UUID | None = None,
+    triggering_message: str | None = None,
 ) -> None:
     """Suspend a contact and notify admins."""
     contact.status = ContactStatus.SUSPENDED
@@ -569,10 +589,15 @@ async def _suspend_contact(
         consent.status = ConsentStatus.BLOCKED
         consent.last_status_change_at = datetime.now(timezone.utc)
 
-    # Get active conversation if any
-    conv_query = select(Conversation).where(
-        Conversation.contact_phone == contact.phone,
-        Conversation.status == ConversationStatus.ACTIVE,
+    # Get active conversation if any (may have multiple — pick the most recent)
+    conv_query = (
+        select(Conversation)
+        .where(
+            Conversation.contact_phone == contact.phone,
+            Conversation.status == ConversationStatus.ACTIVE,
+        )
+        .order_by(Conversation.last_message_at.desc())
+        .limit(1)
     )
     if tenant_id:
         conv_query = conv_query.where(Conversation.tenant_id == tenant_id)
@@ -597,6 +622,7 @@ async def _suspend_contact(
         if strike.classification == StrikeClassification.ABUSIVE
         else SuspensionType.AUTO_STRIKE,
         reason=reason,
+        triggering_message=triggering_message,
         strike_ids=strike_ids,
         conversation_id=active_conv.id if active_conv else None,
         notification_sent_at=datetime.now(timezone.utc),
@@ -618,10 +644,15 @@ async def _get_or_create_conversation(
     sender_type: str = "customer",
 ) -> Conversation:
     """Get active conversation or create a new one."""
-    query = select(Conversation).where(
-        Conversation.contact_phone == phone,
-        Conversation.status == ConversationStatus.ACTIVE,
-        Conversation.sender_type == sender_type,
+    query = (
+        select(Conversation)
+        .where(
+            Conversation.contact_phone == phone,
+            Conversation.status == ConversationStatus.ACTIVE,
+            Conversation.sender_type == sender_type,
+        )
+        .order_by(Conversation.last_message_at.desc())
+        .limit(1)
     )
     if tenant_id:
         query = query.where(Conversation.tenant_id == tenant_id)

@@ -70,6 +70,7 @@ async function fetchUserProfile(): Promise<AuthUser | null> {
       tenant_name: string | null;
     }>("/auth/me");
     const rawRole = data.role.toLowerCase();
+    console.log("[auth] /me response:", JSON.stringify(data), "rawRole:", rawRole, "valid:", VALID_ROLES.has(rawRole));
     return {
       id: data.id,
       email: data.email,

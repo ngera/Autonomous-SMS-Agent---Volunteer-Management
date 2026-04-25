@@ -11,6 +11,7 @@ export interface TestConversationRequest {
   mode: "customer" | "admin";
   history: { role: string; content: string }[];
   phone?: string;
+  use_test_user?: boolean;
   save_conversation?: boolean;
 }
 

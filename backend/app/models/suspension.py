@@ -58,6 +58,7 @@ class ContactSuspension(Base):
     review_decision: Mapped[ReviewDecision | None] = mapped_column(
         Enum(ReviewDecision, name="review_decision"), nullable=True
     )
+    triggering_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     review_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     lifted_at: Mapped[DateTime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

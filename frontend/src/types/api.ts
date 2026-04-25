@@ -412,6 +412,7 @@ export interface SuspensionResponse {
   suspended_at: string;
   suspension_type: SuspensionType;
   reason: string;
+  triggering_message: string | null;
   strike_ids: string[] | null;
   conversation_id: string | null;
   notification_sent_at: string | null;
@@ -560,6 +561,7 @@ export interface TenantDetailResponse extends TenantResponse {
   google_client_secret_masked: string | null;
   google_refresh_token_masked: string | null;
   resend_api_key_masked: string | null;
+  resend_from_email: string | null;
 }
 
 export interface TenantCreate {

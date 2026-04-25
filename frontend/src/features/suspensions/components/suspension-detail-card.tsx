@@ -15,6 +15,12 @@ export function SuspensionDetailCard({ suspension }: SuspensionDetailCardProps) 
       value: <StatusBadge type="suspension" value={suspension.suspension_type} />,
     },
     { label: "Reason", value: suspension.reason },
+    {
+      label: "Triggering Message",
+      value: suspension.triggering_message ? (
+        <span className="italic">"{suspension.triggering_message}"</span>
+      ) : "—",
+    },
     { label: "Suspended At", value: formatDateTime(suspension.suspended_at) },
     {
       label: "Notification Sent",

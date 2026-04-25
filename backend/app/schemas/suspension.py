@@ -13,6 +13,7 @@ class SuspensionResponse(BaseModel):
     suspended_at: datetime
     suspension_type: SuspensionType
     reason: str
+    triggering_message: str | None = None
     strike_ids: list[uuid.UUID] | None
     conversation_id: uuid.UUID | None
     notification_sent_at: datetime | None

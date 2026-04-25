@@ -20,6 +20,7 @@ interface ChatMessage {
 
 export function TestConversation() {
   const [mode, setMode] = useState<"customer" | "admin">("customer");
+  const [useTestUser, setUseTestUser] = useState(false);
   const [selectedPhone, setSelectedPhone] = useState("");
   const [saveConversation, setSaveConversation] = useState(false);
   const [input, setInput] = useState("");
@@ -78,6 +79,7 @@ export function TestConversation() {
     setExpandedTools({});
     setInput("");
     setSelectedPhone("");
+    setUseTestUser(false);
     inputRef.current?.focus();
   }
 
@@ -107,6 +109,7 @@ export function TestConversation() {
         mode,
         history,
         phone: mode === "customer" && selectedPhone ? selectedPhone : undefined,
+        use_test_user: mode === "customer" && useTestUser ? true : undefined,
         save_conversation: saveConversation,
       });
 
@@ -187,6 +190,19 @@ export function TestConversation() {
 
             {mode === "customer" && (
               <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5">
+                  <Switch
+                    checked={useTestUser}
+                    onCheckedChange={(checked) => {
+                      setUseTestUser(checked);
+                      if (checked) { setSelectedPhone(""); setVolunteerSearch(""); }
+                      setMessages([]);
+                      setExpandedTools({});
+                    }}
+                  />
+                  <Label className="text-sm font-medium whitespace-nowrap">New Volunteer</Label>
+                </div>
+                {!useTestUser && (<>
                 <Label className="text-sm font-medium whitespace-nowrap">
                   Volunteer
                 </Label>
@@ -292,6 +308,7 @@ export function TestConversation() {
                     </div>
                   )}
                 </div>
+                </>)}
               </div>
             )}
 
@@ -449,7 +466,7 @@ export function TestConversation() {
               disabled={mutation.isPending}
               autoFocus
             />
-            <Button onClick={handleSend} disabled={mutation.isPending || !input.trim() || (mode === "customer" && !selectedPhone)}>
+            <Button onClick={handleSend} disabled={mutation.isPending || !input.trim() || (mode === "customer" && !selectedPhone && !useTestUser)}>
               <Send className="h-4 w-4" />
             </Button>
           </div>

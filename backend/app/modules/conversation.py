@@ -4,6 +4,7 @@ Uses Claude with tool_use for on-demand data fetching instead of
 prompt-stuffing. Falls back to a configurable model per tenant.
 """
 
+import json
 import uuid
 from dataclasses import dataclass
 from datetime import date
@@ -104,7 +105,7 @@ async def get_ai_response_with_tools(
     today = date.today()
     system_prompt += f"\nToday's date is {today.strftime('%A %B %d, %Y')}."
 
-    # For customer conversations, append their name if known
+    # For customer conversations, append known long-term context
     if not is_admin:
         contact_result = await db.execute(
             select(Contact).where(
@@ -113,8 +114,16 @@ async def get_ai_response_with_tools(
             )
         )
         contact = contact_result.scalar_one_or_none()
-        if contact and contact.name:
-            system_prompt += f"\nThe customer's name is {contact.name}."
+        if contact:
+            if contact.name:
+                system_prompt += f"\nThe customer's name is {contact.name}."
+            if contact.notes:
+                system_prompt += f"\nWhat we know about this customer: {contact.notes}"
+            if contact.preferences:
+                system_prompt += (
+                    f"\nKnown preferences (use to suggest, don't assume): "
+                    f"{json.dumps(contact.preferences)}"
+                )
 
     # Select tools
     tools = ADMIN_TOOLS if is_admin else CUSTOMER_TOOLS

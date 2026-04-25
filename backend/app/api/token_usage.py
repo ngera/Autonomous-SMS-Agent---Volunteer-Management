@@ -208,6 +208,23 @@ async def get_token_usage_dashboard(
         for r in tool_result.all()
     ]
 
+    # Add screener as a "tool" entry
+    screener_count = await db.execute(
+        select(func.count()).where(
+            TokenUsage.tenant_id == tenant.id,
+            TokenUsage.created_at >= cutoff,
+            TokenUsage.source == TokenUsageSource.SCREENER,
+        )
+    )
+    screener_total = int(screener_count.scalar() or 0)
+    if screener_total > 0:
+        by_tool.append(TokenUsageByTool(
+            tool_name="screener",
+            call_count=screener_total,
+            request_count=screener_total,
+        ))
+        by_tool.sort(key=lambda x: x.call_count, reverse=True)
+
     # ── Recent entries ──
     recent_result = await db.execute(
         select(

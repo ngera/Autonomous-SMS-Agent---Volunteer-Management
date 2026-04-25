@@ -27,6 +27,18 @@ const columns: Column<SuspensionResponse>[] = [
   },
   { key: "reason", header: "Reason", render: (s) => s.reason },
   {
+    key: "message",
+    header: "Triggering Message",
+    render: (s) =>
+      s.triggering_message ? (
+        <span className="text-xs italic text-muted-foreground max-w-48 truncate block">
+          &ldquo;{s.triggering_message}&rdquo;
+        </span>
+      ) : (
+        <span className="text-xs text-muted-foreground">—</span>
+      ),
+  },
+  {
     key: "suspended",
     header: "Suspended At",
     render: (s) => formatDateTime(s.suspended_at),
