@@ -38,9 +38,9 @@ export function DailyUsageChart({ data, isLoading }: Props) {
               <XAxis dataKey="date" className="text-xs" tickFormatter={(v) => v.slice(5)} />
               <YAxis className="text-xs" tickFormatter={(v) => v >= 1000 ? `${(v / 1000).toFixed(0)}K` : v} />
               <Tooltip
-                formatter={(value: number, name: string) => [
-                  value.toLocaleString(),
-                  name === "input_tokens" ? "Input" : name === "output_tokens" ? "Output" : name,
+                formatter={(value, name) => [
+                  Number(value).toLocaleString(),
+                  name === "input_tokens" ? "Input" : name === "output_tokens" ? "Output" : String(name),
                 ]}
                 labelFormatter={(label) => `Date: ${label}`}
               />

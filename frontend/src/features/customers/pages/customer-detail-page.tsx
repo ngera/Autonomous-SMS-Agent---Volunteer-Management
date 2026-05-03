@@ -24,6 +24,8 @@ import { CustomerInfoCard } from "../components/customer-info-card";
 import { CustomerPatternCard } from "../components/customer-pattern-card";
 import { CustomerForm } from "../components/customer-form";
 import { VolunteerServicesTab } from "../components/volunteer-services-tab";
+import { VolunteerAvailabilityTab } from "../components/volunteer-availability-tab";
+import { VolunteerHoursTab } from "../components/volunteer-hours-tab";
 import {
   useCustomer,
   useCustomerBookings,
@@ -143,13 +145,15 @@ export function CustomerDetailPage() {
 
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="lg:col-span-1">
-          <CustomerInfoCard customer={c} />
+          <CustomerInfoCard customer={c} onEditClick={() => setShowEdit(true)} />
         </div>
 
         <div className="lg:col-span-2">
           <Tabs defaultValue="bookings">
             <TabsList>
               <TabsTrigger value="services">Services</TabsTrigger>
+              <TabsTrigger value="availability">Availability</TabsTrigger>
+              <TabsTrigger value="hours">Hours</TabsTrigger>
               <TabsTrigger value="bookings">Bookings</TabsTrigger>
               <TabsTrigger value="conversations">Conversations</TabsTrigger>
               <TabsTrigger value="pattern">Pattern</TabsTrigger>
@@ -161,6 +165,18 @@ export function CustomerDetailPage() {
                 canEdit={canEdit}
                 onUpdated={() => void customer.refetch()}
               />
+            </TabsContent>
+
+            <TabsContent value="availability" className="mt-4">
+              <VolunteerAvailabilityTab
+                customer={c}
+                canEdit={canEdit}
+                onUpdated={() => void customer.refetch()}
+              />
+            </TabsContent>
+
+            <TabsContent value="hours" className="mt-4">
+              <VolunteerHoursTab phone={phone} />
             </TabsContent>
 
             <TabsContent value="bookings" className="mt-4">
@@ -208,8 +224,8 @@ export function CustomerDetailPage() {
                 name: data.name,
                 email: data.email,
                 sex: data.sex,
+                background_check_required: data.background_check_required,
                 reminder_preference_days: data.reminder_preference_days,
-                preferred_appointment_type_ids: data.preferred_appointment_type_ids,
               },
             },
             {

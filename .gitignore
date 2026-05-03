@@ -28,9 +28,8 @@ backend/nul
 .DS_Store
 Thumbs.db
 
-# Alembic
-backend/alembic/versions/*.py
-!backend/alembic/versions/.gitkeep
+# Alembic — keep migration files tracked; ignore caches only
+backend/alembic/versions/__pycache__/
 
 # Node / Frontend
 node_modules/

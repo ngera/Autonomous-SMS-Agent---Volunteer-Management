@@ -3,10 +3,21 @@ import { useNavigate } from "react-router-dom";
 import { DataTable, type Column } from "@/components/shared/data-table";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { Badge } from "@/components/ui/badge";
-import { formatPhone, formatDate } from "@/lib/utils";
-import { ContactStatus } from "@/types/enums";
+import { formatTimeAgo } from "@/lib/utils";
+import { ContactStatus, AVAILABILITY_OPTIONS } from "@/types/enums";
 import { useAppointmentTypes } from "@/features/appointment-types/hooks/use-appointment-types";
 import type { CustomerResponse, CustomerWithTenant } from "@/types/api";
+import { VolunteerAvatar } from "./volunteer-avatar";
+
+function formatHoursShort(minutes: number): string {
+  if (!minutes || minutes <= 0) return "0h";
+  const h = Math.round(minutes / 60);
+  return `${h.toLocaleString()}h`;
+}
+
+const SLOT_SHORT = Object.fromEntries(
+  AVAILABILITY_OPTIONS.map((o) => [o.value, o.short])
+) as Record<string, string>;
 
 interface CustomersTableProps {
   data: CustomerResponse[] | CustomerWithTenant[];
@@ -16,8 +27,12 @@ interface CustomersTableProps {
 
 const tenantColumn: Column<CustomerResponse> = {
   key: "tenant",
-  header: "Tenant",
-  render: (c) => (c as CustomerWithTenant).tenant_name || "—",
+  header: "tenant",
+  render: (c) => (
+    <span className="text-sm">
+      {(c as CustomerWithTenant).tenant_name || "—"}
+    </span>
+  ),
 };
 
 export function CustomersTable({
@@ -33,37 +48,45 @@ export function CustomersTable({
     return map;
   }, [appointmentTypes]);
 
-  const baseColumns: Column<CustomerResponse>[] = useMemo(() => [
-    {
-      key: "phone",
-      header: "Phone",
-      render: (c) => formatPhone(c.phone),
-    },
+  const baseColumns: Column<CustomerResponse>[] = [
     {
       key: "name",
-      header: "Name",
+      header: "name",
       render: (c) => (
-        <span className="flex items-center gap-1.5">
-          {c.name || "—"}
-          {c.status === ContactStatus.SUSPENDED && (
-            <span className="inline-flex items-center rounded-full bg-red-100 px-1.5 py-0.5 text-[10px] font-medium text-red-700">Suspended</span>
-          )}
-          {c.status === ContactStatus.BANNED && (
-            <span className="inline-flex items-center rounded-full bg-red-200 px-1.5 py-0.5 text-[10px] font-medium text-red-900">Banned</span>
-          )}
-        </span>
+        <div className="flex min-w-0 items-center gap-3">
+          <VolunteerAvatar name={c.name} phone={c.phone} />
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 truncate font-medium">
+              <span className="truncate">{c.name || c.phone}</span>
+              {c.background_check_required && (
+                <Badge variant="destructive" className="h-5 text-[10px]">
+                  bg check
+                </Badge>
+              )}
+            </div>
+            {c.email && (
+              <p className="truncate text-xs text-muted-foreground">{c.email}</p>
+            )}
+          </div>
+        </div>
       ),
     },
     {
       key: "services",
-      header: "Services",
+      header: "services",
       render: (c) => {
         if (c.all_services_enabled) {
-          return <Badge variant="default" className="text-xs">All Services</Badge>;
+          return (
+            <Badge variant="default" className="text-xs">
+              All services
+            </Badge>
+          );
         }
-        const ids = c.preferred_appointment_type_ids;
-        if (!ids || ids.length === 0) {
-          return <span className="text-xs text-amber-600 italic">None assigned</span>;
+        const ids = c.preferred_appointment_type_ids ?? [];
+        if (ids.length === 0) {
+          return (
+            <span className="text-xs italic text-amber-600">None assigned</span>
+          );
         }
         return (
           <div className="flex flex-wrap gap-1">
@@ -77,8 +100,40 @@ export function CustomersTable({
       },
     },
     {
+      key: "availability",
+      header: "availability",
+      render: (c) => {
+        const slots = c.availability ?? [];
+        if (slots.length === 0) {
+          return <span className="text-xs text-muted-foreground">—</span>;
+        }
+        return (
+          <div className="flex flex-wrap gap-1">
+            {slots.map((s) => (
+              <span
+                key={s}
+                className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+              >
+                {SLOT_SHORT[s] ?? s}
+              </span>
+            ))}
+          </div>
+        );
+      },
+    },
+    {
+      key: "hours",
+      header: "hours",
+      className: "text-right",
+      render: (c) => (
+        <span className="tabular-nums text-sm font-medium">
+          {formatHoursShort(c.total_minutes ?? 0)}
+        </span>
+      ),
+    },
+    {
       key: "consent",
-      header: "Consent",
+      header: "consent",
       render: (c) =>
         c.consent_status ? (
           <StatusBadge type="consent" value={c.consent_status} />
@@ -87,16 +142,43 @@ export function CustomersTable({
         ),
     },
     {
-      key: "created",
-      header: "Created",
-      render: (c) => formatDate(c.created_at),
+      key: "added",
+      header: "added",
+      render: (c) => (
+        <span className="text-sm text-muted-foreground">
+          {formatTimeAgo(c.created_at)}
+        </span>
+      ),
     },
-  ], [typeMap]);
+    {
+      key: "status",
+      header: "status",
+      render: (c) => {
+        const status = c.status;
+        const cls =
+          status === ContactStatus.ACTIVE
+            ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300"
+            : status === ContactStatus.SUSPENDED
+              ? "bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300"
+              : "bg-rose-100 text-rose-800 dark:bg-rose-950/60 dark:text-rose-300";
+        return (
+          <span
+            className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${cls}`}
+          >
+            {status === ContactStatus.ACTIVE
+              ? "Active"
+              : status === ContactStatus.SUSPENDED
+                ? "Suspended"
+                : "Banned"}
+          </span>
+        );
+      },
+    },
+  ];
 
-  const columns = useMemo(
-    () => (showTenantColumn ? [tenantColumn, ...baseColumns] : baseColumns),
-    [showTenantColumn, baseColumns]
-  );
+  const columns = showTenantColumn
+    ? [tenantColumn, ...baseColumns]
+    : baseColumns;
 
   return (
     <DataTable

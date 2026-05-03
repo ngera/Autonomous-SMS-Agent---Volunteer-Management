@@ -1,5 +1,5 @@
 import uuid
-from datetime import date, datetime, time
+from datetime import date as DateT, datetime, time
 
 from pydantic import BaseModel, model_validator
 
@@ -25,6 +25,7 @@ class AvailabilityRuleResponse(BaseModel):
     id: uuid.UUID
     day_of_week: int
     label: str | None
+    location: str | None
     start_time: time
     end_time: time
     buffer_minutes: int
@@ -37,6 +38,7 @@ class AvailabilityRuleResponse(BaseModel):
 class AvailabilityRuleUpdate(BaseModel):
     day_of_week: int
     label: str | None = None
+    location: str | None = None
     start_time: time
     end_time: time
     buffer_minutes: int = 0
@@ -52,8 +54,9 @@ class WeeklyScheduleUpdate(BaseModel):
 
 class SpecificDateSlotResponse(BaseModel):
     id: uuid.UUID
-    date: date
+    date: DateT
     label: str | None
+    location: str | None
     start_time: time
     end_time: time
     buffer_minutes: int
@@ -64,8 +67,9 @@ class SpecificDateSlotResponse(BaseModel):
 
 
 class SpecificDateSlotCreate(BaseModel):
-    date: date
+    date: DateT
     label: str | None = None
+    location: str | None = None
     start_time: time
     end_time: time
     buffer_minutes: int = 0
@@ -73,18 +77,29 @@ class SpecificDateSlotCreate(BaseModel):
     is_active: bool = True
 
 
+class SpecificDateSlotUpdate(BaseModel):
+    date: DateT | None = None
+    label: str | None = None
+    location: str | None = None
+    start_time: time | None = None
+    end_time: time | None = None
+    buffer_minutes: int | None = None
+    service_config: list[ServiceSlotConfig] | None = None
+    is_active: bool | None = None
+
+
 # ── Blocked dates ──
 
 class BlockedDateCreate(BaseModel):
-    date_from: date
-    date_to: date
+    date_from: DateT
+    date_to: DateT
     reason: str | None = None
 
 
 class BlockedDateResponse(BaseModel):
     id: uuid.UUID
-    date_from: date
-    date_to: date
+    date_from: DateT
+    date_to: DateT
     reason: str | None
     created_at: datetime
 

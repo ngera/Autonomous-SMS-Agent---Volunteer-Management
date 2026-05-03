@@ -19,6 +19,7 @@ interface AppointmentTypeFormProps {
   editItem?: AppointmentTypeResponse | null;
   onSubmit: (data: {
     name: string;
+    category?: string;
     duration_minutes: number;
     price: number;
     description?: string;
@@ -36,6 +37,7 @@ export function AppointmentTypeForm({
   isLoading,
 }: AppointmentTypeFormProps) {
   const [name, setName] = useState("");
+  const [category, setCategory] = useState("");
   const [duration, setDuration] = useState(60);
   const [price, setPrice] = useState(0);
   const [description, setDescription] = useState("");
@@ -45,6 +47,7 @@ export function AppointmentTypeForm({
   useEffect(() => {
     if (editItem) {
       setName(editItem.name);
+      setCategory(editItem.category ?? "");
       setDuration(editItem.duration_minutes);
       setPrice(editItem.price);
       setDescription(editItem.description ?? "");
@@ -52,6 +55,7 @@ export function AppointmentTypeForm({
       setIsActive(editItem.is_active);
     } else {
       setName("");
+      setCategory("");
       setDuration(60);
       setPrice(0);
       setDescription("");
@@ -65,13 +69,21 @@ export function AppointmentTypeForm({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>
-            {editItem ? "Edit Appointment Type" : "New Appointment Type"}
+            {editItem ? "Edit Service Type" : "New Service Type"}
           </DialogTitle>
         </DialogHeader>
         <div className="space-y-4 py-2">
           <div className="space-y-2">
             <Label>Name</Label>
             <Input value={name} onChange={(e) => setName(e.target.value)} />
+          </div>
+          <div className="space-y-2">
+            <Label>Category (optional)</Label>
+            <Input
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              placeholder="e.g. Grooming, Therapy, Consultation"
+            />
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
@@ -126,6 +138,7 @@ export function AppointmentTypeForm({
             onClick={() =>
               onSubmit({
                 name,
+                category: category.trim() || undefined,
                 duration_minutes: duration,
                 price,
                 description: description || undefined,

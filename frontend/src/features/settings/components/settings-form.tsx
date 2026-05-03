@@ -89,7 +89,7 @@ export function SettingsForm() {
           <Select
             value={values["ai_model"] ?? "claude-haiku-4-5-20241022"}
             onValueChange={(v) =>
-              setValues((prev) => ({ ...prev, ai_model: v }))
+              setValues((prev) => ({ ...prev, ai_model: v ?? "" }))
             }
           >
             <SelectTrigger className="w-72">

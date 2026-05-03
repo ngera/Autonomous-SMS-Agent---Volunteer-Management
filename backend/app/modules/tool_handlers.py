@@ -262,6 +262,16 @@ async def handle_book_appointment(ctx: ToolContext, tool_input: dict) -> str:
     if not appt_type:
         return json.dumps({"error": f"Service '{service_name}' not found."})
 
+    # Block booking when a background check is required for this volunteer
+    if not ctx.is_admin:
+        bg_required = (await ctx.db.execute(
+            select(Contact.background_check_required).where(Contact.id == ctx.contact_id)
+        )).scalar()
+        if bg_required:
+            return json.dumps({
+                "error": "A background check is required before you can book any appointments. Please contact the administrator.",
+            })
+
     # Check volunteer is allowed to book this type
     if not ctx.is_admin:
         allowed_ids = await _get_allowed_service_ids(ctx)
@@ -543,6 +553,335 @@ async def handle_lookup_customer(ctx: ToolContext, tool_input: dict) -> str:
     if not items:
         return json.dumps({"message": "No customers found."})
     return json.dumps({"customers": items})
+
+
+async def _resolve_service_ids_by_name(ctx: ToolContext, names: list[str]):
+    """Map a list of service names to AppointmentType ids. Returns (ids, error_dict_or_None)."""
+    if not names:
+        return [], None
+    out = []
+    for n in names:
+        appt = await _resolve_appointment_type(ctx.db, ctx.tenant.id, n)
+        if not appt:
+            return None, {"error": f"Service '{n}' not found."}
+        out.append(appt.id)
+    return out, None
+
+
+async def _sync_volunteer_services(ctx: ToolContext, contact_id, type_ids: list):
+    from sqlalchemy import delete as sql_delete
+    await ctx.db.execute(
+        sql_delete(ContactPreferredType).where(
+            ContactPreferredType.contact_id == contact_id,
+            ContactPreferredType.tenant_id == ctx.tenant.id,
+        )
+    )
+    for tid in type_ids:
+        ctx.db.add(
+            ContactPreferredType(
+                tenant_id=ctx.tenant.id,
+                contact_id=contact_id,
+                appointment_type_id=tid,
+            )
+        )
+    await ctx.db.flush()
+
+
+def _normalize_weekly_hours(rows: list | None) -> tuple[list | None, dict | None]:
+    """Validate and JSON-serialize weekly_hours blocks. Returns (normalized, error_dict_or_None)."""
+    if rows is None:
+        return None, None
+    if not rows:
+        return [], None
+    out = []
+    from datetime import time as dt_time
+    for r in rows:
+        try:
+            dow = int(r.get("day_of_week"))
+            if dow < 0 or dow > 6:
+                return None, {"error": "day_of_week must be 0..6 (Mon..Sun)."}
+            start_t = dt_time.fromisoformat(r.get("start_time", ""))
+            end_t = dt_time.fromisoformat(r.get("end_time", ""))
+        except (ValueError, TypeError):
+            return None, {"error": "weekly_hours entry needs day_of_week (0..6), start_time HH:MM, end_time HH:MM."}
+        if end_t <= start_t:
+            return None, {"error": "end_time must be after start_time."}
+        out.append({
+            "day_of_week": dow,
+            "start_time": start_t.isoformat(),
+            "end_time": end_t.isoformat(),
+        })
+    return out, None
+
+
+def _normalize_unavailable_dates(values: list | None) -> tuple[list | None, dict | None]:
+    if values is None:
+        return None, None
+    if not values:
+        return [], None
+    seen = set()
+    for v in values:
+        try:
+            date.fromisoformat(v)
+        except (ValueError, TypeError):
+            return None, {"error": f"Invalid date '{v}'. Use YYYY-MM-DD."}
+        seen.add(v)
+    return sorted(seen), None
+
+
+async def handle_manage_volunteer(ctx: ToolContext, tool_input: dict) -> str:
+    action = tool_input.get("action", "")
+
+    if action == "list":
+        query = select(Contact).where(Contact.tenant_id == ctx.tenant.id)
+        phone = (tool_input.get("phone") or "").strip()
+        name = (tool_input.get("name") or "").strip()
+        if phone:
+            query = query.where(Contact.phone.ilike(f"%{phone}%"))
+        elif name:
+            query = query.where(Contact.name.ilike(f"%{name}%"))
+        result = await ctx.db.execute(query.order_by(Contact.name).limit(20))
+        contacts = result.scalars().all()
+        items = []
+        for c in contacts:
+            count_result = await ctx.db.execute(
+                select(func.count()).select_from(Booking).where(
+                    Booking.contact_id == c.id,
+                    Booking.tenant_id == ctx.tenant.id,
+                )
+            )
+            booking_count = count_result.scalar() or 0
+            consent_result = await ctx.db.execute(
+                select(ContactConsent).where(
+                    ContactConsent.contact_id == c.id,
+                    ContactConsent.tenant_id == ctx.tenant.id,
+                )
+            )
+            consent = consent_result.scalar_one_or_none()
+            items.append({
+                "phone": c.phone,
+                "name": c.name or "—",
+                "email": c.email or "—",
+                "status": c.status.value if c.status else "active",
+                "consent": consent.status.value if consent else "unknown",
+                "background_check_required": bool(c.background_check_required),
+                "total_bookings": booking_count,
+            })
+        if not items:
+            return json.dumps({"message": "No volunteers found."})
+        return json.dumps({"volunteers": items})
+
+    if action == "get":
+        phone = (tool_input.get("phone") or "").strip()
+        if not phone:
+            return json.dumps({"error": "phone is required for 'get'."})
+        result = await ctx.db.execute(
+            select(Contact).where(
+                Contact.phone == phone, Contact.tenant_id == ctx.tenant.id
+            )
+        )
+        contact = result.scalar_one_or_none()
+        if not contact:
+            return json.dumps({"error": "Volunteer not found."})
+
+        consent_result = await ctx.db.execute(
+            select(ContactConsent).where(
+                ContactConsent.contact_id == contact.id,
+                ContactConsent.tenant_id == ctx.tenant.id,
+            )
+        )
+        consent = consent_result.scalar_one_or_none()
+
+        pref_result = await ctx.db.execute(
+            select(ContactPreferredType.appointment_type_id, AppointmentType.name)
+            .join(AppointmentType, AppointmentType.id == ContactPreferredType.appointment_type_id)
+            .where(
+                ContactPreferredType.contact_id == contact.id,
+                ContactPreferredType.tenant_id == ctx.tenant.id,
+            )
+        )
+        preferred = [r[1] for r in pref_result.all()]
+
+        return json.dumps({
+            "phone": contact.phone,
+            "name": contact.name or "",
+            "email": contact.email or "",
+            "sex": contact.sex.value if contact.sex else None,
+            "status": contact.status.value if contact.status else "active",
+            "consent": consent.status.value if consent else "unknown",
+            "background_check_required": bool(contact.background_check_required),
+            "all_services_enabled": bool(contact.all_services_enabled),
+            "preferred_services": preferred,
+            "reminder_preference_days": contact.reminder_preference_days,
+            "availability": contact.availability or [],
+            "weekly_hours": contact.weekly_hours or [],
+            "unavailable_dates": contact.unavailable_dates or [],
+        })
+
+    if action == "add":
+        phone = (tool_input.get("phone") or "").strip()
+        name = (tool_input.get("name") or "").strip()
+        if not phone or not name:
+            return json.dumps({"error": "phone and name are required for 'add'."})
+
+        existing = await ctx.db.execute(
+            select(Contact).where(
+                Contact.phone == phone, Contact.tenant_id == ctx.tenant.id
+            )
+        )
+        if existing.scalar_one_or_none():
+            return json.dumps({"error": "A volunteer with that phone already exists."})
+
+        type_ids, err = await _resolve_service_ids_by_name(
+            ctx, tool_input.get("preferred_services") or []
+        )
+        if err:
+            return json.dumps(err)
+
+        weekly, err = _normalize_weekly_hours(tool_input.get("weekly_hours"))
+        if err:
+            return json.dumps(err)
+        dates, err = _normalize_unavailable_dates(tool_input.get("unavailable_dates"))
+        if err:
+            return json.dumps(err)
+
+        sex_val = tool_input.get("sex")
+        try:
+            sex_enum = (
+                __import__("app.models.contact", fromlist=["ContactSex"]).ContactSex(sex_val)
+                if sex_val else None
+            )
+        except ValueError:
+            return json.dumps({"error": f"Invalid sex value '{sex_val}'."})
+
+        contact = Contact(
+            tenant_id=ctx.tenant.id,
+            phone=phone,
+            name=name,
+            email=tool_input.get("email") or None,
+            sex=sex_enum,
+            all_services_enabled=bool(tool_input.get("all_services_enabled", False)),
+            background_check_required=bool(
+                tool_input.get("background_check_required", False)
+            ),
+            availability=tool_input.get("availability") or None,
+            weekly_hours=weekly or None,
+            unavailable_dates=dates or None,
+            reminder_preference_days=tool_input.get("reminder_preference_days", 7),
+        )
+        ctx.db.add(contact)
+        await ctx.db.flush()
+
+        ctx.db.add(
+            ContactConsent(
+                tenant_id=ctx.tenant.id,
+                contact_id=contact.id,
+                contact_phone=phone,
+                status=ConsentStatus.UNCONTACTED,
+            )
+        )
+
+        if type_ids:
+            await _sync_volunteer_services(ctx, contact.id, type_ids)
+
+        await ctx.db.flush()
+        return json.dumps({
+            "success": True,
+            "phone": contact.phone,
+            "name": contact.name,
+        })
+
+    if action == "update":
+        phone = (tool_input.get("phone") or "").strip()
+        if not phone:
+            return json.dumps({"error": "phone is required for 'update'."})
+        result = await ctx.db.execute(
+            select(Contact).where(
+                Contact.phone == phone, Contact.tenant_id == ctx.tenant.id
+            )
+        )
+        contact = result.scalar_one_or_none()
+        if not contact:
+            return json.dumps({"error": "Volunteer not found."})
+
+        if "name" in tool_input and tool_input["name"]:
+            contact.name = tool_input["name"]
+        if "email" in tool_input:
+            contact.email = tool_input["email"] or None
+        if "sex" in tool_input:
+            try:
+                contact.sex = (
+                    __import__("app.models.contact", fromlist=["ContactSex"]).ContactSex(
+                        tool_input["sex"]
+                    )
+                    if tool_input["sex"]
+                    else None
+                )
+            except ValueError:
+                return json.dumps({"error": f"Invalid sex value '{tool_input['sex']}'."})
+        if "reminder_preference_days" in tool_input and tool_input["reminder_preference_days"] is not None:
+            contact.reminder_preference_days = tool_input["reminder_preference_days"]
+        if "background_check_required" in tool_input and tool_input["background_check_required"] is not None:
+            contact.background_check_required = bool(tool_input["background_check_required"])
+        if "all_services_enabled" in tool_input and tool_input["all_services_enabled"] is not None:
+            contact.all_services_enabled = bool(tool_input["all_services_enabled"])
+        if "availability" in tool_input:
+            contact.availability = tool_input["availability"] or None
+        if "weekly_hours" in tool_input:
+            weekly, err = _normalize_weekly_hours(tool_input["weekly_hours"])
+            if err:
+                return json.dumps(err)
+            contact.weekly_hours = weekly or None
+        if "unavailable_dates" in tool_input:
+            dates, err = _normalize_unavailable_dates(tool_input["unavailable_dates"])
+            if err:
+                return json.dumps(err)
+            contact.unavailable_dates = dates or None
+        if "preferred_services" in tool_input:
+            type_ids, err = await _resolve_service_ids_by_name(
+                ctx, tool_input["preferred_services"] or []
+            )
+            if err:
+                return json.dumps(err)
+            await _sync_volunteer_services(ctx, contact.id, type_ids)
+
+        await ctx.db.flush()
+        return json.dumps({
+            "success": True,
+            "phone": contact.phone,
+            "name": contact.name,
+        })
+
+    if action == "delete":
+        phone = (tool_input.get("phone") or "").strip()
+        if not phone:
+            return json.dumps({"error": "phone is required for 'delete'."})
+        result = await ctx.db.execute(
+            select(Contact).where(
+                Contact.phone == phone, Contact.tenant_id == ctx.tenant.id
+            )
+        )
+        contact = result.scalar_one_or_none()
+        if not contact:
+            return json.dumps({"error": "Volunteer not found."})
+
+        active_count = (await ctx.db.execute(
+            select(func.count()).select_from(Booking).where(
+                Booking.contact_id == contact.id,
+                Booking.tenant_id == ctx.tenant.id,
+                Booking.status.in_([BookingStatus.SCHEDULED, BookingStatus.RESCHEDULED]),
+            )
+        )).scalar() or 0
+        if active_count > 0:
+            return json.dumps({
+                "error": f"Cannot delete: {active_count} active booking(s). Cancel them first.",
+            })
+
+        await ctx.db.delete(contact)
+        await ctx.db.flush()
+        return json.dumps({"success": True, "deleted_phone": phone})
+
+    return json.dumps({"error": f"Unknown action '{action}'. Use 'list', 'get', 'add', 'update', or 'delete'."})
 
 
 async def handle_block_date(ctx: ToolContext, tool_input: dict) -> str:
@@ -1027,6 +1366,33 @@ async def handle_unsuspend_customer(ctx: ToolContext, tool_input: dict) -> str:
     })
 
 
+async def _build_service_config(ctx: ToolContext, services_input: list | None):
+    """Resolve service names to a JSONB-ready service_config list. Returns (config, error_dict_or_None)."""
+    if services_input is None:
+        return None, None
+    if not services_input:
+        return [], None
+    config = []
+    for svc in services_input:
+        appt_type = await _resolve_appointment_type(
+            ctx.db, ctx.tenant.id, svc.get("service_name", "")
+        )
+        if not appt_type:
+            return None, {"error": f"Service '{svc.get('service_name')}' not found."}
+        min_req = svc.get("min_required", 1)
+        max_allow = svc.get("max_allowed", min_req)
+        if min_req < 1:
+            return None, {"error": f"min_required must be at least 1 for '{svc.get('service_name')}'."}
+        if max_allow < min_req:
+            return None, {"error": f"max_allowed ({max_allow}) must be >= min_required ({min_req}) for '{svc.get('service_name')}'."}
+        config.append({
+            "appointment_type_id": str(appt_type.id),
+            "min_required": min_req,
+            "max_allowed": max_allow,
+        })
+    return config, None
+
+
 async def handle_manage_availability(ctx: ToolContext, tool_input: dict) -> str:
     from app.models.availability import AvailabilityRule
 
@@ -1082,26 +1448,12 @@ async def handle_manage_availability(ctx: ToolContext, tool_input: dict) -> str:
         except ValueError:
             return json.dumps({"error": "Invalid time format. Use HH:MM."})
 
-        # Build service_config
-        svc_config = None
         services_input = tool_input.get("services")
-        if services_input:
-            svc_config = []
-            for svc in services_input:
-                appt_type = await _resolve_appointment_type(ctx.db, ctx.tenant.id, svc.get("service_name", ""))
-                if not appt_type:
-                    return json.dumps({"error": f"Service '{svc.get('service_name')}' not found."})
-                min_req = svc.get("min_required", 1)
-                max_allow = svc.get("max_allowed", min_req)
-                if min_req < 1:
-                    return json.dumps({"error": f"min_required must be at least 1 for '{svc.get('service_name')}'."})
-                if max_allow < min_req:
-                    return json.dumps({"error": f"max_allowed ({max_allow}) must be >= min_required ({min_req}) for '{svc.get('service_name')}'."})
-                svc_config.append({
-                    "appointment_type_id": str(appt_type.id),
-                    "min_required": min_req,
-                    "max_allowed": max_allow,
-                })
+        svc_config, err = await _build_service_config(
+            ctx, services_input if services_input else None
+        )
+        if err:
+            return json.dumps(err)
 
         rule = AvailabilityRule(
             tenant_id=ctx.tenant.id,
@@ -1124,62 +1476,213 @@ async def handle_manage_availability(ctx: ToolContext, tool_input: dict) -> str:
             "end": end,
         })
 
-    return json.dumps({"error": f"Unknown action '{action}'. Use 'list' or 'set'."})
+    elif action in ("update", "delete"):
+        rule_id = tool_input.get("id")
+        if not rule_id:
+            return json.dumps({"error": f"id is required for '{action}'."})
+        try:
+            rule_uuid = uuid.UUID(rule_id)
+        except (ValueError, AttributeError):
+            return json.dumps({"error": "Invalid id format."})
+        rule_result = await ctx.db.execute(
+            select(AvailabilityRule).where(
+                AvailabilityRule.id == rule_uuid,
+                AvailabilityRule.tenant_id == ctx.tenant.id,
+            )
+        )
+        rule = rule_result.scalar_one_or_none()
+        if not rule:
+            return json.dumps({"error": "Availability rule not found."})
+
+        if action == "delete":
+            await ctx.db.delete(rule)
+            await ctx.db.flush()
+            return json.dumps({"success": True, "deleted_id": rule_id})
+
+        # update — apply only fields present in input
+        from datetime import time as dt_time
+        if "day_of_week" in tool_input and tool_input["day_of_week"] is not None:
+            rule.day_of_week = tool_input["day_of_week"]
+        if "label" in tool_input:
+            rule.label = tool_input["label"]
+        if "start_time" in tool_input and tool_input["start_time"]:
+            try:
+                rule.start_time = dt_time.fromisoformat(tool_input["start_time"])
+            except ValueError:
+                return json.dumps({"error": "Invalid start_time. Use HH:MM."})
+        if "end_time" in tool_input and tool_input["end_time"]:
+            try:
+                rule.end_time = dt_time.fromisoformat(tool_input["end_time"])
+            except ValueError:
+                return json.dumps({"error": "Invalid end_time. Use HH:MM."})
+        if "buffer_minutes" in tool_input and tool_input["buffer_minutes"] is not None:
+            rule.buffer_minutes = tool_input["buffer_minutes"]
+        if "services" in tool_input:
+            svc_config, err = await _build_service_config(ctx, tool_input["services"])
+            if err:
+                return json.dumps(err)
+            rule.service_config = svc_config if svc_config else None
+        await ctx.db.flush()
+        return json.dumps({
+            "success": True,
+            "id": str(rule.id),
+            "day": days[rule.day_of_week],
+            "start": str(rule.start_time)[:5],
+            "end": str(rule.end_time)[:5],
+        })
+
+    return json.dumps({"error": f"Unknown action '{action}'. Use 'list', 'set', 'update', or 'delete'."})
 
 
-async def handle_add_specific_date_slot(ctx: ToolContext, tool_input: dict) -> str:
+async def handle_manage_specific_date_slot(ctx: ToolContext, tool_input: dict) -> str:
     from app.models.availability import SpecificDateSlot
-
-    date_str = tool_input.get("date", "")
-    start = tool_input.get("start_time", "")
-    end = tool_input.get("end_time", "")
-
-    if not date_str or not start or not end:
-        return json.dumps({"error": "date, start_time, and end_time are required."})
-
     from datetime import time as dt_time
-    try:
-        slot_date = date.fromisoformat(date_str)
-        start_time = dt_time.fromisoformat(start)
-        end_time = dt_time.fromisoformat(end)
-    except ValueError:
-        return json.dumps({"error": "Invalid date or time format."})
 
-    # Build service_config
-    svc_config = None
-    services_input = tool_input.get("services")
-    if services_input:
-        svc_config = []
-        for svc in services_input:
-            appt_type = await _resolve_appointment_type(ctx.db, ctx.tenant.id, svc.get("service_name", ""))
-            if not appt_type:
-                return json.dumps({"error": f"Service '{svc.get('service_name')}' not found."})
-            svc_config.append({
-                "appointment_type_id": str(appt_type.id),
-                "min_required": svc.get("min_required", 1),
-                "max_allowed": svc.get("max_allowed", svc.get("min_required", 1)),
+    action = tool_input.get("action", "")
+
+    if action == "list":
+        today = date.today()
+        result = await ctx.db.execute(
+            select(SpecificDateSlot)
+            .where(
+                SpecificDateSlot.tenant_id == ctx.tenant.id,
+                SpecificDateSlot.date >= today,
+                SpecificDateSlot.is_active.is_(True),
+            )
+            .order_by(SpecificDateSlot.date, SpecificDateSlot.start_time)
+        )
+        rows = result.scalars().all()
+        items = []
+        for s in rows:
+            services = []
+            if s.service_config:
+                for cfg in s.service_config:
+                    appt = await ctx.db.execute(
+                        select(AppointmentType).where(
+                            AppointmentType.id == cfg.get("appointment_type_id")
+                        )
+                    )
+                    at = appt.scalar_one_or_none()
+                    services.append({
+                        "service": at.name if at else "Unknown",
+                        "min_required": cfg.get("min_required", 1),
+                        "max_allowed": cfg.get("max_allowed", 1),
+                    })
+            items.append({
+                "id": str(s.id),
+                "date": s.date.isoformat(),
+                "label": s.label or "",
+                "location": s.location or "",
+                "start": str(s.start_time)[:5],
+                "end": str(s.end_time)[:5],
+                "buffer_minutes": s.buffer_minutes,
+                "services": services if services else "All services (min 1, max 1)",
             })
+        if not items:
+            return json.dumps({"message": "No upcoming events configured."})
+        return json.dumps({"events": items})
 
-    slot = SpecificDateSlot(
-        tenant_id=ctx.tenant.id,
-        date=slot_date,
-        label=tool_input.get("label"),
-        start_time=start_time,
-        end_time=end_time,
-        buffer_minutes=tool_input.get("buffer_minutes", 0),
-        service_config=svc_config,
-        is_active=True,
-    )
-    ctx.db.add(slot)
-    await ctx.db.flush()
+    if action == "add":
+        date_str = tool_input.get("date", "")
+        start = tool_input.get("start_time", "")
+        end = tool_input.get("end_time", "")
+        if not date_str or not start or not end:
+            return json.dumps({"error": "date, start_time, and end_time are required for 'add'."})
+        try:
+            slot_date = date.fromisoformat(date_str)
+            start_time = dt_time.fromisoformat(start)
+            end_time = dt_time.fromisoformat(end)
+        except ValueError:
+            return json.dumps({"error": "Invalid date or time format."})
 
-    return json.dumps({
-        "success": True,
-        "date": date_str,
-        "start": start,
-        "end": end,
-        "label": tool_input.get("label", ""),
-    })
+        services_input = tool_input.get("services")
+        svc_config, err = await _build_service_config(
+            ctx, services_input if services_input else None
+        )
+        if err:
+            return json.dumps(err)
+
+        slot = SpecificDateSlot(
+            tenant_id=ctx.tenant.id,
+            date=slot_date,
+            label=tool_input.get("label"),
+            location=tool_input.get("location"),
+            start_time=start_time,
+            end_time=end_time,
+            buffer_minutes=tool_input.get("buffer_minutes", 0),
+            service_config=svc_config,
+            is_active=True,
+        )
+        ctx.db.add(slot)
+        await ctx.db.flush()
+        return json.dumps({
+            "success": True,
+            "id": str(slot.id),
+            "date": date_str,
+            "start": start,
+            "end": end,
+            "label": tool_input.get("label", ""),
+        })
+
+    if action in ("update", "delete"):
+        slot_id = tool_input.get("id")
+        if not slot_id:
+            return json.dumps({"error": f"id is required for '{action}'."})
+        try:
+            slot_uuid = uuid.UUID(slot_id)
+        except (ValueError, AttributeError):
+            return json.dumps({"error": "Invalid id format."})
+        slot_result = await ctx.db.execute(
+            select(SpecificDateSlot).where(
+                SpecificDateSlot.id == slot_uuid,
+                SpecificDateSlot.tenant_id == ctx.tenant.id,
+            )
+        )
+        slot = slot_result.scalar_one_or_none()
+        if not slot:
+            return json.dumps({"error": "Event not found."})
+
+        if action == "delete":
+            await ctx.db.delete(slot)
+            await ctx.db.flush()
+            return json.dumps({"success": True, "deleted_id": slot_id})
+
+        if "date" in tool_input and tool_input["date"]:
+            try:
+                slot.date = date.fromisoformat(tool_input["date"])
+            except ValueError:
+                return json.dumps({"error": "Invalid date. Use YYYY-MM-DD."})
+        if "start_time" in tool_input and tool_input["start_time"]:
+            try:
+                slot.start_time = dt_time.fromisoformat(tool_input["start_time"])
+            except ValueError:
+                return json.dumps({"error": "Invalid start_time. Use HH:MM."})
+        if "end_time" in tool_input and tool_input["end_time"]:
+            try:
+                slot.end_time = dt_time.fromisoformat(tool_input["end_time"])
+            except ValueError:
+                return json.dumps({"error": "Invalid end_time. Use HH:MM."})
+        if "label" in tool_input:
+            slot.label = tool_input["label"]
+        if "location" in tool_input:
+            slot.location = tool_input["location"]
+        if "buffer_minutes" in tool_input and tool_input["buffer_minutes"] is not None:
+            slot.buffer_minutes = tool_input["buffer_minutes"]
+        if "services" in tool_input:
+            svc_config, err = await _build_service_config(ctx, tool_input["services"])
+            if err:
+                return json.dumps(err)
+            slot.service_config = svc_config if svc_config else None
+        await ctx.db.flush()
+        return json.dumps({
+            "success": True,
+            "id": str(slot.id),
+            "date": slot.date.isoformat(),
+            "start": str(slot.start_time)[:5],
+            "end": str(slot.end_time)[:5],
+        })
+
+    return json.dumps({"error": f"Unknown action '{action}'. Use 'list', 'add', 'update', or 'delete'."})
 
 
 # ── Handler registry ──
@@ -1192,13 +1695,13 @@ TOOL_HANDLERS = {
     "cancel_appointment": handle_cancel_appointment,
     "reschedule_appointment": handle_reschedule_appointment,
     "search_bookings": handle_search_bookings,
-    "lookup_customer": handle_lookup_customer,
+    "manage_volunteer": handle_manage_volunteer,
     "block_date": handle_block_date,
     "unblock_date": handle_unblock_date,
     "get_schedule": handle_get_schedule,
     "manage_service": handle_manage_service,
     "manage_availability": handle_manage_availability,
-    "add_specific_date_slot": handle_add_specific_date_slot,
+    "manage_specific_date_slot": handle_manage_specific_date_slot,
     "send_announcement": handle_send_announcement,
     "suspend_customer": handle_suspend_customer,
     "unsuspend_customer": handle_unsuspend_customer,

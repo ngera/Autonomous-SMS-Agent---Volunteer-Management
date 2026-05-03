@@ -1,49 +1,94 @@
-import { useState } from "react";
-import { PageHeader } from "@/components/shared/page-header";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { PendingAlerts } from "../components/pending-alerts";
-import { VolunteerBreakdown } from "../components/volunteer-breakdown";
-import { WeeklySlotsTable } from "../components/weekly-slots-table";
+import { useMemo } from "react";
+import { DashboardGreeting } from "../components/dashboard-greeting";
+import { DashboardKpiRow } from "../components/dashboard-kpi-row";
+import { WeeklyScheduleList } from "../components/weekly-schedule-list";
+import { NeedsAttentionPanel } from "../components/needs-attention-panel";
+import { QuickActionsPanel } from "../components/quick-actions-panel";
+import { UpcomingOneTimeEvents } from "../components/upcoming-one-time-events";
 import {
   useDashboardSummary,
   useWeeklySlotStatuses,
 } from "../hooks/use-dashboard";
+import { aggregateBySchedule, fillPercent } from "../lib/aggregate";
 
 export function DashboardPage() {
   const summary = useDashboardSummary();
-  const [weekOffset, setWeekOffset] = useState(0);
-  const weeklySlots = useWeeklySlotStatuses(weekOffset);
+  const weeklySlots = useWeeklySlotStatuses(0);
+
+  const aggregated = useMemo(
+    () => aggregateBySchedule(weeklySlots.data ?? []),
+    [weeklySlots.data]
+  );
+
+  const recurringCount = useMemo(
+    () => aggregated.filter((e) => e.source === "recurring").length,
+    [aggregated]
+  );
+  const oneTimeCount = useMemo(
+    () => aggregated.filter((e) => e.source === "one_time").length,
+    [aggregated]
+  );
+  const needingVolunteers = useMemo(
+    () => aggregated.filter((e) => e.any_needs_more).length,
+    [aggregated]
+  );
+  const understaffed = useMemo(() => {
+    const candidates = aggregated.filter((e) => e.any_needs_more);
+    if (candidates.length === 0) return null;
+    return candidates.reduce((worst, ev) =>
+      fillPercent(ev.booked, ev.max_allowed) <
+      fillPercent(worst.booked, worst.max_allowed)
+        ? ev
+        : worst
+    );
+  }, [aggregated]);
+  const oneTimeEvents = useMemo(
+    () => aggregated.filter((e) => e.source === "one_time"),
+    [aggregated]
+  );
+
+  const isLoading = summary.isLoading || weeklySlots.isLoading;
 
   return (
     <div className="space-y-6">
-      <PageHeader
-        title="Dashboard"
-        description="Volunteer scheduling overview."
+      <DashboardGreeting
+        eventsThisWeek={aggregated.length}
+        needingVolunteers={needingVolunteers}
+        isLoading={isLoading}
       />
 
-      <PendingAlerts data={summary.data} isLoading={summary.isLoading} />
+      <DashboardKpiRow
+        totalVolunteers={summary.data?.total_volunteers}
+        eventsThisWeek={aggregated.length}
+        recurringCount={recurringCount}
+        oneTimeCount={oneTimeCount}
+        openSlots={summary.data?.slots_needing_bookings}
+        monthlyBookings={summary.data?.monthly_bookings}
+        isLoading={isLoading}
+      />
 
-      <Tabs defaultValue="availability">
-        <TabsList>
-          <TabsTrigger value="availability">Weekly Availability</TabsTrigger>
-          <TabsTrigger value="coverage">Volunteer Coverage (30 Days)</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="availability" className="mt-4">
-          <WeeklySlotsTable
-            data={weeklySlots.data}
+      <div className="grid gap-6 lg:grid-cols-3">
+        <div className="space-y-6 lg:col-span-2">
+          <WeeklyScheduleList
+            events={aggregated}
             isLoading={weeklySlots.isLoading}
-            weekOffset={weekOffset}
-            onPrevWeek={() => setWeekOffset((o) => o - 7)}
-            onNextWeek={() => setWeekOffset((o) => o + 7)}
-            onResetWeek={() => setWeekOffset(0)}
           />
-        </TabsContent>
+          <UpcomingOneTimeEvents
+            events={oneTimeEvents}
+            isLoading={weeklySlots.isLoading}
+          />
+        </div>
 
-        <TabsContent value="coverage" className="mt-4">
-          <VolunteerBreakdown data={summary.data} isLoading={summary.isLoading} />
-        </TabsContent>
-      </Tabs>
+        <div className="space-y-6">
+          <NeedsAttentionPanel
+            understaffed={understaffed}
+            unreviewedSuspensions={summary.data?.unreviewed_suspensions_count ?? 0}
+            suspendedOrBanned={summary.data?.suspended_or_banned_count ?? 0}
+            isLoading={isLoading}
+          />
+          <QuickActionsPanel />
+        </div>
+      </div>
     </div>
   );
 }

@@ -34,14 +34,16 @@ export function TenantFilterBar() {
   return (
     <div className="flex items-center gap-2">
       <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button variant="outline" size="sm" className="gap-2">
-            <Building2 className="h-4 w-4" />
-            {selectedTenantIds.length === 0
-              ? "All Tenants"
-              : `${selectedTenantIds.length} Tenant${selectedTenantIds.length > 1 ? "s" : ""}`}
-          </Button>
-        </DropdownMenuTrigger>
+        <DropdownMenuTrigger
+          render={
+            <Button variant="outline" size="sm" className="gap-2">
+              <Building2 className="h-4 w-4" />
+              {selectedTenantIds.length === 0
+                ? "All Tenants"
+                : `${selectedTenantIds.length} Tenant${selectedTenantIds.length > 1 ? "s" : ""}`}
+            </Button>
+          }
+        />
         <DropdownMenuContent align="start" className="w-56">
           {tenants.map((tenant) => (
             <DropdownMenuCheckboxItem

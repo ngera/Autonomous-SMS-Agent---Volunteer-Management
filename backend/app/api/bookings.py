@@ -137,6 +137,12 @@ async def create_booking(
     if not contact:
         raise HTTPException(status_code=404, detail="Contact not found")
 
+    if contact.background_check_required:
+        raise HTTPException(
+            status_code=400,
+            detail="This volunteer has a pending background check requirement. Clear the flag on their profile before booking.",
+        )
+
     booking = Booking(
         tenant_id=tenant.id,
         contact_id=contact.id,

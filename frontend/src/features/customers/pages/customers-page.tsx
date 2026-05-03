@@ -1,16 +1,15 @@
 import { useState } from "react";
 import { Upload, Plus } from "lucide-react";
-import { PageHeader } from "@/components/shared/page-header";
 import { Pagination } from "@/components/shared/pagination";
-import { SearchInput } from "@/components/shared/search-input";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/use-auth";
-import { AdminRole } from "@/types/enums";
+import { AdminRole, AvailabilitySlot, ContactStatus, ConsentStatus } from "@/types/enums";
 import { useTenantFilter } from "@/context/tenant-filter-context";
 import { useTenants } from "@/features/tenants/hooks/use-tenants";
 import { CustomersTable } from "../components/customers-table";
 import { CsvImportDialog } from "../components/csv-import-dialog";
 import { CustomerForm, type CustomerFormData } from "../components/customer-form";
+import { VolunteerFilterCard } from "../components/volunteer-filter-card";
 import {
   useCustomers,
   useMultiTenantCustomers,
@@ -19,16 +18,20 @@ import {
 
 export function CustomersPage() {
   const { hasRole } = useAuth();
+  const canEdit = hasRole(AdminRole.MANAGER);
   const { selectedTenantIds, isSuperAdmin } = useTenantFilter();
   const { data: tenantsData } = useTenants();
   const tenants = tenantsData?.items ?? [];
 
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<ContactStatus | undefined>();
+  const [consentFilter, setConsentFilter] = useState<ConsentStatus | undefined>();
+  const [bgCheckFilter, setBgCheckFilter] = useState<boolean | undefined>();
+  const [availabilityFilter, setAvailabilityFilter] = useState<AvailabilitySlot | undefined>();
   const [showImport, setShowImport] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
 
-  // Determine if multi-tenant view (super admin with 0 or 2+ tenants selected)
   const isMultiTenant = isSuperAdmin && selectedTenantIds.length !== 1;
   const tenantIdsToQuery = isMultiTenant
     ? selectedTenantIds.length > 0
@@ -36,14 +39,17 @@ export function CustomersPage() {
       : tenants.map((t) => t.id)
     : [];
 
-  // Single-tenant query (regular users or super admin with 1 tenant)
-  const singleTenantResult = useCustomers({
+  const filters = {
     page,
     page_size: 20,
     search: search || undefined,
-  });
+    status: statusFilter,
+    consent_status: consentFilter,
+    background_check_required: bgCheckFilter,
+    availability: availabilityFilter,
+  };
 
-  // Multi-tenant query (super admin with 0 or 2+ tenants)
+  const singleTenantResult = useCustomers(filters);
   const multiTenantResult = useMultiTenantCustomers(
     tenantIdsToQuery,
     tenants,
@@ -59,6 +65,19 @@ export function CustomersPage() {
     ? multiTenantResult.isLoading
     : singleTenantResult.isLoading;
 
+  const filteredTotal = singleTenantResult.data?.total ?? 0;
+  const unfilteredTotal = singleTenantResult.data?.total_unfiltered ?? 0;
+  const isFiltered =
+    !!search ||
+    !!statusFilter ||
+    !!consentFilter ||
+    bgCheckFilter === true ||
+    !!availabilityFilter;
+
+  function resetPage() {
+    setPage(1);
+  }
+
   function handleCreate(data: CustomerFormData) {
     createCustomer.mutate(data, {
       onSuccess: () => setShowCreate(false),
@@ -71,39 +90,68 @@ export function CustomersPage() {
     });
   }
 
-  const isSaving = createCustomer.isPending;
-
   return (
-    <div>
-      <PageHeader
-        title="Volunteers"
-        description="View and manage volunteers."
-        actions={
-          hasRole(AdminRole.MANAGER) ? (
-            <div className="flex gap-2">
-              <Button onClick={() => setShowCreate(true)}>
-                <Plus className="mr-2 h-4 w-4" />
-                New Volunteer
-              </Button>
-              <Button variant="outline" onClick={() => setShowImport(true)}>
-                <Upload className="mr-2 h-4 w-4" />
-                Import CSV
-              </Button>
-            </div>
-          ) : undefined
-        }
-      />
-
-      <div className="mb-4 max-w-sm">
-        <SearchInput
-          value={search}
-          onChange={(v) => {
-            setSearch(v);
-            setPage(1);
-          }}
-          placeholder="Search by phone, name, or email..."
-        />
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-2xl font-bold tracking-tight">Volunteers</h2>
+          {!isMultiTenant && (
+            <p className="mt-1 text-sm text-muted-foreground">
+              {unfilteredTotal} total
+              {isFiltered && (
+                <>
+                  {" · "}
+                  <span className="text-emerald-700 dark:text-emerald-300">
+                    {filteredTotal} matching filter{filteredTotal === 1 ? "" : "s"}
+                  </span>
+                </>
+              )}
+            </p>
+          )}
+        </div>
+        {canEdit && (
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => setShowImport(true)}>
+              <Upload className="mr-2 h-4 w-4" />
+              Import CSV
+            </Button>
+            <Button onClick={() => setShowCreate(true)}>
+              <Plus className="mr-2 h-4 w-4" />
+              Add volunteer
+            </Button>
+          </div>
+        )}
       </div>
+
+      {!isMultiTenant && (
+        <VolunteerFilterCard
+          search={search}
+          onSearchChange={(v) => {
+            setSearch(v);
+            resetPage();
+          }}
+          status={statusFilter}
+          onStatusChange={(s) => {
+            setStatusFilter(s);
+            resetPage();
+          }}
+          consent={consentFilter}
+          onConsentChange={(c) => {
+            setConsentFilter(c);
+            resetPage();
+          }}
+          bgCheckRequired={bgCheckFilter}
+          onBgCheckChange={(v) => {
+            setBgCheckFilter(v);
+            resetPage();
+          }}
+          availability={availabilityFilter}
+          onAvailabilityChange={(v) => {
+            setAvailabilityFilter(v);
+            resetPage();
+          }}
+        />
+      )}
 
       <CustomersTable
         data={tableData}
@@ -112,21 +160,27 @@ export function CustomersPage() {
       />
 
       {!isMultiTenant && singleTenantResult.data && (
-        <Pagination
-          page={page}
-          pageSize={20}
-          total={singleTenantResult.data.total}
-          onPageChange={setPage}
-        />
+        <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-muted-foreground">
+          <span>
+            Showing {(page - 1) * 20 + 1}–
+            {Math.min(page * 20, filteredTotal)} of {filteredTotal}
+            {isFiltered ? " matches" : ""}
+          </span>
+          <Pagination
+            page={page}
+            pageSize={20}
+            total={filteredTotal}
+            onPageChange={setPage}
+          />
+        </div>
       )}
 
       <CsvImportDialog open={showImport} onOpenChange={setShowImport} />
-
       <CustomerForm
         open={showCreate}
         onOpenChange={setShowCreate}
         onSubmit={handleCreate}
-        isLoading={isSaving}
+        isLoading={createCustomer.isPending}
       />
     </div>
   );

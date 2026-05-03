@@ -11,6 +11,8 @@ import {
   getCustomerBookings,
   getCustomerConversations,
   getCustomerPattern,
+  getCustomerVolunteerStats,
+  getVolunteerHoursSummary,
   setPatternOverride,
   clearPatternOverride,
   sendOptinOutreach,
@@ -115,6 +117,24 @@ export function useCustomerPattern(phone: string) {
     queryKey: ["customers", tenantId, phone, "pattern"],
     queryFn: () => getCustomerPattern(phone),
     enabled: !!phone && tenantId !== "none",
+  });
+}
+
+export function useCustomerVolunteerStats(phone: string) {
+  const tenantId = useActiveTenantId();
+  return useQuery({
+    queryKey: ["customers", tenantId, phone, "volunteer-stats"],
+    queryFn: () => getCustomerVolunteerStats(phone),
+    enabled: !!phone && tenantId !== "none",
+  });
+}
+
+export function useVolunteerHoursSummary() {
+  const tenantId = useActiveTenantId();
+  return useQuery({
+    queryKey: ["customers", tenantId, "hours-summary"],
+    queryFn: getVolunteerHoursSummary,
+    enabled: tenantId !== "none",
   });
 }
 

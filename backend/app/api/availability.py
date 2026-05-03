@@ -14,6 +14,7 @@ from app.schemas.availability import (
     SlotResponse,
     SpecificDateSlotCreate,
     SpecificDateSlotResponse,
+    SpecificDateSlotUpdate,
     WeeklyScheduleUpdate,
 )
 
@@ -82,6 +83,31 @@ async def create_specific_date_slot(
     data = _serialize_service_config(body.model_dump())
     slot = SpecificDateSlot(tenant_id=tenant.id, **data)
     db.add(slot)
+    await db.flush()
+    await db.refresh(slot)
+    return slot
+
+
+@router.put("/specific-slots/{slot_id}", response_model=SpecificDateSlotResponse)
+async def update_specific_date_slot(
+    slot_id: uuid.UUID,
+    body: SpecificDateSlotUpdate,
+    db: DbSession,
+    current_user: ManagerUser,
+    tenant: CurrentTenant,
+):
+    result = await db.execute(
+        select(SpecificDateSlot).where(
+            SpecificDateSlot.id == slot_id, SpecificDateSlot.tenant_id == tenant.id
+        )
+    )
+    slot = result.scalar_one_or_none()
+    if not slot:
+        raise HTTPException(status_code=404, detail="Specific date slot not found")
+
+    update_data = _serialize_service_config(body.model_dump(exclude_unset=True))
+    for field, value in update_data.items():
+        setattr(slot, field, value)
     await db.flush()
     await db.refresh(slot)
     return slot

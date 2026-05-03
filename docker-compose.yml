@@ -20,17 +20,12 @@ services:
     build: ./backend
     restart: unless-stopped
     env_file: .env
-    environment:
-      # Use local Docker database (Supabase pooler has connectivity issues)
-      DATABASE_URL: "postgresql+asyncpg://booking:booking_secret@db:5432/booking_system"
+    # DATABASE_URL comes from .env (Supabase). Local `db` service is unused.
     dns:
       - 8.8.8.8
       - 8.8.4.4
     ports:
       - "8000:8000"
-    depends_on:
-      db:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s

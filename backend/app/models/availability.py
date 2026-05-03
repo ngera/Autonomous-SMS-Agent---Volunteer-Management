@@ -25,6 +25,7 @@ class AvailabilityRule(Base):
     )
     day_of_week: Mapped[int] = mapped_column(Integer, nullable=False)  # 0=Mon..6=Sun
     label: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    location: Mapped[str | None] = mapped_column(String(255), nullable=True)
     start_time: Mapped[Time] = mapped_column(Time, nullable=False)
     end_time: Mapped[Time] = mapped_column(Time, nullable=False)
     buffer_minutes: Mapped[int] = mapped_column(Integer, default=0)
@@ -47,6 +48,7 @@ class SpecificDateSlot(Base):
     )
     date: Mapped[Date] = mapped_column(Date, nullable=False)
     label: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    location: Mapped[str | None] = mapped_column(String(255), nullable=True)
     start_time: Mapped[Time] = mapped_column(Time, nullable=False)
     end_time: Mapped[Time] = mapped_column(Time, nullable=False)
     buffer_minutes: Mapped[int] = mapped_column(Integer, default=0)

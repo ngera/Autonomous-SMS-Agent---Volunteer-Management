@@ -60,8 +60,8 @@ export function ToolUsageTable({ data, isLoading }: Props) {
                 tick={{ fontSize: 12 }}
               />
               <Tooltip
-                formatter={(value: number, name: string) => [
-                  value,
+                formatter={(value, name) => [
+                  Number(value),
                   name === "call_count" ? "Calls" : "Requests",
                 ]}
               />

@@ -17,6 +17,7 @@ class AppointmentType(Base):
         UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False, index=True
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    category: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
     duration_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
     price: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)

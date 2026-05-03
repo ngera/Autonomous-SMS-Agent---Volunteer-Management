@@ -20,7 +20,7 @@ export function AvailabilityPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Availability"
+        title="Schedule Setup"
         description="Configure working hours, blocked dates, and view slot previews."
       />
 
@@ -35,7 +35,19 @@ export function AvailabilityPage() {
         <TabsContent value="schedule" className="mt-4">
           <WeeklyScheduleBuilder
             rules={rules.data ?? []}
-            onSave={(r) => updateRules.mutate({ rules: r })}
+            onSave={(r) =>
+              updateRules.mutate(
+                { rules: r },
+                {
+                  onError: (err: unknown) => {
+                    const detail =
+                      (err as { response?: { data?: { detail?: string } } })?.response?.data
+                        ?.detail || (err as Error)?.message || "Failed to save schedule";
+                    alert(`Could not save schedule: ${detail}`);
+                  },
+                }
+              )
+            }
             isSaving={updateRules.isPending}
             canEdit={canEdit}
           />

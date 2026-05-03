@@ -1,7 +1,7 @@
 import csv
 import io
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Query, UploadFile, status
 from sqlalchemy import func, select
@@ -10,8 +10,9 @@ from sqlalchemy.orm import joinedload
 from app.core.dependencies import CurrentTenant, CurrentUser, DbSession, ManagerUser
 
 logger = logging.getLogger(__name__)
+from app.models.appointment_type import AppointmentType
 from app.models.booking import Booking, BookingStatus
-from app.models.contact import Contact
+from app.models.contact import Contact, ContactStatus
 from app.models.contact_preferred_type import ContactPreferredType
 from app.models.contact_consent import (
     ContactConsent,
@@ -31,6 +32,9 @@ from app.schemas.customer import (
     OptOutRequest,
     PatternOverrideRequest,
     PatternResponse,
+    VolunteerHoursSummary,
+    VolunteerServiceStat,
+    VolunteerStatsResponse,
 )
 
 router = APIRouter(prefix="/api/v1/customers", tags=["customers"])
@@ -69,7 +73,9 @@ async def _sync_preferred_types(db, contact_id, tenant_id, type_ids: list):
     await db.flush()
 
 
-def _build_customer_response(contact, consent_status, preferred_type_ids=None):
+def _build_customer_response(
+    contact, consent_status, preferred_type_ids=None, total_minutes: int = 0
+):
     return CustomerResponse(
         phone=contact.phone,
         name=contact.name,
@@ -77,6 +83,11 @@ def _build_customer_response(contact, consent_status, preferred_type_ids=None):
         sex=contact.sex,
         status=contact.status,
         all_services_enabled=contact.all_services_enabled,
+        background_check_required=contact.background_check_required,
+        availability=contact.availability or [],
+        weekly_hours=contact.weekly_hours or [],
+        unavailable_dates=contact.unavailable_dates or [],
+        total_minutes=total_minutes,
         reminder_preference_days=contact.reminder_preference_days,
         consent_status=consent_status,
         preferred_appointment_type_ids=preferred_type_ids or [],
@@ -96,11 +107,19 @@ async def list_customers(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     search: str | None = None,
+    status_filter: ContactStatus | None = Query(None, alias="status"),
+    consent_filter: ConsentStatus | None = Query(None, alias="consent_status"),
+    background_check_required: bool | None = None,
+    availability: str | None = None,
 ):
-    query = select(Contact).options(joinedload(Contact.consent)).where(
+    base = select(Contact).options(joinedload(Contact.consent)).where(
         Contact.tenant_id == tenant.id
     )
+    unfiltered_total = (await db.execute(
+        select(func.count()).select_from(base.subquery())
+    )).scalar() or 0
 
+    query = base
     if search:
         search_filter = f"%{search}%"
         query = query.where(
@@ -108,13 +127,43 @@ async def list_customers(
             | (Contact.name.ilike(search_filter))
             | (Contact.email.ilike(search_filter))
         )
+    if status_filter is not None:
+        query = query.where(Contact.status == status_filter)
+    if background_check_required is not None:
+        query = query.where(Contact.background_check_required == background_check_required)
+    if availability:
+        query = query.where(Contact.availability.op("@>")([availability]))
+    if consent_filter is not None:
+        query = query.join(ContactConsent, ContactConsent.contact_id == Contact.id).where(
+            ContactConsent.status == consent_filter
+        )
 
     count_query = select(func.count()).select_from(query.subquery())
     total = (await db.execute(count_query)).scalar() or 0
 
-    query = query.offset((page - 1) * page_size).limit(page_size)
+    query = query.order_by(Contact.name).offset((page - 1) * page_size).limit(page_size)
     result = await db.execute(query)
     contacts = result.unique().scalars().all()
+
+    contact_ids = [c.id for c in contacts]
+    hours_map: dict = {}
+    if contact_ids:
+        rows = await db.execute(
+            select(
+                Booking.contact_id,
+                func.coalesce(
+                    func.sum(AppointmentType.duration_minutes), 0
+                ).label("minutes"),
+            )
+            .join(AppointmentType, AppointmentType.id == Booking.appointment_type_id)
+            .where(
+                Booking.tenant_id == tenant.id,
+                Booking.contact_id.in_(contact_ids),
+                Booking.status == BookingStatus.COMPLETED,
+            )
+            .group_by(Booking.contact_id)
+        )
+        hours_map = {row[0]: int(row[1] or 0) for row in rows.all()}
 
     items = []
     for contact in contacts:
@@ -123,10 +172,64 @@ async def list_customers(
             contact,
             contact.consent.status if contact.consent else None,
             pref_ids,
+            total_minutes=hours_map.get(contact.id, 0),
         )
         items.append(item)
 
-    return CustomerListResponse(items=items, total=total, page=page, page_size=page_size)
+    return CustomerListResponse(
+        items=items,
+        total=total,
+        total_unfiltered=unfiltered_total,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.get("/hours-summary", response_model=VolunteerHoursSummary)
+async def get_volunteer_hours_summary(
+    db: DbSession, current_user: CurrentUser, tenant: CurrentTenant
+):
+    """Sum of completed-booking durations across all volunteers.
+
+    `last_month` is the previous calendar month. Falls back to scheduled_at when
+    completed_at is null (older bookings before the column was always populated).
+    """
+    booking_when = func.coalesce(Booking.completed_at, Booking.scheduled_at)
+
+    base_total = (await db.execute(
+        select(func.coalesce(func.sum(AppointmentType.duration_minutes), 0))
+        .join(AppointmentType, AppointmentType.id == Booking.appointment_type_id)
+        .where(
+            Booking.tenant_id == tenant.id,
+            Booking.status == BookingStatus.COMPLETED,
+        )
+    )).scalar() or 0
+
+    today = date.today()
+    if today.month == 1:
+        lm_start = date(today.year - 1, 12, 1)
+        lm_end = date(today.year, 1, 1)
+    else:
+        lm_start = date(today.year, today.month - 1, 1)
+        lm_end = date(today.year, today.month, 1)
+    lm_start_dt = datetime.combine(lm_start, datetime.min.time(), tzinfo=timezone.utc)
+    lm_end_dt = datetime.combine(lm_end, datetime.min.time(), tzinfo=timezone.utc)
+
+    last_month_total = (await db.execute(
+        select(func.coalesce(func.sum(AppointmentType.duration_minutes), 0))
+        .join(AppointmentType, AppointmentType.id == Booking.appointment_type_id)
+        .where(
+            Booking.tenant_id == tenant.id,
+            Booking.status == BookingStatus.COMPLETED,
+            booking_when >= lm_start_dt,
+            booking_when < lm_end_dt,
+        )
+    )).scalar() or 0
+
+    return VolunteerHoursSummary(
+        total_minutes_all_time=int(base_total),
+        total_minutes_last_month=int(last_month_total),
+    )
 
 
 @router.get("/{phone}", response_model=CustomerResponse)
@@ -167,6 +270,10 @@ async def create_customer(
             email=body.email,
             sex=body.sex,
             all_services_enabled=body.all_services_enabled,
+            background_check_required=body.background_check_required,
+            availability=body.availability or None,
+            weekly_hours=[b.model_dump(mode="json") for b in body.weekly_hours] or None,
+            unavailable_dates=[d.isoformat() for d in body.unavailable_dates] or None,
             reminder_preference_days=body.reminder_preference_days,
         )
         db.add(contact)
@@ -238,7 +345,7 @@ async def update_customer(
     if not contact:
         raise HTTPException(status_code=404, detail="Customer not found")
 
-    update_data = body.model_dump(exclude_unset=True)
+    update_data = body.model_dump(mode="json", exclude_unset=True)
     pref_ids = update_data.pop("preferred_appointment_type_ids", None)
     new_phone = update_data.pop("phone", None)
 
@@ -345,6 +452,56 @@ async def get_customer_bookings(
         .order_by(Booking.scheduled_at.desc())
     )
     return result.scalars().all()
+
+
+@router.get("/{phone}/volunteer-stats", response_model=VolunteerStatsResponse)
+async def get_customer_volunteer_stats(
+    phone: str, db: DbSession, current_user: CurrentUser, tenant: CurrentTenant
+):
+    contact_result = await db.execute(
+        select(Contact.id).where(
+            Contact.phone == phone, Contact.tenant_id == tenant.id
+        )
+    )
+    contact_id = contact_result.scalar_one_or_none()
+    if not contact_id:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    rows = (await db.execute(
+        select(
+            AppointmentType.id,
+            AppointmentType.name,
+            AppointmentType.category,
+            func.count(Booking.id).label("completed_bookings"),
+            func.coalesce(
+                func.sum(AppointmentType.duration_minutes), 0
+            ).label("total_minutes"),
+        )
+        .join(AppointmentType, AppointmentType.id == Booking.appointment_type_id)
+        .where(
+            Booking.tenant_id == tenant.id,
+            Booking.contact_id == contact_id,
+            Booking.status == BookingStatus.COMPLETED,
+        )
+        .group_by(AppointmentType.id, AppointmentType.name, AppointmentType.category)
+        .order_by(func.sum(AppointmentType.duration_minutes).desc())
+    )).all()
+
+    by_service = [
+        VolunteerServiceStat(
+            appointment_type_id=r[0],
+            name=r[1],
+            category=r[2],
+            completed_bookings=int(r[3] or 0),
+            total_minutes=int(r[4] or 0),
+        )
+        for r in rows
+    ]
+    return VolunteerStatsResponse(
+        total_completed_bookings=sum(s.completed_bookings for s in by_service),
+        total_minutes=sum(s.total_minutes for s in by_service),
+        by_service=by_service,
+    )
 
 
 @router.get("/{phone}/conversations")

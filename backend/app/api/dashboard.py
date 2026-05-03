@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy import and_, func, select
 
 from app.core.dependencies import CurrentTenant, CurrentUser, DbSession, ManagerUser
+from app.models.announcement import Announcement, AnnouncementStatus
 from app.models.appointment_type import AppointmentType
 from app.models.availability import AvailabilityRule, SpecificDateSlot
 from app.models.booking import Booking, BookingStatus
@@ -50,6 +51,26 @@ async def _compute_weekly_slot_statuses(db, tenant, day_offset_start: int = 0) -
     for s in reminder_keys_result.scalars().all():
         reminder_timestamps[s.key] = s.value
 
+    # Build per-appointment-type map of latest SENT announcement timestamp.
+    # Announcement applies to a service when filter_appointment_type_ids is empty
+    # (broadcast) or explicitly includes that service's id.
+    ann_rows = (await db.execute(
+        select(Announcement.sent_at, Announcement.filter_appointment_type_ids).where(
+            Announcement.tenant_id == tenant.id,
+            Announcement.status == AnnouncementStatus.SENT,
+            Announcement.sent_at.is_not(None),
+        )
+    )).all()
+    last_announcement_map: dict[str, datetime] = {}
+    for sent_at, filter_ids in ann_rows:
+        target_ids = [str(x) for x in (filter_ids or [])] or list(appt_types.keys())
+        for tid in target_ids:
+            if tid not in appt_types:
+                continue
+            existing = last_announcement_map.get(tid)
+            if existing is None or sent_at > existing:
+                last_announcement_map[tid] = sent_at
+
     statuses = []
     for day_offset in range(day_offset_start, day_offset_start + 7):
         target_date = today + timedelta(days=day_offset)
@@ -65,7 +86,7 @@ async def _compute_weekly_slot_statuses(db, tenant, day_offset_start: int = 0) -
             )
         )
         for r in rules_result.scalars().all():
-            windows.append((r.label, r.start_time, r.end_time, r.service_config))
+            windows.append((r.label, r.start_time, r.end_time, r.service_config, "recurring", r.location))
 
         specific_result = await db.execute(
             select(SpecificDateSlot).where(
@@ -75,9 +96,9 @@ async def _compute_weekly_slot_statuses(db, tenant, day_offset_start: int = 0) -
             )
         )
         for s in specific_result.scalars().all():
-            windows.append((s.label, s.start_time, s.end_time, s.service_config))
+            windows.append((s.label, s.start_time, s.end_time, s.service_config, "one_time", s.location))
 
-        for label, start_t, end_t, svc_config in windows:
+        for label, start_t, end_t, svc_config, source, location in windows:
             window_time = f"{str(start_t)[:5]} – {str(end_t)[:5]}"
 
             if svc_config:
@@ -139,7 +160,10 @@ async def _compute_weekly_slot_statuses(db, tenant, day_offset_start: int = 0) -
                     "max_allowed": max_allow,
                     "booked": booked,
                     "status": slot_status,
+                    "source": source,
+                    "location": location,
                     "last_reminder_sent": last_sent,
+                    "last_announcement_sent": last_announcement_map.get(appt_id),
                 })
 
     return statuses
@@ -184,6 +208,13 @@ async def get_dashboard_summary(db: DbSession, current_user: CurrentUser, tenant
         select(func.count()).where(
             Contact.tenant_id == tenant.id,
             Contact.status == "active",
+        )
+    )).scalar() or 0
+
+    suspended_or_banned = (await db.execute(
+        select(func.count()).where(
+            Contact.tenant_id == tenant.id,
+            Contact.status.in_(["suspended", "banned"]),
         )
     )).scalar() or 0
 
@@ -301,6 +332,7 @@ async def get_dashboard_summary(db: DbSession, current_user: CurrentUser, tenant
     return DashboardSummary(
         todays_bookings_count=todays_bookings,
         unreviewed_suspensions_count=unreviewed,
+        suspended_or_banned_count=suspended_or_banned,
         monthly_bookings=monthly_bookings,
         slots_needing_bookings=slots_needing,
         total_volunteers=total_volunteers,

@@ -6,6 +6,7 @@ import type {
   BlockedDateCreate,
   SpecificDateSlotResponse,
   SpecificDateSlotCreate,
+  SpecificDateSlotUpdate,
   SlotResponse,
 } from "@/types/api";
 
@@ -42,6 +43,17 @@ export async function listSpecificDateSlots(): Promise<SpecificDateSlotResponse[
 
 export async function createSpecificDateSlot(body: SpecificDateSlotCreate): Promise<SpecificDateSlotResponse> {
   const { data } = await api.post<SpecificDateSlotResponse>("/availability/specific-slots", body);
+  return data;
+}
+
+export async function updateSpecificDateSlot(
+  id: string,
+  body: SpecificDateSlotUpdate
+): Promise<SpecificDateSlotResponse> {
+  const { data } = await api.put<SpecificDateSlotResponse>(
+    `/availability/specific-slots/${id}`,
+    body
+  );
   return data;
 }
 

@@ -63,6 +63,7 @@ export function TenantUsersTab({ tenantId }: TenantUsersTabProps) {
     e.preventDefault();
     const body = {
       ...createForm,
+      role: createForm.role as AdminRole,
       phone: createForm.phone || undefined,
     };
     createMutation.mutate(body, {
@@ -210,7 +211,7 @@ export function TenantUsersTab({ tenantId }: TenantUsersTabProps) {
               <Select
                 value={createForm.role}
                 onValueChange={(v) =>
-                  setCreateForm((f) => ({ ...f, role: v }))
+                  setCreateForm((f) => ({ ...f, role: v ?? "staff" }))
                 }
               >
                 <SelectTrigger>

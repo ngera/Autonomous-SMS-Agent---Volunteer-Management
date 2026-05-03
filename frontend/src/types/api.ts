@@ -1,5 +1,6 @@
 import type {
   AnnouncementStatus,
+  AvailabilitySlot,
   BookingStatus,
   ConsentStatus,
   ContactPreference,
@@ -23,6 +24,7 @@ export interface PaginatedResponse<T> {
   page: number;
   page_size: number;
 }
+
 
 // ── Auth ──
 
@@ -65,6 +67,7 @@ export interface VolunteersByService {
 export interface DashboardSummary {
   todays_bookings_count: number;
   unreviewed_suspensions_count: number;
+  suspended_or_banned_count: number;
   monthly_bookings: number;
   slots_needing_bookings: number;
   total_volunteers: number;
@@ -82,7 +85,10 @@ export interface WeeklySlotStatus {
   max_allowed: number;
   booked: number;
   status: "needs_more" | "met_minimum" | "full";
+  source: "recurring" | "one_time";
+  location: string | null;
   last_reminder_sent: string | null;
+  last_announcement_sent: string | null;
 }
 
 export interface TodaysBooking {
@@ -161,6 +167,12 @@ export interface BookingHistoryResponse {
 
 // ── Customers ──
 
+export interface WeeklyHourBlock {
+  day_of_week: number; // 0=Mon..6=Sun
+  start_time: string; // "HH:MM:SS" or "HH:MM"
+  end_time: string;
+}
+
 export interface CustomerResponse {
   phone: string;
   name: string | null;
@@ -168,6 +180,11 @@ export interface CustomerResponse {
   sex: ContactSex | null;
   status: ContactStatus;
   all_services_enabled: boolean;
+  background_check_required: boolean;
+  availability: AvailabilitySlot[];
+  weekly_hours: WeeklyHourBlock[];
+  unavailable_dates: string[]; // ISO date strings (YYYY-MM-DD)
+  total_minutes: number;
   reminder_preference_days: number;
   consent_status: ConsentStatus | null;
   preferred_appointment_type_ids: string[];
@@ -175,7 +192,9 @@ export interface CustomerResponse {
   updated_at: string;
 }
 
-export type CustomerListResponse = PaginatedResponse<CustomerResponse>;
+export interface CustomerListResponse extends PaginatedResponse<CustomerResponse> {
+  total_unfiltered: number;
+}
 
 export interface CustomerWithTenant extends CustomerResponse {
   tenant_id: string;
@@ -188,6 +207,10 @@ export interface CustomerCreate {
   email?: string;
   sex?: ContactSex;
   all_services_enabled?: boolean;
+  background_check_required?: boolean;
+  availability?: AvailabilitySlot[];
+  weekly_hours?: WeeklyHourBlock[];
+  unavailable_dates?: string[];
   reminder_preference_days?: number;
   preferred_appointment_type_ids?: string[];
 }
@@ -198,6 +221,10 @@ export interface CustomerUpdate {
   email?: string;
   sex?: ContactSex | null;
   all_services_enabled?: boolean;
+  background_check_required?: boolean;
+  availability?: AvailabilitySlot[];
+  weekly_hours?: WeeklyHourBlock[];
+  unavailable_dates?: string[];
   reminder_preference_days?: number;
   preferred_appointment_type_ids?: string[];
 }
@@ -233,11 +260,33 @@ export interface PatternOverrideRequest {
   manual_override_days: number;
 }
 
+// ── Volunteer Stats ──
+
+export interface VolunteerServiceStat {
+  appointment_type_id: string;
+  name: string;
+  category: string | null;
+  completed_bookings: number;
+  total_minutes: number;
+}
+
+export interface VolunteerStatsResponse {
+  total_completed_bookings: number;
+  total_minutes: number;
+  by_service: VolunteerServiceStat[];
+}
+
+export interface VolunteerHoursSummary {
+  total_minutes_all_time: number;
+  total_minutes_last_month: number;
+}
+
 // ── Appointment Types ──
 
 export interface AppointmentTypeResponse {
   id: string;
   name: string;
+  category: string | null;
   duration_minutes: number;
   price: number;
   description: string | null;
@@ -249,6 +298,7 @@ export interface AppointmentTypeResponse {
 
 export interface AppointmentTypeCreate {
   name: string;
+  category?: string;
   duration_minutes: number;
   price: number;
   description?: string;
@@ -258,6 +308,7 @@ export interface AppointmentTypeCreate {
 
 export interface AppointmentTypeUpdate {
   name?: string;
+  category?: string;
   duration_minutes?: number;
   price?: number;
   description?: string;
@@ -290,6 +341,7 @@ export interface AvailabilityRuleResponse {
   id: string;
   day_of_week: number;
   label: string | null;
+  location: string | null;
   start_time: string;
   end_time: string;
   buffer_minutes: number;
@@ -300,6 +352,7 @@ export interface AvailabilityRuleResponse {
 export interface AvailabilityRuleUpdate {
   day_of_week: number;
   label?: string;
+  location?: string;
   start_time: string;
   end_time: string;
   buffer_minutes?: number;
@@ -311,6 +364,7 @@ export interface SpecificDateSlotResponse {
   id: string;
   date: string;
   label: string | null;
+  location: string | null;
   start_time: string;
   end_time: string;
   buffer_minutes: number;
@@ -321,8 +375,20 @@ export interface SpecificDateSlotResponse {
 export interface SpecificDateSlotCreate {
   date: string;
   label?: string;
+  location?: string;
   start_time: string;
   end_time: string;
+  buffer_minutes?: number;
+  service_config?: ServiceSlotConfig[] | null;
+  is_active?: boolean;
+}
+
+export interface SpecificDateSlotUpdate {
+  date?: string;
+  label?: string;
+  location?: string;
+  start_time?: string;
+  end_time?: string;
   buffer_minutes?: number;
   service_config?: ServiceSlotConfig[] | null;
   is_active?: boolean;
@@ -668,30 +734,6 @@ export interface SuperAdminDashboardSummary {
   total_reminders: number;
   total_revenue: number;
   tenants: TenantSummaryItem[];
-}
-
-export interface AdminUserResponse {
-  id: string;
-  email: string;
-  role: string;
-  phone: string | null;
-  tenant_id: string | null;
-  is_active: boolean;
-  created_at: string;
-  last_login_at: string | null;
-}
-
-export interface AdminUserCreate {
-  email: string;
-  password: string;
-  role: string;
-  phone?: string | null;
-}
-
-export interface AdminUserUpdate {
-  role?: string;
-  is_active?: boolean;
-  phone?: string | null;
 }
 
 export interface AdminUserPasswordUpdate {

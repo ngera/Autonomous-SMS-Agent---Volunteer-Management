@@ -108,3 +108,22 @@ export const ContactPreference = {
   SMS: "sms",
 } as const;
 export type ContactPreference = (typeof ContactPreference)[keyof typeof ContactPreference];
+
+export const AvailabilitySlot = {
+  WEEKDAY_AM: "weekday_am",
+  WEEKDAY_PM: "weekday_pm",
+  WEEKDAY_EVE: "weekday_eve",
+  WEEKEND_AM: "weekend_am",
+  WEEKEND_PM: "weekend_pm",
+  WEEKEND_EVE: "weekend_eve",
+} as const;
+export type AvailabilitySlot = (typeof AvailabilitySlot)[keyof typeof AvailabilitySlot];
+
+export const AVAILABILITY_OPTIONS: { value: AvailabilitySlot; label: string; short: string }[] = [
+  { value: AvailabilitySlot.WEEKDAY_AM, label: "Weekday AM", short: "Wkd AM" },
+  { value: AvailabilitySlot.WEEKDAY_PM, label: "Weekday PM", short: "Wkd PM" },
+  { value: AvailabilitySlot.WEEKDAY_EVE, label: "Weekday eve", short: "Wkd eve" },
+  { value: AvailabilitySlot.WEEKEND_AM, label: "Weekend AM", short: "Wkn AM" },
+  { value: AvailabilitySlot.WEEKEND_PM, label: "Weekend PM", short: "Wkn PM" },
+  { value: AvailabilitySlot.WEEKEND_EVE, label: "Weekend eve", short: "Wkn eve" },
+];

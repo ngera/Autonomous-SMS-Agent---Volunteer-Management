@@ -4,7 +4,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Plus, Trash2, X } from "lucide-react";
 import {
   DropdownMenu,
@@ -18,6 +17,7 @@ import type { AvailabilityRuleResponse, AvailabilityRuleUpdate, ServiceSlotConfi
 
 interface SlotRule {
   label: string;
+  location: string;
   start_time: string;
   end_time: string;
   buffer_minutes: number;
@@ -27,6 +27,7 @@ interface SlotRule {
 
 const DEFAULT_SLOT: SlotRule = {
   label: "",
+  location: "",
   start_time: "09:00",
   end_time: "17:00",
   buffer_minutes: 0,
@@ -52,6 +53,7 @@ export function WeeklyScheduleBuilder({ rules, onSave, isSaving, canEdit }: Week
     for (const rule of rules) {
       grouped[rule.day_of_week].push({
         label: rule.label || "",
+        location: rule.location || "",
         start_time: rule.start_time,
         end_time: rule.end_time,
         buffer_minutes: rule.buffer_minutes,
@@ -102,6 +104,7 @@ export function WeeklyScheduleBuilder({ rules, onSave, isSaving, canEdit }: Week
         allRules.push({
           day_of_week: day,
           label: slot.label || undefined,
+          location: slot.location.trim() || undefined,
           start_time: slot.start_time,
           end_time: slot.end_time,
           buffer_minutes: slot.buffer_minutes,
@@ -152,6 +155,10 @@ export function WeeklyScheduleBuilder({ rules, onSave, isSaving, canEdit }: Week
                       <Label className="text-xs">Label</Label>
                       <Input value={slot.label} onChange={(e) => updateSlot(dayIndex, slotIdx, { label: e.target.value })} placeholder="e.g. Morning Shift" className="h-8" disabled={!canEdit} />
                     </div>
+                    <div className="space-y-1 flex-1 min-w-[140px]">
+                      <Label className="text-xs">Location</Label>
+                      <Input value={slot.location} onChange={(e) => updateSlot(dayIndex, slotIdx, { location: e.target.value })} placeholder="e.g. Main Hall" className="h-8" disabled={!canEdit} />
+                    </div>
                     <div className="space-y-1">
                       <Label className="text-xs">Start</Label>
                       <Input type="time" value={slot.start_time} onChange={(e) => updateSlot(dayIndex, slotIdx, { start_time: e.target.value })} className="w-28 h-8" disabled={!canEdit} />
@@ -178,11 +185,13 @@ export function WeeklyScheduleBuilder({ rules, onSave, isSaving, canEdit }: Week
                       {slot.service_config.length === 0 && <span className="text-xs text-muted-foreground italic">All services (min 1, max 1)</span>}
                       {canEdit && activeTypes.length > 0 && (
                         <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="outline" size="sm" className="h-6 text-xs px-2">
-                              <Plus className="h-3 w-3 mr-1" /> {slot.service_config.length === 0 ? "Configure..." : "Add"}
-                            </Button>
-                          </DropdownMenuTrigger>
+                          <DropdownMenuTrigger
+                            render={
+                              <Button variant="outline" size="sm" className="h-6 text-xs px-2">
+                                <Plus className="h-3 w-3 mr-1" /> {slot.service_config.length === 0 ? "Configure..." : "Add"}
+                              </Button>
+                            }
+                          />
                           <DropdownMenuContent align="start" className="w-56">
                             {activeTypes.map((type) => (
                               <DropdownMenuCheckboxItem

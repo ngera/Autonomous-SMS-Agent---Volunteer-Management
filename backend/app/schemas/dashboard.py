@@ -17,6 +17,7 @@ class VolunteersByService(BaseModel):
 class DashboardSummary(BaseModel):
     todays_bookings_count: int
     unreviewed_suspensions_count: int
+    suspended_or_banned_count: int
     monthly_bookings: int
     slots_needing_bookings: int
     total_volunteers: int
@@ -35,7 +36,10 @@ class WeeklySlotStatus(BaseModel):
     max_allowed: int
     booked: int
     status: str  # "needs_more", "met_minimum", "full"
+    source: str  # "recurring" | "one_time"
+    location: str | None = None
     last_reminder_sent: datetime | None = None
+    last_announcement_sent: datetime | None = None
 
 
 class TodaysBooking(BaseModel):

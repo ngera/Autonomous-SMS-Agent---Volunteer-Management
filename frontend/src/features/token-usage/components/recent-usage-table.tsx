@@ -148,8 +148,8 @@ export function RecentUsageTable({ data, isLoading }: Props) {
                   tickFormatter={(v) => (v >= 1000 ? `${(v / 1000).toFixed(0)}K` : v)}
                 />
                 <Tooltip
-                  formatter={(value: number, name: string) => [
-                    value.toLocaleString(),
+                  formatter={(value, name) => [
+                    Number(value).toLocaleString(),
                     name === "input_tokens" ? "Input Tokens" : "Output Tokens",
                   ]}
                 />

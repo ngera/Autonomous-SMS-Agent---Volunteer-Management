@@ -7,10 +7,16 @@ import {
   deleteBlockedDate,
   listSpecificDateSlots,
   createSpecificDateSlot,
+  updateSpecificDateSlot,
   deleteSpecificDateSlot,
   getSlotPreview,
 } from "../api";
-import type { WeeklyScheduleUpdate, BlockedDateCreate, SpecificDateSlotCreate } from "@/types/api";
+import type {
+  WeeklyScheduleUpdate,
+  BlockedDateCreate,
+  SpecificDateSlotCreate,
+  SpecificDateSlotUpdate,
+} from "@/types/api";
 import { useActiveTenantId } from "@/hooks/use-active-tenant";
 
 export function useAvailabilityRules() {
@@ -74,6 +80,17 @@ export function useCreateSpecificDateSlot() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: SpecificDateSlotCreate) => createSpecificDateSlot(body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["availability", "specific-slots"] });
+    },
+  });
+}
+
+export function useUpdateSpecificDateSlot() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: SpecificDateSlotUpdate }) =>
+      updateSpecificDateSlot(id, body),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["availability", "specific-slots"] });
     },

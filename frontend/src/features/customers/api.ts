@@ -10,12 +10,19 @@ import type {
   PatternResponse,
   PatternOverrideRequest,
   OptOutRequest,
+  VolunteerStatsResponse,
+  VolunteerHoursSummary,
 } from "@/types/api";
+import type { ContactStatus, ConsentStatus, AvailabilitySlot } from "@/types/enums";
 
 export interface CustomerFilters {
   page?: number;
   page_size?: number;
   search?: string;
+  status?: ContactStatus;
+  consent_status?: ConsentStatus;
+  background_check_required?: boolean;
+  availability?: AvailabilitySlot;
 }
 
 export async function listCustomers(
@@ -130,6 +137,20 @@ export async function setPatternOverride(
 
 export async function clearPatternOverride(phone: string): Promise<void> {
   await api.delete(`/customers/${encodeURIComponent(phone)}/pattern/override`);
+}
+
+export async function getCustomerVolunteerStats(
+  phone: string
+): Promise<VolunteerStatsResponse> {
+  const { data } = await api.get<VolunteerStatsResponse>(
+    `/customers/${encodeURIComponent(phone)}/volunteer-stats`
+  );
+  return data;
+}
+
+export async function getVolunteerHoursSummary(): Promise<VolunteerHoursSummary> {
+  const { data } = await api.get<VolunteerHoursSummary>("/customers/hours-summary");
+  return data;
 }
 
 export async function sendOptinOutreach(phone: string): Promise<void> {

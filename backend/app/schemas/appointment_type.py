@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 class AppointmentTypeCreate(BaseModel):
     name: str
+    category: str | None = None
     duration_minutes: int
     price: float
     description: str | None = None
@@ -15,6 +16,7 @@ class AppointmentTypeCreate(BaseModel):
 
 class AppointmentTypeUpdate(BaseModel):
     name: str | None = None
+    category: str | None = None
     duration_minutes: int | None = None
     price: float | None = None
     description: str | None = None
@@ -25,6 +27,7 @@ class AppointmentTypeUpdate(BaseModel):
 class AppointmentTypeResponse(BaseModel):
     id: uuid.UUID
     name: str
+    category: str | None
     duration_minutes: int
     price: float
     description: str | None

@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Check, X, AlertTriangle } from "lucide-react";
+import { Check, AlertTriangle } from "lucide-react";
 import { listAppointmentTypes } from "@/features/appointment-types/api";
 import { updateCustomer } from "../api";
 import type { CustomerResponse } from "@/types/api";

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Plus } from "lucide-react";
+import { Plus, Download, Upload } from "lucide-react";
 import { PageHeader } from "@/components/shared/page-header";
 import { DataTable, type Column } from "@/components/shared/data-table";
 import { Button } from "@/components/ui/button";
@@ -17,6 +17,8 @@ import {
 } from "../hooks/use-appointment-types";
 import { AppointmentTypeForm } from "../components/appointment-type-form";
 import { RelatedServicesPanel } from "../components/related-services-panel";
+import { CsvImportDialog } from "../components/csv-import-dialog";
+import { appointmentTypesToCsv, downloadCsv } from "../lib/csv";
 
 export function AppointmentTypesPage() {
   const { hasRole } = useAuth();
@@ -27,12 +29,30 @@ export function AppointmentTypesPage() {
   const deleteType = useDeleteAppointmentType();
 
   const [showForm, setShowForm] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const [editItem, setEditItem] = useState<AppointmentTypeResponse | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [selectedTypeId, setSelectedTypeId] = useState<string | null>(null);
 
+  function handleExport() {
+    const rows = types.data ?? [];
+    const csv = appointmentTypesToCsv(rows);
+    const stamp = new Date().toISOString().slice(0, 10);
+    downloadCsv(`appointment-types-${stamp}.csv`, csv);
+  }
+
   const columns: Column<AppointmentTypeResponse>[] = [
     { key: "name", header: "Name", render: (t) => t.name },
+    {
+      key: "category",
+      header: "Category",
+      render: (t) =>
+        t.category ? (
+          t.category
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        ),
+    },
     {
       key: "duration",
       header: "Duration",
@@ -106,20 +126,36 @@ export function AppointmentTypesPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Appointment Types"
+        title="Service Types"
         description="Manage services offered to customers."
         actions={
-          canEdit ? (
+          <div className="flex gap-2">
             <Button
-              onClick={() => {
-                setEditItem(null);
-                setShowForm(true);
-              }}
+              variant="outline"
+              onClick={handleExport}
+              disabled={!types.data || types.data.length === 0}
             >
-              <Plus className="mr-2 h-4 w-4" />
-              Add Type
+              <Download className="mr-2 h-4 w-4" />
+              Export CSV
             </Button>
-          ) : undefined
+            {canEdit && (
+              <>
+                <Button variant="outline" onClick={() => setShowImport(true)}>
+                  <Upload className="mr-2 h-4 w-4" />
+                  Import CSV
+                </Button>
+                <Button
+                  onClick={() => {
+                    setEditItem(null);
+                    setShowForm(true);
+                  }}
+                >
+                  <Plus className="mr-2 h-4 w-4" />
+                  Add Type
+                </Button>
+              </>
+            )}
+          </div>
         }
       />
 
@@ -159,10 +195,12 @@ export function AppointmentTypesPage() {
         }}
       />
 
+      <CsvImportDialog open={showImport} onOpenChange={setShowImport} />
+
       <ConfirmDialog
         open={!!deleteId}
         onOpenChange={(open) => !open && setDeleteId(null)}
-        title="Archive Appointment Type"
+        title="Archive Service Type"
         description="This will hide the type from the chatbot but preserve historical bookings."
         confirmLabel="Archive"
         variant="destructive"

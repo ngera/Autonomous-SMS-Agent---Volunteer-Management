@@ -45,6 +45,12 @@ class Contact(Base):
     all_services_enabled: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false", nullable=False
     )
+    background_check_required: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+    availability: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    weekly_hours: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    unavailable_dates: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     reminder_preference_days: Mapped[int] = mapped_column(Integer, default=7)
     preferences: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -1,10 +1,33 @@
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, time
+from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 from app.models.contact import ContactSex, ContactStatus
 from app.models.contact_consent import ConsentStatus
+
+
+AvailabilitySlot = Literal[
+    "weekday_am",
+    "weekday_pm",
+    "weekday_eve",
+    "weekend_am",
+    "weekend_pm",
+    "weekend_eve",
+]
+
+
+class WeeklyHourBlock(BaseModel):
+    day_of_week: int = Field(ge=0, le=6)  # 0=Monday..6=Sunday
+    start_time: time
+    end_time: time
+
+    @model_validator(mode="after")
+    def _check_order(self):
+        if self.end_time <= self.start_time:
+            raise ValueError("end_time must be after start_time")
+        return self
 
 
 class CustomerResponse(BaseModel):
@@ -14,6 +37,11 @@ class CustomerResponse(BaseModel):
     sex: ContactSex | None = None
     status: ContactStatus
     all_services_enabled: bool = False
+    background_check_required: bool = False
+    availability: list[AvailabilitySlot] = []
+    weekly_hours: list[WeeklyHourBlock] = []
+    unavailable_dates: list[date] = []
+    total_minutes: int = 0
     reminder_preference_days: int
     consent_status: ConsentStatus | None = None
     preferred_appointment_type_ids: list[uuid.UUID] = []
@@ -32,6 +60,10 @@ class CustomerCreate(BaseModel):
     email: str | None = None
     sex: ContactSex | None = None
     all_services_enabled: bool = False
+    background_check_required: bool = False
+    availability: list[AvailabilitySlot] = []
+    weekly_hours: list[WeeklyHourBlock] = []
+    unavailable_dates: list[date] = []
     reminder_preference_days: int = 7
     preferred_appointment_type_ids: list[uuid.UUID] = []
 
@@ -42,6 +74,10 @@ class CustomerUpdate(BaseModel):
     email: str | None = None
     sex: ContactSex | None = None
     all_services_enabled: bool | None = None
+    background_check_required: bool | None = None
+    availability: list[AvailabilitySlot] | None = None
+    weekly_hours: list[WeeklyHourBlock] | None = None
+    unavailable_dates: list[date] | None = None
     reminder_preference_days: int | None = None
     preferred_appointment_type_ids: list[uuid.UUID] | None = None
     preferences: dict | None = None
@@ -51,6 +87,7 @@ class CustomerUpdate(BaseModel):
 class CustomerListResponse(BaseModel):
     items: list[CustomerResponse]
     total: int
+    total_unfiltered: int
     page: int
     page_size: int
 
@@ -101,3 +138,22 @@ class CsvImportResponse(BaseModel):
     imported: int
     skipped: int
     errors: list[str]
+
+
+class VolunteerServiceStat(BaseModel):
+    appointment_type_id: uuid.UUID
+    name: str
+    category: str | None
+    completed_bookings: int
+    total_minutes: int
+
+
+class VolunteerStatsResponse(BaseModel):
+    total_completed_bookings: int
+    total_minutes: int
+    by_service: list[VolunteerServiceStat]
+
+
+class VolunteerHoursSummary(BaseModel):
+    total_minutes_all_time: int
+    total_minutes_last_month: int

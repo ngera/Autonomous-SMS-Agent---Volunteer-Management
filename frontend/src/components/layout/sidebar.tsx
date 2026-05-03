@@ -32,7 +32,7 @@ const navItems = [
   { to: "/bookings", label: "Bookings", icon: Calendar },
   { to: "/customers", label: "Volunteers", icon: Users },
   { to: "/appointment-types", label: "Types", icon: ClipboardList },
-  { to: "/availability", label: "Availability", icon: Clock },
+  { to: "/availability", label: "Schedule Setup", icon: Clock },
   { to: "/reminders", label: "Reminders", icon: Bell },
   { to: "/conversations", label: "Conversations", icon: MessageSquare },
   { to: "/suspensions", label: "Suspensions", icon: ShieldAlert },
