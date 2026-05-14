@@ -50,7 +50,8 @@ export function useBlockedDates() {
 export function useCreateBlockedDate() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: BlockedDateCreate) => createBlockedDate(body),
+    mutationFn: ({ body, force }: { body: BlockedDateCreate; force?: boolean }) =>
+      createBlockedDate(body, { force }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["availability", "blocked-dates"] });
     },
@@ -79,7 +80,8 @@ export function useSpecificDateSlots() {
 export function useCreateSpecificDateSlot() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: SpecificDateSlotCreate) => createSpecificDateSlot(body),
+    mutationFn: ({ body, force }: { body: SpecificDateSlotCreate; force?: boolean }) =>
+      createSpecificDateSlot(body, { force }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["availability", "specific-slots"] });
     },
@@ -89,8 +91,15 @@ export function useCreateSpecificDateSlot() {
 export function useUpdateSpecificDateSlot() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, body }: { id: string; body: SpecificDateSlotUpdate }) =>
-      updateSpecificDateSlot(id, body),
+    mutationFn: ({
+      id,
+      body,
+      force,
+    }: {
+      id: string;
+      body: SpecificDateSlotUpdate;
+      force?: boolean;
+    }) => updateSpecificDateSlot(id, body, { force }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["availability", "specific-slots"] });
     },

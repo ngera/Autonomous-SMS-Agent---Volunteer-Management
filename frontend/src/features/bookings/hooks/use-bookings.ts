@@ -7,6 +7,9 @@ import {
   updateBookingStatus,
   cancelBooking,
   getBookingHistory,
+  getBookingEventRoster,
+  getSpecificSlotEventRoster,
+  getWeeklyRuleEventRoster,
   getAvailableSlots,
   type BookingFilters,
 } from "../api";
@@ -37,6 +40,36 @@ export function useBookingHistory(id: string) {
     queryKey: ["bookings", tenantId, id, "history"],
     queryFn: () => getBookingHistory(id),
     enabled: !!id && tenantId !== "none",
+  });
+}
+
+export function useBookingEventRoster(id: string) {
+  const tenantId = useActiveTenantId();
+  return useQuery({
+    queryKey: ["bookings", tenantId, id, "event-roster"],
+    queryFn: () => getBookingEventRoster(id),
+    enabled: !!id && tenantId !== "none",
+  });
+}
+
+export function useSpecificSlotEventRoster(slotId: string | undefined) {
+  const tenantId = useActiveTenantId();
+  return useQuery({
+    queryKey: ["specific-slot", tenantId, slotId, "event-roster"],
+    queryFn: () => getSpecificSlotEventRoster(slotId!),
+    enabled: !!slotId && tenantId !== "none",
+  });
+}
+
+export function useWeeklyRuleEventRoster(
+  ruleId: string | undefined,
+  date: string | undefined
+) {
+  const tenantId = useActiveTenantId();
+  return useQuery({
+    queryKey: ["weekly-rule", tenantId, ruleId, date, "event-roster"],
+    queryFn: () => getWeeklyRuleEventRoster(ruleId!, date!),
+    enabled: !!ruleId && !!date && tenantId !== "none",
   });
 }
 

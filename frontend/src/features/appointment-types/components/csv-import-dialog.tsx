@@ -85,11 +85,10 @@ export function CsvImportDialog({ open, onOpenChange }: CsvImportDialogProps) {
           <div className="text-sm text-muted-foreground">
             CSV must include columns:{" "}
             <code className="rounded bg-muted px-1">name</code>,{" "}
+            <code className="rounded bg-muted px-1">category</code>,{" "}
             <code className="rounded bg-muted px-1">duration_minutes</code>,{" "}
             <code className="rounded bg-muted px-1">price</code>. Optional:{" "}
-            <code className="rounded bg-muted px-1">category</code>,{" "}
             <code className="rounded bg-muted px-1">description</code>,{" "}
-            <code className="rounded bg-muted px-1">recurrence_weeks_default</code>,{" "}
             <code className="rounded bg-muted px-1">is_active</code>.
           </div>
 

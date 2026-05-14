@@ -95,12 +95,20 @@ export function NeedsAttentionPanel({
   if (understaffed) {
     const open = understaffed.max_allowed - understaffed.booked;
     const day = format(parseISO(understaffed.date), "EEEE");
+    // Route to the event roster so the admin can see who's signed up and
+    // who else they might invite. Falls back to Schedule Setup only if the
+    // source ID is missing (shouldn't normally happen).
+    const rosterRoute = understaffed.source_id
+      ? understaffed.source === "one_time"
+        ? `/events/specific/${understaffed.source_id}`
+        : `/events/rule/${understaffed.source_id}/${understaffed.date}`
+      : "/availability";
     items.push({
       tone: "rose",
       title: `${understaffed.display_name} understaffed`,
       description: `${day} — ${open} ${open === 1 ? "slot" : "slots"} open`,
-      actionLabel: "Review availability",
-      onAction: () => navigate("/availability"),
+      actionLabel: "Review event",
+      onAction: () => navigate(rosterRoute),
     });
   }
   if (unreviewedSuspensions > 0) {

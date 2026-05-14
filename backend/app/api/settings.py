@@ -22,12 +22,16 @@ async def get_settings(db: DbSession, current_user: CurrentUser, tenant: Current
 
 @router.get("/prompts")
 async def get_prompts(db: DbSession, current_user: OwnerUser, tenant: CurrentTenant):
-    """Return all prompt keys with current values (DB override or default)."""
-    # Build defaults map (fill in screener default)
+    """Return all prompt keys with both the effective value and the factory default.
+
+    The admin UI uses ``default_value`` to power the "Reset to Default" button
+    (so it actually resets to the latest shipped default, not the last-loaded
+    value) and to show a "Modified" indicator when the saved override has
+    drifted from the code default.
+    """
     defaults = {**PROMPT_KEYS}
     defaults["prompt_screener_system"] = SCREENER_SYSTEM_PROMPT
 
-    # Fetch any DB overrides
     result = await db.execute(
         select(SystemSetting).where(
             SystemSetting.tenant_id == tenant.id,
@@ -40,6 +44,7 @@ async def get_prompts(db: DbSession, current_user: OwnerUser, tenant: CurrentTen
         {
             "key": key,
             "value": overrides.get(key, default),
+            "default_value": default,
             "is_default": key not in overrides,
         }
         for key, default in defaults.items()

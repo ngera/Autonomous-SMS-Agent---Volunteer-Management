@@ -24,6 +24,12 @@ class DashboardSummary(BaseModel):
     volunteers_by_service: list[VolunteersByService]
 
 
+class RosterEntry(BaseModel):
+    name: str
+    phone: str
+    visibility: str  # "hidden" | "first_name" | "full_name"
+
+
 class WeeklySlotStatus(BaseModel):
     """Status of a service within an availability window for a specific date."""
     date: str
@@ -37,7 +43,10 @@ class WeeklySlotStatus(BaseModel):
     booked: int
     status: str  # "needs_more", "met_minimum", "full"
     source: str  # "recurring" | "one_time"
+    source_id: str | None = None  # AvailabilityRule.id or SpecificDateSlot.id
     location: str | None = None
+    allow_roster_sharing: bool = True
+    roster: list[RosterEntry] = []
     last_reminder_sent: datetime | None = None
     last_announcement_sent: datetime | None = None
 

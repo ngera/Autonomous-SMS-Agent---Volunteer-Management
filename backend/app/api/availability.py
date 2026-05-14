@@ -1,5 +1,5 @@
 import uuid
-from datetime import date
+from datetime import date, datetime
 
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import delete, select
@@ -17,6 +17,7 @@ from app.schemas.availability import (
     SpecificDateSlotUpdate,
     WeeklyScheduleUpdate,
 )
+from app.schemas.booking import EventRosterEvent, EventRosterResponse
 
 router = APIRouter(prefix="/api/v1/availability", tags=["availability"])
 
@@ -76,10 +77,52 @@ async def list_specific_date_slots(db: DbSession, current_user: CurrentUser, ten
     return result.scalars().all()
 
 
+async def _blocked_date_conflicts(
+    db: DbSession, tenant_id: uuid.UUID, target: date
+) -> list[BlockedDate]:
+    """Return any blocked-date ranges that cover ``target`` for this tenant."""
+    result = await db.execute(
+        select(BlockedDate).where(
+            BlockedDate.tenant_id == tenant_id,
+            BlockedDate.date_from <= target,
+            BlockedDate.date_to >= target,
+        )
+    )
+    return list(result.scalars().all())
+
+
+def _format_blocked_conflict(blocks: list[BlockedDate]) -> dict:
+    """Build the 409 response body for a blocked-date / event conflict."""
+    return {
+        "code": "blocked_date_conflict",
+        "message": (
+            "This date is inside a blocked-date range. "
+            "Confirm to schedule the event anyway."
+        ),
+        "blocked_dates": [
+            {
+                "date_from": b.date_from.isoformat(),
+                "date_to": b.date_to.isoformat(),
+                "reason": b.reason,
+            }
+            for b in blocks
+        ],
+    }
+
+
 @router.post("/specific-slots", response_model=SpecificDateSlotResponse, status_code=status.HTTP_201_CREATED)
 async def create_specific_date_slot(
-    body: SpecificDateSlotCreate, db: DbSession, current_user: ManagerUser, tenant: CurrentTenant
+    body: SpecificDateSlotCreate,
+    db: DbSession,
+    current_user: ManagerUser,
+    tenant: CurrentTenant,
+    force: bool = Query(False),
 ):
+    if not force:
+        conflicts = await _blocked_date_conflicts(db, tenant.id, body.date)
+        if conflicts:
+            raise HTTPException(status_code=409, detail=_format_blocked_conflict(conflicts))
+
     data = _serialize_service_config(body.model_dump())
     slot = SpecificDateSlot(tenant_id=tenant.id, **data)
     db.add(slot)
@@ -95,6 +138,7 @@ async def update_specific_date_slot(
     db: DbSession,
     current_user: ManagerUser,
     tenant: CurrentTenant,
+    force: bool = Query(False),
 ):
     result = await db.execute(
         select(SpecificDateSlot).where(
@@ -105,7 +149,15 @@ async def update_specific_date_slot(
     if not slot:
         raise HTTPException(status_code=404, detail="Specific date slot not found")
 
+    # Only re-check the blocked-date conflict when the date itself changed —
+    # rescheduling within the same blocked day shouldn't keep nagging the admin.
     update_data = _serialize_service_config(body.model_dump(exclude_unset=True))
+    new_date = update_data.get("date")
+    if not force and new_date and new_date != slot.date:
+        conflicts = await _blocked_date_conflicts(db, tenant.id, new_date)
+        if conflicts:
+            raise HTTPException(status_code=409, detail=_format_blocked_conflict(conflicts))
+
     for field, value in update_data.items():
         setattr(slot, field, value)
     await db.flush()
@@ -140,8 +192,47 @@ async def get_blocked_dates(db: DbSession, current_user: CurrentUser, tenant: Cu
 
 @router.post("/blocked-dates", response_model=BlockedDateResponse, status_code=status.HTTP_201_CREATED)
 async def create_blocked_date(
-    body: BlockedDateCreate, db: DbSession, current_user: ManagerUser, tenant: CurrentTenant
+    body: BlockedDateCreate,
+    db: DbSession,
+    current_user: ManagerUser,
+    tenant: CurrentTenant,
+    force: bool = Query(False),
 ):
+    if not force:
+        # Surface any specific-date events that fall inside the blocked range
+        # so the admin can decide whether to proceed.
+        events = await db.execute(
+            select(SpecificDateSlot).where(
+                SpecificDateSlot.tenant_id == tenant.id,
+                SpecificDateSlot.date >= body.date_from,
+                SpecificDateSlot.date <= body.date_to,
+                SpecificDateSlot.is_active.is_(True),
+            )
+        )
+        conflicting = list(events.scalars().all())
+        if conflicting:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "events_inside_block",
+                    "message": (
+                        "Specific-date events fall inside this blocked range. "
+                        "They will keep running unless you cancel them; "
+                        "confirm to add the block anyway."
+                    ),
+                    "events": [
+                        {
+                            "id": str(e.id),
+                            "date": e.date.isoformat(),
+                            "label": e.label,
+                            "start_time": e.start_time.strftime("%H:%M"),
+                            "end_time": e.end_time.strftime("%H:%M"),
+                        }
+                        for e in conflicting
+                    ],
+                },
+            )
+
     blocked = BlockedDate(tenant_id=tenant.id, **body.model_dump())
     db.add(blocked)
     await db.flush()
@@ -160,6 +251,117 @@ async def delete_blocked_date(
     if not blocked:
         raise HTTPException(status_code=404, detail="Blocked date not found")
     await db.delete(blocked)
+
+
+# ── Event roster (source-based, works with zero bookings) ──
+
+
+@router.get(
+    "/specific-slots/{slot_id}/event-roster",
+    response_model=EventRosterResponse,
+)
+async def get_specific_slot_event_roster(
+    slot_id: uuid.UUID,
+    db: DbSession,
+    current_user: CurrentUser,
+    tenant: CurrentTenant,
+):
+    """Return the full roster for a specific-date event, even with no bookings."""
+    import pytz
+
+    from app.api.bookings import build_event_roster_response
+
+    result = await db.execute(
+        select(SpecificDateSlot).where(
+            SpecificDateSlot.id == slot_id,
+            SpecificDateSlot.tenant_id == tenant.id,
+        )
+    )
+    sds = result.scalar_one_or_none()
+    if not sds:
+        raise HTTPException(status_code=404, detail="Specific date slot not found")
+
+    tz = pytz.timezone(tenant.business_timezone or "America/New_York")
+    slot_start_local = tz.localize(datetime.combine(sds.date, sds.start_time))
+    slot_end_local = tz.localize(datetime.combine(sds.date, sds.end_time))
+    event_meta = EventRosterEvent(
+        source="specific_date",
+        source_id=sds.id,
+        label=sds.label,
+        location=sds.location,
+        date=sds.date,
+        start_time=sds.start_time,
+        end_time=sds.end_time,
+    )
+    return await build_event_roster_response(
+        db,
+        tenant,
+        service_config=sds.service_config,
+        slot_start_local=slot_start_local,
+        slot_end_local=slot_end_local,
+        event_meta=event_meta,
+    )
+
+
+@router.get(
+    "/rules/{rule_id}/event-roster",
+    response_model=EventRosterResponse,
+)
+async def get_weekly_rule_event_roster(
+    rule_id: uuid.UUID,
+    db: DbSession,
+    current_user: CurrentUser,
+    tenant: CurrentTenant,
+    on_date: date = Query(..., alias="date"),
+):
+    """Return the roster for one occurrence of a weekly window, even with no bookings.
+
+    ``date`` selects which day-of-week occurrence to materialize. The rule's
+    day_of_week must match the date's weekday or the request is rejected so
+    admins don't accidentally view a non-existent occurrence.
+    """
+    import pytz
+
+    from app.api.bookings import build_event_roster_response
+
+    result = await db.execute(
+        select(AvailabilityRule).where(
+            AvailabilityRule.id == rule_id,
+            AvailabilityRule.tenant_id == tenant.id,
+        )
+    )
+    rule = result.scalar_one_or_none()
+    if not rule:
+        raise HTTPException(status_code=404, detail="Availability rule not found")
+    if rule.day_of_week != on_date.weekday():
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"This rule fires on day-of-week {rule.day_of_week} "
+                f"but {on_date} is day-of-week {on_date.weekday()}."
+            ),
+        )
+
+    tz = pytz.timezone(tenant.business_timezone or "America/New_York")
+    slot_start_local = tz.localize(datetime.combine(on_date, rule.start_time))
+    slot_end_local = tz.localize(datetime.combine(on_date, rule.end_time))
+    event_meta = EventRosterEvent(
+        source="weekly_rule",
+        source_id=rule.id,
+        label=rule.label,
+        location=rule.location,
+        date=on_date,
+        start_time=rule.start_time,
+        end_time=rule.end_time,
+    )
+    return await build_event_roster_response(
+        db,
+        tenant,
+        service_config=rule.service_config,
+        slot_start_local=slot_start_local,
+        slot_end_local=slot_end_local,
+        event_meta=event_meta,
+    )
 
 
 # ── Slot preview ──

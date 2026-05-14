@@ -20,6 +20,7 @@ import { TokenUsagePage } from "@/features/token-usage/pages/token-usage-page";
 import { SettingsPage } from "@/features/settings/pages/settings-page";
 import AnnouncementsPage from "@/features/announcements/pages/announcements-page";
 import { TestToolPage } from "@/features/test-tool/pages/test-tool-page";
+import { MultiVolunteerTestPage } from "@/features/test-tool/pages/multi-volunteer-test-page";
 import { TenantsPage } from "@/features/tenants/pages/tenants-page";
 import { TenantDetailPage } from "@/features/tenants/pages/tenant-detail-page";
 import { AdminRole } from "@/types/enums";
@@ -54,6 +55,8 @@ export default function App() {
             <Route path="/bookings" element={<BookingsPage />} />
             <Route path="/bookings/new" element={<BookingCreatePage />} />
             <Route path="/bookings/:id" element={<BookingDetailPage />} />
+            <Route path="/events/specific/:slotId" element={<BookingDetailPage />} />
+            <Route path="/events/rule/:ruleId/:date" element={<BookingDetailPage />} />
             <Route path="/customers" element={<CustomersPage />} />
             <Route path="/customers/:phone" element={<CustomerDetailPage />} />
             <Route path="/appointment-types" element={<AppointmentTypesPage />} />
@@ -83,6 +86,14 @@ export default function App() {
               element={
                 <RoleGate minimum={AdminRole.MANAGER}>
                   <TestToolPage />
+                </RoleGate>
+              }
+            />
+            <Route
+              path="/multi-test"
+              element={
+                <RoleGate minimum={AdminRole.MANAGER}>
+                  <MultiVolunteerTestPage />
                 </RoleGate>
               }
             />

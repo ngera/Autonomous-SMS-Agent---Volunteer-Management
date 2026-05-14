@@ -27,6 +27,7 @@ export async function updateSettings(
 export interface PromptResponse {
   key: string;
   value: string;
+  default_value: string;
   is_default: boolean;
 }
 

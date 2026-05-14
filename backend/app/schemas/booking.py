@@ -1,9 +1,9 @@
 import uuid
-from datetime import datetime
+from datetime import date as DateT, datetime, time
 
 from pydantic import BaseModel
 
-from app.models.booking import BookingStatus
+from app.models.booking import BookingStatus, RosterVisibility
 
 
 class BookingCreate(BaseModel):
@@ -11,6 +11,7 @@ class BookingCreate(BaseModel):
     appointment_type_id: uuid.UUID
     scheduled_at: datetime
     price_at_booking: float
+    roster_visibility: RosterVisibility = RosterVisibility.FIRST_NAME
 
 
 class BookingResponse(BaseModel):
@@ -21,6 +22,7 @@ class BookingResponse(BaseModel):
     confirmed_at: datetime | None
     completed_at: datetime | None
     status: BookingStatus
+    roster_visibility: RosterVisibility = RosterVisibility.FIRST_NAME
     price_at_booking: float
     calendar_event_id: str | None
     ics_sequence: int
@@ -65,3 +67,35 @@ class BookingHistoryResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class EventRosterSignup(BaseModel):
+    booking_id: uuid.UUID
+    phone: str
+    name: str | None
+    status: BookingStatus
+    scheduled_at: datetime
+
+
+class EventRosterService(BaseModel):
+    appointment_type_id: uuid.UUID
+    name: str
+    category: str
+    min_required: int
+    max_allowed: int
+    signups: list[EventRosterSignup]
+
+
+class EventRosterEvent(BaseModel):
+    source: str  # "specific_date" | "weekly_rule" | "ad_hoc"
+    source_id: uuid.UUID | None = None  # SpecificDateSlot.id / AvailabilityRule.id
+    label: str | None = None
+    location: str | None = None
+    date: DateT
+    start_time: time
+    end_time: time
+
+
+class EventRosterResponse(BaseModel):
+    event: EventRosterEvent | None
+    services: list[EventRosterService]

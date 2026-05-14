@@ -1,3 +1,4 @@
+import { useSearchParams } from "react-router-dom";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PageHeader } from "@/components/shared/page-header";
 import { useAuth } from "@/hooks/use-auth";
@@ -11,11 +12,38 @@ import {
   useUpdateAvailabilityRules,
 } from "../hooks/use-availability";
 
+const TABS = ["schedule", "specific", "blocked", "preview"] as const;
+type TabValue = (typeof TABS)[number];
+
 export function AvailabilityPage() {
   const { hasRole } = useAuth();
   const canEdit = hasRole(AdminRole.MANAGER);
   const rules = useAvailabilityRules();
   const updateRules = useUpdateAvailabilityRules();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // Deep-linking: ?tab=specific&edit_slot=<id> jumps to the Specific Dates
+  // tab and auto-opens the edit form for that slot. ?tab=schedule routes to
+  // the Weekly Schedule tab for rule edits.
+  const rawTab = searchParams.get("tab");
+  const tab: TabValue = (TABS as readonly string[]).includes(rawTab ?? "")
+    ? (rawTab as TabValue)
+    : "schedule";
+  const editSlotId = searchParams.get("edit_slot");
+
+  function handleTabChange(next: string) {
+    const params = new URLSearchParams(searchParams);
+    params.set("tab", next);
+    // Drop deep-link payload when the admin switches away on their own.
+    if (next !== "specific") params.delete("edit_slot");
+    setSearchParams(params, { replace: true });
+  }
+
+  function clearEditSlotParam() {
+    const params = new URLSearchParams(searchParams);
+    params.delete("edit_slot");
+    setSearchParams(params, { replace: true });
+  }
 
   return (
     <div className="space-y-6">
@@ -24,7 +52,7 @@ export function AvailabilityPage() {
         description="Configure working hours, blocked dates, and view slot previews."
       />
 
-      <Tabs defaultValue="schedule">
+      <Tabs value={tab} onValueChange={handleTabChange}>
         <TabsList>
           <TabsTrigger value="schedule">Weekly Schedule</TabsTrigger>
           <TabsTrigger value="specific">Specific Dates</TabsTrigger>
@@ -54,7 +82,11 @@ export function AvailabilityPage() {
         </TabsContent>
 
         <TabsContent value="specific" className="mt-4">
-          <SpecificDateSlotsPanel canEdit={canEdit} />
+          <SpecificDateSlotsPanel
+            canEdit={canEdit}
+            editSlotId={editSlotId}
+            onConsumeEditSlot={clearEditSlotParam}
+          />
         </TabsContent>
 
         <TabsContent value="blocked" className="mt-4">

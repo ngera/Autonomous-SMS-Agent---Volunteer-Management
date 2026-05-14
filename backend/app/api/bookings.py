@@ -14,6 +14,10 @@ from app.schemas.booking import (
     BookingHistoryResponse,
     BookingListResponse,
     BookingResponse,
+    EventRosterEvent,
+    EventRosterResponse,
+    EventRosterService,
+    EventRosterSignup,
     RescheduleRequest,
     StatusUpdateRequest,
 )
@@ -143,6 +147,32 @@ async def create_booking(
             detail="This volunteer has a pending background check requirement. Clear the flag on their profile before booking.",
         )
 
+    # Reject if the volunteer already has another active booking that overlaps.
+    appt_q = await db.execute(
+        select(AppointmentType.duration_minutes).where(
+            AppointmentType.id == body.appointment_type_id
+        )
+    )
+    duration_minutes = appt_q.scalar_one()
+    from app.services.booking import find_volunteer_overlap
+    conflict = await find_volunteer_overlap(
+        db, tenant.id, contact.id, body.scheduled_at, duration_minutes
+    )
+    if conflict is not None:
+        existing_booking, existing_type = conflict
+        from datetime import timedelta as _td
+        existing_end = existing_booking.scheduled_at + _td(minutes=existing_type.duration_minutes)
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"This volunteer is already booked for '{existing_type.name}' from "
+                f"{existing_booking.scheduled_at.strftime('%I:%M %p')} to "
+                f"{existing_end.strftime('%I:%M %p')} on "
+                f"{existing_booking.scheduled_at.strftime('%A %B %d')}, "
+                f"which overlaps this slot."
+            ),
+        )
+
     booking = Booking(
         tenant_id=tenant.id,
         contact_id=contact.id,
@@ -151,6 +181,7 @@ async def create_booking(
         scheduled_at=body.scheduled_at,
         price_at_booking=body.price_at_booking,
         status=BookingStatus.SCHEDULED,
+        roster_visibility=body.roster_visibility.value,
         confirmed_at=datetime.now(timezone.utc),
     )
     db.add(booking)
@@ -321,3 +352,214 @@ async def get_booking_history(
         .order_by(BookingHistory.created_at)
     )
     return result.scalars().all()
+
+
+async def build_event_roster_response(
+    db,
+    tenant,
+    *,
+    service_config,
+    slot_start_local: datetime,
+    slot_end_local: datetime,
+    event_meta: EventRosterEvent,
+) -> EventRosterResponse:
+    """Shared roster builder used by every roster endpoint.
+
+    Given the slot's [start, end] window in tenant-local time and its
+    ``service_config`` (or None for "all active services"), expands the
+    services and pulls in every booking — active and not — so the caller
+    can present an event-level view.
+    """
+    # NULL/empty service_config means "all active services" with default
+    # min=1 max=1 (matches services/availability._get_service_limits).
+    if service_config:
+        configured = [
+            (
+                uuid.UUID(str(c.get("appointment_type_id"))),
+                int(c.get("min_required", 1)),
+                int(c.get("max_allowed", c.get("min_required", 1))),
+            )
+            for c in service_config
+            if c.get("appointment_type_id")
+        ]
+        type_ids = [tid for tid, _, _ in configured]
+    else:
+        all_types_q = await db.execute(
+            select(AppointmentType.id).where(
+                AppointmentType.tenant_id == tenant.id,
+                AppointmentType.is_active.is_(True),
+            )
+        )
+        type_ids = list(all_types_q.scalars().all())
+        configured = [(tid, 1, 1) for tid in type_ids]
+
+    if not type_ids:
+        return EventRosterResponse(event=event_meta, services=[])
+
+    types_q = await db.execute(
+        select(
+            AppointmentType.id,
+            AppointmentType.name,
+            AppointmentType.category,
+            AppointmentType.duration_minutes,
+        ).where(
+            AppointmentType.tenant_id == tenant.id,
+            AppointmentType.id.in_(type_ids),
+        )
+    )
+    type_rows = {row.id: row for row in types_q.all()}
+
+    bookings_q = await db.execute(
+        select(Booking).where(
+            Booking.tenant_id == tenant.id,
+            Booking.appointment_type_id.in_(type_ids),
+            Booking.scheduled_at >= slot_start_local,
+            Booking.scheduled_at < slot_end_local,
+        )
+    )
+    slot_bookings = list(bookings_q.scalars().all())
+
+    contact_ids = list({b.contact_id for b in slot_bookings})
+    name_by_contact: dict[uuid.UUID, str | None] = {}
+    if contact_ids:
+        contacts_q = await db.execute(
+            select(Contact.id, Contact.name).where(Contact.id.in_(contact_ids))
+        )
+        for cid, cname in contacts_q.all():
+            name_by_contact[cid] = cname
+
+    by_type: dict[uuid.UUID, list[EventRosterSignup]] = {tid: [] for tid in type_ids}
+    for b in slot_bookings:
+        sig = EventRosterSignup(
+            booking_id=b.id,
+            phone=b.contact_phone,
+            name=name_by_contact.get(b.contact_id),
+            status=b.status,
+            scheduled_at=b.scheduled_at,
+        )
+        by_type.setdefault(b.appointment_type_id, []).append(sig)
+
+    services: list[EventRosterService] = []
+    for tid, min_req, max_allow in configured:
+        row = type_rows.get(tid)
+        if row is None:
+            continue
+        signups = sorted(
+            by_type.get(tid, []),
+            key=lambda s: ((s.name or "").lower(), s.phone),
+        )
+        services.append(EventRosterService(
+            appointment_type_id=tid,
+            name=row.name,
+            category=row.category,
+            min_required=min_req,
+            max_allowed=max_allow,
+            signups=signups,
+        ))
+    services.sort(key=lambda s: (s.category.lower(), s.name.lower()))
+    return EventRosterResponse(event=event_meta, services=services)
+
+
+@router.get("/{booking_id}/event-roster", response_model=EventRosterResponse)
+async def get_booking_event_roster(
+    booking_id: uuid.UUID, db: DbSession, current_user: CurrentUser, tenant: CurrentTenant
+):
+    """Return the full roster for the slot that the given booking belongs to."""
+    import pytz
+    from datetime import timedelta
+
+    from app.models.availability import AvailabilityRule, SpecificDateSlot
+
+    booking_q = await db.execute(
+        select(Booking).where(Booking.id == booking_id, Booking.tenant_id == tenant.id)
+    )
+    booking = booking_q.scalar_one_or_none()
+    if not booking:
+        raise HTTPException(status_code=404, detail="Booking not found")
+
+    appt_q = await db.execute(
+        select(AppointmentType).where(AppointmentType.id == booking.appointment_type_id)
+    )
+    booking_appt = appt_q.scalar_one_or_none()
+    if not booking_appt:
+        raise HTTPException(status_code=500, detail="Appointment type missing for booking")
+
+    tz = pytz.timezone(tenant.business_timezone or "America/New_York")
+    local_dt = booking.scheduled_at.astimezone(tz)
+    local_date = local_dt.date()
+    local_start_time = local_dt.time()
+    local_end_dt = local_dt + timedelta(minutes=booking_appt.duration_minutes)
+    local_end_time = local_end_dt.time()
+    day_of_week = local_dt.weekday()
+
+    sds_q = await db.execute(
+        select(SpecificDateSlot).where(
+            SpecificDateSlot.tenant_id == tenant.id,
+            SpecificDateSlot.date == local_date,
+            SpecificDateSlot.is_active.is_(True),
+            SpecificDateSlot.start_time <= local_start_time,
+            SpecificDateSlot.end_time >= local_end_time,
+        )
+    )
+    sds = sds_q.scalar_one_or_none()
+
+    rule = None
+    if sds is None:
+        rule_q = await db.execute(
+            select(AvailabilityRule).where(
+                AvailabilityRule.tenant_id == tenant.id,
+                AvailabilityRule.day_of_week == day_of_week,
+                AvailabilityRule.is_active.is_(True),
+                AvailabilityRule.start_time <= local_start_time,
+                AvailabilityRule.end_time >= local_end_time,
+            )
+        )
+        rule = rule_q.scalar_one_or_none()
+
+    if sds is not None:
+        slot_start_local = tz.localize(datetime.combine(local_date, sds.start_time))
+        slot_end_local = tz.localize(datetime.combine(local_date, sds.end_time))
+        service_config = sds.service_config
+        event_meta = EventRosterEvent(
+            source="specific_date",
+            source_id=sds.id,
+            label=sds.label,
+            location=sds.location,
+            date=local_date,
+            start_time=sds.start_time,
+            end_time=sds.end_time,
+        )
+    elif rule is not None:
+        slot_start_local = tz.localize(datetime.combine(local_date, rule.start_time))
+        slot_end_local = tz.localize(datetime.combine(local_date, rule.end_time))
+        service_config = rule.service_config
+        event_meta = EventRosterEvent(
+            source="weekly_rule",
+            source_id=rule.id,
+            label=rule.label,
+            location=rule.location,
+            date=local_date,
+            start_time=rule.start_time,
+            end_time=rule.end_time,
+        )
+    else:
+        slot_start_local = local_dt
+        slot_end_local = local_end_dt
+        service_config = None
+        event_meta = EventRosterEvent(
+            source="ad_hoc",
+            label=None,
+            location=None,
+            date=local_date,
+            start_time=local_start_time,
+            end_time=local_end_time,
+        )
+
+    return await build_event_roster_response(
+        db,
+        tenant,
+        service_config=service_config,
+        slot_start_local=slot_start_local,
+        slot_end_local=slot_end_local,
+        event_meta=event_meta,
+    )

@@ -31,6 +31,7 @@ class AvailabilityRuleResponse(BaseModel):
     buffer_minutes: int
     service_config: list[ServiceSlotConfig] | None
     is_active: bool
+    allow_roster_sharing: bool = True
 
     model_config = {"from_attributes": True}
 
@@ -44,6 +45,7 @@ class AvailabilityRuleUpdate(BaseModel):
     buffer_minutes: int = 0
     service_config: list[ServiceSlotConfig] | None = None
     is_active: bool = True
+    allow_roster_sharing: bool = True
 
 
 class WeeklyScheduleUpdate(BaseModel):
@@ -62,6 +64,7 @@ class SpecificDateSlotResponse(BaseModel):
     buffer_minutes: int
     service_config: list[ServiceSlotConfig] | None
     is_active: bool
+    allow_roster_sharing: bool = True
 
     model_config = {"from_attributes": True}
 
@@ -75,6 +78,7 @@ class SpecificDateSlotCreate(BaseModel):
     buffer_minutes: int = 0
     service_config: list[ServiceSlotConfig] | None = None
     is_active: bool = True
+    allow_roster_sharing: bool = True
 
 
 class SpecificDateSlotUpdate(BaseModel):
@@ -86,6 +90,7 @@ class SpecificDateSlotUpdate(BaseModel):
     buffer_minutes: int | None = None
     service_config: list[ServiceSlotConfig] | None = None
     is_active: bool | None = None
+    allow_roster_sharing: bool | None = None
 
 
 # ── Blocked dates ──

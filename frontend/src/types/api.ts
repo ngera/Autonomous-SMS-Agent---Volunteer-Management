@@ -74,6 +74,12 @@ export interface DashboardSummary {
   volunteers_by_service: VolunteersByService[];
 }
 
+export interface RosterEntry {
+  name: string;
+  phone: string;
+  visibility: "hidden" | "first_name" | "full_name";
+}
+
 export interface WeeklySlotStatus {
   date: string;
   day_name: string;
@@ -86,7 +92,10 @@ export interface WeeklySlotStatus {
   booked: number;
   status: "needs_more" | "met_minimum" | "full";
   source: "recurring" | "one_time";
+  source_id: string | null;
   location: string | null;
+  allow_roster_sharing: boolean;
+  roster: RosterEntry[];
   last_reminder_sent: string | null;
   last_announcement_sent: string | null;
 }
@@ -165,6 +174,38 @@ export interface BookingHistoryResponse {
   created_at: string;
 }
 
+export interface EventRosterSignup {
+  booking_id: string;
+  phone: string;
+  name: string | null;
+  status: BookingStatus;
+  scheduled_at: string;
+}
+
+export interface EventRosterService {
+  appointment_type_id: string;
+  name: string;
+  category: string;
+  min_required: number;
+  max_allowed: number;
+  signups: EventRosterSignup[];
+}
+
+export interface EventRosterEvent {
+  source: "specific_date" | "weekly_rule" | "ad_hoc";
+  source_id: string | null;
+  label: string | null;
+  location: string | null;
+  date: string;
+  start_time: string;
+  end_time: string;
+}
+
+export interface EventRosterResponse {
+  event: EventRosterEvent | null;
+  services: EventRosterService[];
+}
+
 // ── Customers ──
 
 export interface WeeklyHourBlock {
@@ -231,6 +272,7 @@ export interface CustomerUpdate {
 
 export interface CsvImportResponse {
   imported: number;
+  updated: number;
   skipped: number;
   errors: string[];
 }
@@ -286,11 +328,10 @@ export interface VolunteerHoursSummary {
 export interface AppointmentTypeResponse {
   id: string;
   name: string;
-  category: string | null;
+  category: string;
   duration_minutes: number;
   price: number;
   description: string | null;
-  recurrence_weeks_default: number | null;
   is_active: boolean;
   created_at: string;
   updated_at: string;
@@ -298,11 +339,10 @@ export interface AppointmentTypeResponse {
 
 export interface AppointmentTypeCreate {
   name: string;
-  category?: string;
+  category: string;
   duration_minutes: number;
   price: number;
   description?: string;
-  recurrence_weeks_default?: number;
   is_active?: boolean;
 }
 
@@ -312,7 +352,6 @@ export interface AppointmentTypeUpdate {
   duration_minutes?: number;
   price?: number;
   description?: string;
-  recurrence_weeks_default?: number;
   is_active?: boolean;
 }
 
@@ -347,6 +386,7 @@ export interface AvailabilityRuleResponse {
   buffer_minutes: number;
   service_config: ServiceSlotConfig[] | null;
   is_active: boolean;
+  allow_roster_sharing: boolean;
 }
 
 export interface AvailabilityRuleUpdate {
@@ -358,6 +398,7 @@ export interface AvailabilityRuleUpdate {
   buffer_minutes?: number;
   service_config?: ServiceSlotConfig[] | null;
   is_active?: boolean;
+  allow_roster_sharing?: boolean;
 }
 
 export interface SpecificDateSlotResponse {
@@ -370,6 +411,7 @@ export interface SpecificDateSlotResponse {
   buffer_minutes: number;
   service_config: ServiceSlotConfig[] | null;
   is_active: boolean;
+  allow_roster_sharing: boolean;
 }
 
 export interface SpecificDateSlotCreate {
@@ -381,6 +423,7 @@ export interface SpecificDateSlotCreate {
   buffer_minutes?: number;
   service_config?: ServiceSlotConfig[] | null;
   is_active?: boolean;
+  allow_roster_sharing?: boolean;
 }
 
 export interface SpecificDateSlotUpdate {
@@ -392,6 +435,7 @@ export interface SpecificDateSlotUpdate {
   buffer_minutes?: number;
   service_config?: ServiceSlotConfig[] | null;
   is_active?: boolean;
+  allow_roster_sharing?: boolean;
 }
 
 export interface WeeklyScheduleUpdate {
@@ -742,6 +786,18 @@ export interface AdminUserPasswordUpdate {
 
 // ── Announcements ──
 
+export interface EventContext {
+  event_label?: string | null;
+  event_date?: string | null;
+  event_start_time?: string | null;
+  event_end_time?: string | null;
+  event_location?: string | null;
+  service_name?: string | null;
+  appointment_type_id?: string | null;
+}
+
+export type RecipientScope = "all" | "event_signups";
+
 export interface AnnouncementResponse {
   id: string;
   message: string;
@@ -752,6 +808,8 @@ export interface AnnouncementResponse {
   total_recipients: number;
   sent_count: number;
   failed_count: number;
+  event_context: EventContext | null;
+  recipient_scope: RecipientScope;
   created_by_admin_id: string;
   created_at: string;
 }
@@ -762,4 +820,6 @@ export interface AnnouncementCreate {
   message: string;
   filter_appointment_type_ids?: string[];
   scheduled_at?: string;
+  event_context?: EventContext;
+  recipient_scope?: RecipientScope;
 }

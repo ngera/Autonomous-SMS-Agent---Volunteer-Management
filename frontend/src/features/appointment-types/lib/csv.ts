@@ -9,7 +9,6 @@ const CSV_HEADERS = [
   "duration_minutes",
   "price",
   "description",
-  "recurrence_weeks_default",
   "is_active",
 ] as const;
 
@@ -34,7 +33,6 @@ export function appointmentTypesToCsv(types: AppointmentTypeResponse[]): string 
         escapeField(t.duration_minutes),
         escapeField(t.price),
         escapeField(t.description ?? ""),
-        escapeField(t.recurrence_weeks_default ?? ""),
         escapeField(t.is_active ? "true" : "false"),
       ].join(",")
     );
@@ -145,7 +143,7 @@ export function parseAppointmentTypesCsv(text: string): CsvParseResult {
     const idx = headerCells.indexOf(h);
     if (idx >= 0) headerIndex[h] = idx;
   }
-  for (const required of ["name", "duration_minutes", "price"] as const) {
+  for (const required of ["name", "category", "duration_minutes", "price"] as const) {
     if (headerIndex[required] === undefined) {
       result.errors.push({
         row: 1,
@@ -191,30 +189,19 @@ export function parseAppointmentTypesCsv(text: string): CsvParseResult {
     }
 
     const category = get("category");
-    const description = get("description");
-    const recurrenceStr = get("recurrence_weeks_default");
-    const isActiveStr = get("is_active");
-
-    let recurrence: number | undefined;
-    if (recurrenceStr !== "") {
-      const r = Number(recurrenceStr);
-      if (!Number.isFinite(r) || r <= 0) {
-        result.errors.push({
-          row: i + 1,
-          message: `Invalid recurrence_weeks_default: "${recurrenceStr}"`,
-        });
-        continue;
-      }
-      recurrence = r;
+    if (!category) {
+      result.errors.push({ row: i + 1, message: "category is required" });
+      continue;
     }
+    const description = get("description");
+    const isActiveStr = get("is_active");
 
     result.rows.push({
       name,
-      category: category || undefined,
+      category,
       duration_minutes: Math.trunc(duration),
       price,
       description: description || undefined,
-      recurrence_weeks_default: recurrence,
       is_active: isActiveStr === "" ? true : parseBoolean(isActiveStr),
     });
   }

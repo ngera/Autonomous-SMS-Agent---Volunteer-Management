@@ -57,7 +57,7 @@ async def _compute_weekly_slot_statuses(db, tenant, day_offset_start: int = 0) -
     ann_rows = (await db.execute(
         select(Announcement.sent_at, Announcement.filter_appointment_type_ids).where(
             Announcement.tenant_id == tenant.id,
-            Announcement.status == AnnouncementStatus.SENT,
+            Announcement.status == AnnouncementStatus.SENT.value,
             Announcement.sent_at.is_not(None),
         )
     )).all()
@@ -86,7 +86,7 @@ async def _compute_weekly_slot_statuses(db, tenant, day_offset_start: int = 0) -
             )
         )
         for r in rules_result.scalars().all():
-            windows.append((r.label, r.start_time, r.end_time, r.service_config, "recurring", r.location))
+            windows.append((r.label, r.start_time, r.end_time, r.service_config, "recurring", r.location, r.allow_roster_sharing, str(r.id)))
 
         specific_result = await db.execute(
             select(SpecificDateSlot).where(
@@ -96,9 +96,9 @@ async def _compute_weekly_slot_statuses(db, tenant, day_offset_start: int = 0) -
             )
         )
         for s in specific_result.scalars().all():
-            windows.append((s.label, s.start_time, s.end_time, s.service_config, "one_time", s.location))
+            windows.append((s.label, s.start_time, s.end_time, s.service_config, "one_time", s.location, s.allow_roster_sharing, str(s.id)))
 
-        for label, start_t, end_t, svc_config, source, location in windows:
+        for label, start_t, end_t, svc_config, source, location, allow_roster_sharing, source_id in windows:
             window_time = f"{str(start_t)[:5]} – {str(end_t)[:5]}"
 
             if svc_config:
@@ -121,16 +121,30 @@ async def _compute_weekly_slot_statuses(db, tenant, day_offset_start: int = 0) -
                 min_req = svc.get("min_required", 1)
                 max_allow = svc.get("max_allowed", 1)
 
-                booked_result = await db.execute(
-                    select(func.count()).where(
+                roster_rows = (await db.execute(
+                    select(
+                        Contact.name,
+                        Contact.phone,
+                        Booking.roster_visibility,
+                    )
+                    .join(Contact, Contact.id == Booking.contact_id)
+                    .where(
                         Booking.tenant_id == tenant.id,
                         Booking.appointment_type_id == uuid.UUID(appt_id),
                         Booking.scheduled_at >= window_start_dt,
                         Booking.scheduled_at < window_end_dt,
                         Booking.status.in_([BookingStatus.SCHEDULED, BookingStatus.RESCHEDULED]),
                     )
-                )
-                booked = booked_result.scalar() or 0
+                )).all()
+                booked = len(roster_rows)
+                roster = [
+                    {
+                        "name": (cname or cphone),
+                        "phone": cphone,
+                        "visibility": (vis if isinstance(vis, str) else (vis.value if vis else "first_name")),
+                    }
+                    for (cname, cphone, vis) in roster_rows
+                ]
 
                 if booked >= max_allow:
                     slot_status = "full"
@@ -161,7 +175,10 @@ async def _compute_weekly_slot_statuses(db, tenant, day_offset_start: int = 0) -
                     "booked": booked,
                     "status": slot_status,
                     "source": source,
+                    "source_id": source_id,
                     "location": location,
+                    "allow_roster_sharing": allow_roster_sharing,
+                    "roster": roster,
                     "last_reminder_sent": last_sent,
                     "last_announcement_sent": last_announcement_map.get(appt_id),
                 })
@@ -428,6 +445,26 @@ async def send_slot_reminder(
     sent_signup = 0
     sent_confirmation = 0
 
+    # Load the configurable signup-reminder template; fall back to default on bad placeholders
+    from app.prompts.conversation import get_reminder_format_template
+    template = await get_reminder_format_template(db, tenant.id)
+
+    class _Defaulting(dict):
+        def __missing__(self, key: str) -> str:
+            return ""
+
+    template_ctx = _Defaulting({
+        "service_name": appt_type.name,
+        "date": date_str,
+    })
+    try:
+        signup_msg = template.format_map(template_ctx)
+    except (ValueError, KeyError, IndexError):
+        signup_msg = (
+            f"We still need volunteers for {appt_type.name} on {date_str}. "
+            "Reply to sign up for a time slot!"
+        )
+
     for volunteer in target_volunteers:
         if volunteer.id in booked_contact_ids:
             # Confirmation reminder
@@ -438,8 +475,8 @@ async def send_slot_reminder(
             except Exception:
                 pass
         else:
-            # Signup reminder
-            msg = f"We still need volunteers for {appt_type.name} on {date_str}. Reply to sign up for a time slot!"
+            # Signup reminder (admin-configurable template)
+            msg = signup_msg
             try:
                 await send_sms(to=volunteer.phone, body=msg, tenant=tenant)
                 sent_signup += 1

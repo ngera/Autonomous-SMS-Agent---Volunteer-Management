@@ -2,6 +2,7 @@ import uuid
 
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.core.dependencies import CurrentTenant, CurrentUser, DbSession, ManagerUser
 from app.models.appointment_type import AppointmentType
@@ -15,6 +16,16 @@ from app.schemas.appointment_type import (
 )
 
 router = APIRouter(prefix="/api/v1/appointment-types", tags=["appointment-types"])
+
+DUPLICATE_DETAIL = (
+    "An appointment type with the same name, category, and duration already "
+    "exists for this tenant."
+)
+
+
+def _is_unique_violation(err: IntegrityError) -> bool:
+    name = "uq_appointment_types_tenant_name_category_duration"
+    return name in str(err.orig) or name in str(err)
 
 
 @router.get("", response_model=list[AppointmentTypeResponse])
@@ -33,7 +44,13 @@ async def create_appointment_type(
 ):
     appt_type = AppointmentType(tenant_id=tenant.id, **body.model_dump())
     db.add(appt_type)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError as err:
+        await db.rollback()
+        if _is_unique_violation(err):
+            raise HTTPException(status_code=409, detail=DUPLICATE_DETAIL)
+        raise
     await db.refresh(appt_type)
     return appt_type
 
@@ -55,7 +72,13 @@ async def update_appointment_type(
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(appt_type, field, value)
 
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError as err:
+        await db.rollback()
+        if _is_unique_violation(err):
+            raise HTTPException(status_code=409, detail=DUPLICATE_DETAIL)
+        raise
     await db.refresh(appt_type)
     return appt_type
 

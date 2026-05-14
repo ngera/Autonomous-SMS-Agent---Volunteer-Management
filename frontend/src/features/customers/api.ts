@@ -69,8 +69,17 @@ export async function createCustomerForTenant(
   return data;
 }
 
-export async function deleteCustomer(phone: string): Promise<void> {
-  await api.delete(`/customers/${encodeURIComponent(phone)}`);
+export interface DeleteCustomerResult {
+  action: "deleted" | "archived";
+  booking_count?: number;
+  conversation_count?: number;
+}
+
+export async function deleteCustomer(phone: string): Promise<DeleteCustomerResult> {
+  const { data } = await api.delete<DeleteCustomerResult>(
+    `/customers/${encodeURIComponent(phone)}`
+  );
+  return data;
 }
 
 export async function updateCustomer(
@@ -144,6 +153,28 @@ export async function getCustomerVolunteerStats(
 ): Promise<VolunteerStatsResponse> {
   const { data } = await api.get<VolunteerStatsResponse>(
     `/customers/${encodeURIComponent(phone)}/volunteer-stats`
+  );
+  return data;
+}
+
+export interface RecentMessage {
+  role: "user" | "assistant";
+  content: string;
+  timestamp: string;
+}
+
+export interface RecentMessagesResponse {
+  messages: RecentMessage[];
+  days: number;
+}
+
+export async function getCustomerRecentMessages(
+  phone: string,
+  days: number = 7
+): Promise<RecentMessagesResponse> {
+  const { data } = await api.get<RecentMessagesResponse>(
+    `/customers/${encodeURIComponent(phone)}/recent-messages`,
+    { params: { days } }
   );
   return data;
 }

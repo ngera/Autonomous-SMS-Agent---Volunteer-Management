@@ -16,6 +16,12 @@ class BookingStatus(str, enum.Enum):
     NO_SHOW = "no_show"
 
 
+class RosterVisibility(str, enum.Enum):
+    HIDDEN = "hidden"
+    FIRST_NAME = "first_name"
+    FULL_NAME = "full_name"
+
+
 class Booking(Base):
     __tablename__ = "bookings"
 
@@ -43,6 +49,12 @@ class Booking(Base):
     )
     status: Mapped[BookingStatus] = mapped_column(
         Enum(BookingStatus, name="booking_status"), nullable=False
+    )
+    roster_visibility: Mapped[RosterVisibility] = mapped_column(
+        String(20),
+        default=RosterVisibility.FIRST_NAME.value,
+        server_default=RosterVisibility.FIRST_NAME.value,
+        nullable=False,
     )
     price_at_booking: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False)
     calendar_event_id: Mapped[str | None] = mapped_column(

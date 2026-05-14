@@ -13,10 +13,10 @@ def _make_appt_type(**overrides):
     t = MagicMock()
     t.id = overrides.get("id", uuid.uuid4())
     t.name = overrides.get("name", "Haircut")
+    t.category = overrides.get("category", "Grooming")
     t.duration_minutes = 60
     t.price = 45.00
     t.description = "Standard haircut"
-    t.recurrence_weeks_default = 6
     t.is_active = True
     t.created_at = datetime.now(timezone.utc)
     t.updated_at = datetime.now(timezone.utc)
@@ -30,7 +30,6 @@ def _populate_appt_type(obj):
         instance.is_active = True
         instance.created_at = datetime.now(timezone.utc)
         instance.updated_at = datetime.now(timezone.utc)
-        instance.recurrence_weeks_default = None
         instance.description = None
     return _refresh
 
@@ -47,6 +46,7 @@ async def test_create_appointment_type(client, mock_db):
     mock_db.refresh = AsyncMock(side_effect=_populate_appt_type(None))
     resp = await client.post("/api/v1/appointment-types", json={
         "name": "New Type",
+        "category": "Grooming",
         "duration_minutes": 30,
         "price": 25.00,
     })
@@ -86,6 +86,7 @@ async def test_create_requires_manager(client, mock_db, staff_user, auth_as):
     auth_as(staff_user)
     resp = await client.post("/api/v1/appointment-types", json={
         "name": "New",
+        "category": "Grooming",
         "duration_minutes": 30,
         "price": 25.00,
     })

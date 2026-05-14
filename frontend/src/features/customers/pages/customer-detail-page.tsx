@@ -247,12 +247,27 @@ export function CustomerDetailPage() {
         open={showDelete}
         onOpenChange={setShowDelete}
         title="Delete Volunteer"
-        description={`Are you sure you want to delete ${c.name || formatPhone(c.phone)}? This cannot be undone. Customers with active bookings cannot be deleted.`}
+        description={`Remove ${c.name || formatPhone(c.phone)}? If they have any past bookings or conversations, the record is archived (disabled) instead of permanently deleted so the audit trail stays intact. Volunteers with active bookings cannot be removed.`}
         confirmLabel="Delete"
         variant="destructive"
         onConfirm={() => {
           deleteCustomer.mutate(phone, {
-            onSuccess: () => navigate("/customers"),
+            onSuccess: (result) => {
+              if (result.action === "archived") {
+                alert(
+                  `Volunteer has ${result.booking_count ?? 0} booking(s) and ${result.conversation_count ?? 0} conversation(s) on record, so they were archived (disabled) instead of deleted.`
+                );
+              }
+              navigate("/customers");
+            },
+            onError: (err: unknown) => {
+              const detail =
+                (err as { response?: { data?: { detail?: string } } })?.response
+                  ?.data?.detail ||
+                (err as Error)?.message ||
+                "Failed to delete volunteer";
+              alert(`Could not delete: ${detail}`);
+            },
           });
         }}
         isLoading={deleteCustomer.isPending}

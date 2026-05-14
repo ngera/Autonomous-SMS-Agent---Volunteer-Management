@@ -110,11 +110,14 @@ async def test_conversation(
                     screened=True,
                 )
 
-        # Run screener on customer messages (skip for test user)
+        # Run screener on customer messages (skip for test user). Pass the
+        # request's history so short contextual replies ("1", "yes") aren't
+        # misclassified as IRRELEVANT — same fix as the production pipeline.
         if not body.use_test_user:
             screener_result = await screen_message(
                 body.message, db, tenant=tenant,
                 contact_id=contact_id, contact_phone=contact_phone,
+                conversation_history=body.history or None,
             )
 
             if screener_result.classification in (Classification.IRRELEVANT, Classification.ABUSIVE):

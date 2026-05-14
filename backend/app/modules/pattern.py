@@ -19,7 +19,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
-from app.models.appointment_type import AppointmentType
 from app.models.booking import Booking, BookingStatus
 from app.models.pattern import CustomerAppointmentPattern, PatternConfidence
 
@@ -64,17 +63,8 @@ async def recalculate_pattern(
     bookings = result.scalars().all()
     completed_count = len(bookings)
 
-    # Get admin default interval
-    appt_query = select(AppointmentType).where(AppointmentType.id == type_uuid)
-    if tenant_id:
-        appt_query = appt_query.where(AppointmentType.tenant_id == tenant_id)
-    appt_result = await db.execute(appt_query)
-    appt_type = appt_result.scalar_one_or_none()
-    admin_default_days = (
-        (appt_type.recurrence_weeks_default or 4) * 7
-        if appt_type
-        else 28
-    )
+    # Default interval: 4 weeks. The per-type override has been removed.
+    admin_default_days = 28
 
     # Get or create pattern record
     pattern_query = select(CustomerAppointmentPattern).where(

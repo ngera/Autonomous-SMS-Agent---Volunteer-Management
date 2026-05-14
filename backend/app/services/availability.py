@@ -62,7 +62,11 @@ async def compute_available_slots(
     import pytz
     tz = pytz.timezone(tenant.business_timezone)
 
-    # Check blocked dates
+    # Blocked dates suppress recurring weekly rules only. A specific-date
+    # event is an explicit "we *are* open for this on this day" override and
+    # is intentionally honored even inside a blocked range — admins are warned
+    # at the time they create either side, so a specific-date slot inside a
+    # blocked range is a deliberate exception.
     blocked = await db.execute(
         select(BlockedDate).where(
             BlockedDate.tenant_id == tenant.id,
@@ -70,8 +74,7 @@ async def compute_available_slots(
             BlockedDate.date_to >= target_date,
         )
     )
-    if blocked.scalar_one_or_none():
-        return []
+    is_blocked = blocked.scalar_one_or_none() is not None
 
     # Load appointment type
     appt_result = await db.execute(
@@ -86,24 +89,25 @@ async def compute_available_slots(
     # Collect windows: (start_dt, end_dt, buffer, min_required, max_allowed)
     windows = []
 
-    # Weekly rules
-    day_of_week = target_date.weekday()
-    rules_result = await db.execute(
-        select(AvailabilityRule).where(
-            AvailabilityRule.tenant_id == tenant.id,
-            AvailabilityRule.day_of_week == day_of_week,
-            AvailabilityRule.is_active.is_(True),
+    # Weekly rules — skipped on blocked dates.
+    if not is_blocked:
+        day_of_week = target_date.weekday()
+        rules_result = await db.execute(
+            select(AvailabilityRule).where(
+                AvailabilityRule.tenant_id == tenant.id,
+                AvailabilityRule.day_of_week == day_of_week,
+                AvailabilityRule.is_active.is_(True),
+            )
         )
-    )
-    for rule in rules_result.scalars().all():
-        limits = _get_service_limits(rule.service_config, appointment_type_id)
-        if limits is None:
-            continue
-        min_req, max_allow = limits
-        start_dt = tz.localize(datetime.combine(target_date, rule.start_time))
-        end_dt = tz.localize(datetime.combine(target_date, rule.end_time))
-        buffer = timedelta(minutes=rule.buffer_minutes)
-        windows.append((start_dt, end_dt, buffer, min_req, max_allow))
+        for rule in rules_result.scalars().all():
+            limits = _get_service_limits(rule.service_config, appointment_type_id)
+            if limits is None:
+                continue
+            min_req, max_allow = limits
+            start_dt = tz.localize(datetime.combine(target_date, rule.start_time))
+            end_dt = tz.localize(datetime.combine(target_date, rule.end_time))
+            buffer = timedelta(minutes=rule.buffer_minutes)
+            windows.append((start_dt, end_dt, buffer, min_req, max_allow))
 
     # Specific date slots
     specific_result = await db.execute(

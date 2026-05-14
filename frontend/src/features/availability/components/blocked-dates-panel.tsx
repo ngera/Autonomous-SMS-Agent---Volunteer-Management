@@ -52,17 +52,59 @@ export function BlockedDatesPanel({ canEdit }: BlockedDatesPanelProps) {
 
   function handleAdd() {
     if (!dateFrom || !dateTo) return;
-    createBlocked.mutate(
-      { date_from: dateFrom, date_to: dateTo, reason: reason || undefined },
-      {
-        onSuccess: () => {
-          setShowAdd(false);
-          setDateFrom("");
-          setDateTo("");
-          setReason("");
-        },
+    const body = {
+      date_from: dateFrom,
+      date_to: dateTo,
+      reason: reason || undefined,
+    };
+    const onSuccess = () => {
+      setShowAdd(false);
+      setDateFrom("");
+      setDateTo("");
+      setReason("");
+    };
+    const showError = (err: unknown) => {
+      const detail =
+        (err as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail ??
+        (err as Error)?.message ??
+        "Failed to add blocked date";
+      alert(
+        `Could not add blocked date: ${typeof detail === "string" ? detail : JSON.stringify(detail)}`
+      );
+    };
+
+    function submit(force: boolean) {
+      createBlocked.mutate({ body, force }, { onSuccess, onError: handleError });
+    }
+
+    function handleError(err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: unknown } } })
+        ?.response?.data?.detail;
+      if (
+        detail &&
+        typeof detail === "object" &&
+        (detail as { code?: string }).code === "events_inside_block"
+      ) {
+        const events = (
+          (detail as {
+            events?: Array<{ date: string; label: string | null; start_time: string; end_time: string }>;
+          }).events ?? []
+        )
+          .map(
+            (e) =>
+              `• ${e.date} ${e.start_time}–${e.end_time}${e.label ? ` "${e.label}"` : ""}`
+          )
+          .join("\n");
+        const ok = window.confirm(
+          `${(detail as { message: string }).message}\n\nEvents inside the range:\n${events}\n\nAdd the block anyway?`
+        );
+        if (ok) submit(true);
+        return;
       }
-    );
+      showError(err);
+    }
+
+    submit(false);
   }
 
   return (

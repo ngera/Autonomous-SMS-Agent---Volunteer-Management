@@ -136,6 +136,7 @@ class PatternOverrideRequest(BaseModel):
 
 class CsvImportResponse(BaseModel):
     imported: int
+    updated: int = 0
     skipped: int
     errors: list[str]
 

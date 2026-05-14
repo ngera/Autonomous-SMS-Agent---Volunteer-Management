@@ -1,4 +1,14 @@
-import type { WeeklySlotStatus } from "@/types/api";
+import type { RosterEntry, WeeklySlotStatus } from "@/types/api";
+
+export interface AggregatedService {
+  appointment_type_id: string;
+  service_name: string;
+  min_required: number;
+  max_allowed: number;
+  booked: number;
+  allow_roster_sharing: boolean;
+  roster: RosterEntry[];
+}
 
 export interface AggregatedEvent {
   key: string;
@@ -8,10 +18,12 @@ export interface AggregatedEvent {
   display_name: string;
   location: string | null;
   source: "recurring" | "one_time";
+  source_id: string | null;
   booked: number;
   max_allowed: number;
   min_required: number;
   any_needs_more: boolean;
+  services: AggregatedService[];
   last_reminder_sent: string | null;
   last_announcement_sent: string | null;
 }
@@ -34,12 +46,22 @@ export function aggregateBySchedule(
   for (const r of rows) {
     const labelKey = r.window_label ?? `__svc:${r.service_name}`;
     const key = `${r.date}|${r.window_time}|${labelKey}|${r.source}`;
+    const serviceEntry: AggregatedService = {
+      appointment_type_id: r.appointment_type_id,
+      service_name: r.service_name,
+      min_required: r.min_required,
+      max_allowed: r.max_allowed,
+      booked: r.booked,
+      allow_roster_sharing: r.allow_roster_sharing ?? true,
+      roster: r.roster ?? [],
+    };
     const existing = groups.get(key);
     if (existing) {
       existing.booked += r.booked;
       existing.max_allowed += r.max_allowed;
       existing.min_required += r.min_required;
       existing.any_needs_more = existing.any_needs_more || r.status === "needs_more";
+      existing.services.push(serviceEntry);
       existing.last_reminder_sent = pickLatest(
         existing.last_reminder_sent,
         r.last_reminder_sent
@@ -57,10 +79,12 @@ export function aggregateBySchedule(
         display_name: r.window_label ?? r.service_name,
         location: r.location,
         source: r.source,
+        source_id: r.source_id,
         booked: r.booked,
         max_allowed: r.max_allowed,
         min_required: r.min_required,
         any_needs_more: r.status === "needs_more",
+        services: [serviceEntry],
         last_reminder_sent: r.last_reminder_sent,
         last_announcement_sent: r.last_announcement_sent,
       });

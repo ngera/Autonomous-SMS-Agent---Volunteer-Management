@@ -5,12 +5,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import { Plus, Trash2, X } from "lucide-react";
-import {
-  DropdownMenu,
-  DropdownMenuCheckboxItem,
-  DropdownMenuContent,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { ServiceCategoryPicker } from "@/components/shared/service-category-picker";
 import { DAYS_OF_WEEK } from "@/lib/constants";
 import { useAppointmentTypes } from "@/features/appointment-types/hooks/use-appointment-types";
 import type { AvailabilityRuleResponse, AvailabilityRuleUpdate, ServiceSlotConfig } from "@/types/api";
@@ -23,6 +18,7 @@ interface SlotRule {
   buffer_minutes: number;
   service_config: ServiceSlotConfig[];
   is_active: boolean;
+  allow_roster_sharing: boolean;
 }
 
 const DEFAULT_SLOT: SlotRule = {
@@ -33,6 +29,7 @@ const DEFAULT_SLOT: SlotRule = {
   buffer_minutes: 0,
   service_config: [],
   is_active: true,
+  allow_roster_sharing: true,
 };
 
 interface WeeklyScheduleBuilderProps {
@@ -59,6 +56,7 @@ export function WeeklyScheduleBuilder({ rules, onSave, isSaving, canEdit }: Week
         buffer_minutes: rule.buffer_minutes,
         service_config: rule.service_config ?? [],
         is_active: rule.is_active,
+        allow_roster_sharing: rule.allow_roster_sharing ?? true,
       });
     }
     setSchedule(grouped);
@@ -110,6 +108,7 @@ export function WeeklyScheduleBuilder({ rules, onSave, isSaving, canEdit }: Week
           buffer_minutes: slot.buffer_minutes,
           service_config: slot.service_config.length > 0 ? slot.service_config : null,
           is_active: slot.is_active,
+          allow_roster_sharing: slot.allow_roster_sharing,
         });
       }
     }
@@ -155,9 +154,15 @@ export function WeeklyScheduleBuilder({ rules, onSave, isSaving, canEdit }: Week
                       <Label className="text-xs">Label</Label>
                       <Input value={slot.label} onChange={(e) => updateSlot(dayIndex, slotIdx, { label: e.target.value })} placeholder="e.g. Morning Shift" className="h-8" disabled={!canEdit} />
                     </div>
-                    <div className="space-y-1 flex-1 min-w-[140px]">
-                      <Label className="text-xs">Location</Label>
-                      <Input value={slot.location} onChange={(e) => updateSlot(dayIndex, slotIdx, { location: e.target.value })} placeholder="e.g. Main Hall" className="h-8" disabled={!canEdit} />
+                    <div className="space-y-1 flex-1 min-w-[200px]">
+                      <Label className="text-xs">Address</Label>
+                      <Input
+                        value={slot.location}
+                        onChange={(e) => updateSlot(dayIndex, slotIdx, { location: e.target.value })}
+                        placeholder="e.g. 123 Main St, Springfield, IL 62701"
+                        className="h-8"
+                        disabled={!canEdit}
+                      />
                     </div>
                     <div className="space-y-1">
                       <Label className="text-xs">Start</Label>
@@ -180,32 +185,12 @@ export function WeeklyScheduleBuilder({ rules, onSave, isSaving, canEdit }: Week
 
                   {/* Services config */}
                   <div className="pl-10 space-y-1.5">
-                    <div className="flex items-center gap-2">
-                      <Label className="text-xs text-muted-foreground">Services needed:</Label>
-                      {slot.service_config.length === 0 && <span className="text-xs text-muted-foreground italic">All services (min 1, max 1)</span>}
-                      {canEdit && activeTypes.length > 0 && (
-                        <DropdownMenu>
-                          <DropdownMenuTrigger
-                            render={
-                              <Button variant="outline" size="sm" className="h-6 text-xs px-2">
-                                <Plus className="h-3 w-3 mr-1" /> {slot.service_config.length === 0 ? "Configure..." : "Add"}
-                              </Button>
-                            }
-                          />
-                          <DropdownMenuContent align="start" className="w-56">
-                            {activeTypes.map((type) => (
-                              <DropdownMenuCheckboxItem
-                                key={type.id}
-                                checked={slot.service_config.some((c) => c.appointment_type_id === type.id)}
-                                onCheckedChange={() => toggleService(dayIndex, slotIdx, type.id)}
-                              >
-                                {type.name} ({type.duration_minutes}min)
-                              </DropdownMenuCheckboxItem>
-                            ))}
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      )}
-                    </div>
+                    <Label className="text-xs text-muted-foreground">Services needed:</Label>
+                    {slot.service_config.length === 0 && (
+                      <p className="text-xs text-muted-foreground italic">
+                        All services (min 1, max 1) — add specific services below to override.
+                      </p>
+                    )}
                     {slot.service_config.length > 0 && (
                       <div className="flex flex-wrap gap-2">
                         {slot.service_config.map((cfg) => (
@@ -220,6 +205,24 @@ export function WeeklyScheduleBuilder({ rules, onSave, isSaving, canEdit }: Week
                         ))}
                       </div>
                     )}
+                    {canEdit && activeTypes.length > 0 && (
+                      <ServiceCategoryPicker
+                        activeTypes={activeTypes}
+                        excludeIds={slot.service_config.map((c) => c.appointment_type_id)}
+                        onAdd={(typeId) => toggleService(dayIndex, slotIdx, typeId)}
+                        size="sm"
+                      />
+                    )}
+                    <label className="flex items-center gap-2 pt-1 text-xs text-muted-foreground">
+                      <input
+                        type="checkbox"
+                        checked={slot.allow_roster_sharing}
+                        onChange={(e) => updateSlot(dayIndex, slotIdx, { allow_roster_sharing: e.target.checked })}
+                        disabled={!canEdit}
+                        className="h-3.5 w-3.5"
+                      />
+                      Allow volunteers to see who else is signed up
+                    </label>
                   </div>
                 </div>
               ))}

@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
@@ -17,6 +17,46 @@ from app.models.notification import NotificationType
 from app.services.sms import send_sms
 
 logger = get_logger("booking")
+
+
+async def find_volunteer_overlap(
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
+    contact_id: uuid.UUID,
+    scheduled_at: datetime,
+    duration_minutes: int,
+    exclude_booking_id: uuid.UUID | None = None,
+) -> tuple[Booking, AppointmentType] | None:
+    """Find an active booking for this volunteer that overlaps the given window.
+
+    Two appointments overlap when one starts before the other ends. Status is
+    restricted to active (SCHEDULED/RESCHEDULED) so already-cancelled bookings
+    don't trigger false positives. Pass ``exclude_booking_id`` when checking
+    around an in-flight reschedule so the booking isn't compared against
+    itself.
+    """
+    new_end = scheduled_at + timedelta(minutes=duration_minutes)
+    query = (
+        select(Booking, AppointmentType)
+        .join(AppointmentType, AppointmentType.id == Booking.appointment_type_id)
+        .where(
+            Booking.tenant_id == tenant_id,
+            Booking.contact_id == contact_id,
+            Booking.status.in_([BookingStatus.SCHEDULED, BookingStatus.RESCHEDULED]),
+            Booking.scheduled_at < new_end,
+            (
+                Booking.scheduled_at
+                + func.make_interval(0, 0, 0, 0, 0, AppointmentType.duration_minutes)
+            )
+            > scheduled_at,
+        )
+        .limit(1)
+    )
+    if exclude_booking_id is not None:
+        query = query.where(Booking.id != exclude_booking_id)
+    result = await db.execute(query)
+    row = result.first()
+    return (row[0], row[1]) if row else None
 
 
 async def process_booking_creation(db: AsyncSession, booking: Booking, tenant: Tenant, send_sms_notification: bool = True) -> None:

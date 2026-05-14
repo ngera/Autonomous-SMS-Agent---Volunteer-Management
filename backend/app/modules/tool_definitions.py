@@ -16,7 +16,8 @@ CHECK_AVAILABILITY = {
     "name": "check_availability",
     "description": (
         "Check available appointment slots for a specific date. Optionally filter by service name. "
-        "Each slot shows remaining capacity. A slot only appears if it has capacity for the requested service."
+        "Each slot shows max capacity, current signups, and (when the event allows roster sharing) "
+        "the names of volunteers already signed up. A slot only appears if it has capacity for the requested service."
     ),
     "input_schema": {
         "type": "object",
@@ -46,7 +47,12 @@ GET_MY_APPOINTMENTS = {
 
 BOOK_APPOINTMENT = {
     "name": "book_appointment",
-    "description": "Create a new appointment booking for the customer. The customer must have confirmed the service, date, time, and price before calling this tool.",
+    "description": (
+        "Create a new appointment booking for the customer. The customer must have confirmed the service, "
+        "date, time, and price before calling this tool. Before calling, ASK the volunteer how they want "
+        "their name shown to other volunteers on the event roster (first name only by default; full name if "
+        "they prefer; hidden if they want privacy)."
+    ),
     "input_schema": {
         "type": "object",
         "properties": {
@@ -61,6 +67,11 @@ BOOK_APPOINTMENT = {
             "time": {
                 "type": "string",
                 "description": "Time in HH:MM format (24-hour).",
+            },
+            "share_on_roster": {
+                "type": "string",
+                "enum": ["hidden", "first_name", "full_name"],
+                "description": "How to show this volunteer to other volunteers on the event roster. Default 'first_name'.",
             },
         },
         "required": ["service_name", "date", "time"],
@@ -196,6 +207,53 @@ UNBLOCK_DATE = {
     },
 }
 
+CANCEL_EVENT_BOOKINGS = {
+    "name": "cancel_event_bookings",
+    "description": (
+        "Cancel every active booking on a given event date (optionally limited to one service), "
+        "and notify each affected volunteer by SMS with the reason and an invitation to sign up again. "
+        "The event itself stays open for new sign-ups — this only cancels the existing bookings, "
+        "it does NOT block the date or delete the event. "
+        "If `confirm` is not set, the tool returns the list of bookings that would be cancelled "
+        "and asks the admin to confirm. Call again with `confirm=true` to actually cancel them."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "event_date": {
+                "type": "string",
+                "description": "Event date in YYYY-MM-DD format.",
+            },
+            "service_name": {
+                "type": "string",
+                "description": (
+                    "Optional. Only cancel bookings for this specific service "
+                    "(e.g. 'Hall Setup'). Omit to cancel every booking on the date."
+                ),
+            },
+            "reason": {
+                "type": "string",
+                "description": (
+                    "Short reason shown to volunteers in the cancellation SMS "
+                    "(e.g. 'venue change', 'rescheduling'). Optional."
+                ),
+            },
+            "rebook_message": {
+                "type": "string",
+                "description": (
+                    "Optional custom invitation appended to the SMS. Defaults to "
+                    "'You can sign up again whenever you're ready — just text us back.'"
+                ),
+            },
+            "confirm": {
+                "type": "boolean",
+                "description": "Set true to actually cancel and notify. Omit to preview the affected bookings first.",
+            },
+        },
+        "required": ["event_date"],
+    },
+}
+
 GET_SCHEDULE = {
     "name": "get_schedule",
     "description": "Get the schedule for a specific date: all bookings and available slots.",
@@ -250,24 +308,28 @@ MANAGE_SERVICE = {
 SEND_ANNOUNCEMENT = {
     "name": "send_announcement",
     "description": (
-        "Send an SMS announcement to customers. Filters can be combined. "
-        "With no filters, sends to all opted-in customers. "
-        "IMPORTANT: Always confirm the message and audience with the admin before sending."
+        "Send an SMS announcement to volunteers. Two common modes:\n"
+        "1) Broadcast to ALL opted-in volunteers — call with just `message` (no booking_date, no status_filter).\n"
+        "2) Event-specific — call with `booking_date` AND `service_name` (and optionally `status_filter='upcoming'`). "
+        "This sends only to volunteers who are signed up for that event/service on that date. The system auto-prepends "
+        "an event header (date, time, location) to the message in this mode.\n"
+        "IMPORTANT: Always ASK the admin before sending which audience they want — sign-ups for the event, or all opted-in "
+        "volunteers — and confirm both the message and audience before invoking this tool."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "message": {
                 "type": "string",
-                "description": "The SMS message to send to customers.",
+                "description": "The SMS message to send to volunteers. Do not include event details — the system prepends a header automatically when booking_date + service_name are provided.",
             },
             "service_name": {
                 "type": "string",
-                "description": "Only send to customers who have booked or prefer this service (must match a name from list_services).",
+                "description": "Only send to volunteers who have booked or prefer this service (must match a name from list_services). Combine with booking_date for event-specific announcements.",
             },
             "booking_date": {
                 "type": "string",
-                "description": "Only send to customers who have bookings on this date (YYYY-MM-DD).",
+                "description": "Only send to volunteers who have bookings on this date (YYYY-MM-DD). When set together with service_name, the announcement is treated as event-specific.",
             },
             "status_filter": {
                 "type": "string",
@@ -320,6 +382,10 @@ MANAGE_AVAILABILITY = {
                 "type": "integer",
                 "description": "Buffer between appointments (default 0).",
             },
+            "allow_roster_sharing": {
+                "type": "boolean",
+                "description": "If true (default), volunteers signed up for this window can see each other's names on the roster (subject to each volunteer's own per-booking visibility setting).",
+            },
             "services": {
                 "type": "array",
                 "description": "Services needed during this window with min/max participants. If omitted, all services allowed (min 1, max 1). On 'update', omit to leave services unchanged; pass an empty array to clear.",
@@ -365,6 +431,10 @@ MANAGE_SPECIFIC_DATE_SLOT = {
             "label": {"type": "string", "description": "Event name/label (optional)."},
             "location": {"type": "string", "description": "Event location (optional)."},
             "buffer_minutes": {"type": "integer", "description": "Buffer between appointments (default 0)."},
+            "allow_roster_sharing": {
+                "type": "boolean",
+                "description": "If true (default), volunteers signed up for this event can see each other's names on the roster (subject to each volunteer's own per-booking visibility setting).",
+            },
             "services": {
                 "type": "array",
                 "description": "Services needed for this event with min/max participants. On 'update', omit to leave unchanged; pass empty array to clear.",
@@ -531,6 +601,7 @@ ADMIN_TOOLS = [
     MANAGE_VOLUNTEER,
     BLOCK_DATE,
     UNBLOCK_DATE,
+    CANCEL_EVENT_BOOKINGS,
     GET_SCHEDULE,
     MANAGE_SERVICE,
     MANAGE_AVAILABILITY,

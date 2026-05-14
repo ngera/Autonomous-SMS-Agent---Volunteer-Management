@@ -1,17 +1,29 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Plus, ChevronLeft, ChevronRight, Calendar, List } from "lucide-react";
-import { startOfWeek, endOfWeek, addWeeks, subWeeks, format } from "date-fns";
+import {
+  addDays,
+  startOfWeek,
+  endOfWeek,
+  addWeeks,
+  subWeeks,
+  format,
+  parseISO,
+} from "date-fns";
 import { PageHeader } from "@/components/shared/page-header";
-import { Pagination } from "@/components/shared/pagination";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { useAuth } from "@/hooks/use-auth";
 import { AdminRole } from "@/types/enums";
 import { WeeklyCalendar } from "../components/weekly-calendar";
-import { BookingsTable } from "../components/bookings-table";
-import { BookingsFilters } from "../components/bookings-filters";
+import { EventsTable } from "../components/events-table";
 import { useBookings } from "../hooks/use-bookings";
-import { useAvailabilityRules, useBlockedDates } from "@/features/availability/hooks/use-availability";
+import {
+  useAvailabilityRules,
+  useBlockedDates,
+  useSpecificDateSlots,
+} from "@/features/availability/hooks/use-availability";
 
 type ViewMode = "calendar" | "list";
 
@@ -26,12 +38,17 @@ export function BookingsPage() {
   );
   const weekEnd = endOfWeek(weekStart, { weekStartsOn: 0 });
 
-  // List state
-  const [page, setPage] = useState(1);
-  const [status, setStatus] = useState("all");
-  const [phone, setPhone] = useState("");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  // List state (events list) — default to a 30-day window from today.
+  const today = useMemo(() => new Date(), []);
+  const [listFrom, setListFrom] = useState<string>(format(today, "yyyy-MM-dd"));
+  const [listTo, setListTo] = useState<string>(format(addDays(today, 30), "yyyy-MM-dd"));
+
+  const listFromDate = useMemo(() => parseISO(listFrom), [listFrom]);
+  const listToDate = useMemo(() => {
+    const d = parseISO(listTo);
+    // include the entire end day
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59);
+  }, [listTo]);
 
   const calendarBookings = useBookings(
     view === "calendar"
@@ -47,24 +64,23 @@ export function BookingsPage() {
   const listBookings = useBookings(
     view === "list"
       ? {
-          page,
-          page_size: 20,
-          status: status === "all" ? undefined : status,
-          contact_phone: phone || undefined,
-          date_from: dateFrom || undefined,
-          date_to: dateTo || undefined,
+          page: 1,
+          page_size: 500, // pull all bookings in range so event counts are accurate
+          date_from: `${listFrom}T00:00:00`,
+          date_to: `${listTo}T23:59:59`,
         }
       : { page: 1, page_size: 1 }
   );
 
   const availabilityRules = useAvailabilityRules();
   const blockedDates = useBlockedDates();
+  const specificDateSlots = useSpecificDateSlots();
 
   return (
     <div className="space-y-4">
       <PageHeader
-        title="Bookings"
-        description="Manage all appointments."
+        title="Calendar"
+        description="Manage all appointments and events."
         actions={
           <div className="flex items-center gap-2">
             <div className="flex border rounded-md overflow-hidden">
@@ -88,10 +104,19 @@ export function BookingsPage() {
               </Button>
             </div>
             {hasRole(AdminRole.MANAGER) && (
-              <Button onClick={() => navigate("/bookings/new")}>
-                <Plus className="mr-2 h-4 w-4" />
-                New Booking
-              </Button>
+              <>
+                <Button onClick={() => navigate("/bookings/new")}>
+                  <Plus className="mr-2 h-4 w-4" />
+                  New Appt
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => navigate("/availability?tab=specific")}
+                >
+                  <Plus className="mr-2 h-4 w-4" />
+                  Add event
+                </Button>
+              </>
             )}
           </div>
         }
@@ -147,6 +172,7 @@ export function BookingsPage() {
             weekStart={weekStart}
             bookings={calendarBookings.data?.items ?? []}
             availabilityRules={availabilityRules.data ?? []}
+            specificDateSlots={specificDateSlots.data ?? []}
             blockedDates={blockedDates.data ?? []}
             isLoading={calendarBookings.isLoading}
           />
@@ -155,42 +181,39 @@ export function BookingsPage() {
 
       {view === "list" && (
         <>
-          <BookingsFilters
-            status={status}
-            onStatusChange={(v) => {
-              setStatus(v);
-              setPage(1);
-            }}
-            phone={phone}
-            onPhoneChange={(v) => {
-              setPhone(v);
-              setPage(1);
-            }}
-            dateFrom={dateFrom}
-            onDateFromChange={(v) => {
-              setDateFrom(v);
-              setPage(1);
-            }}
-            dateTo={dateTo}
-            onDateToChange={(v) => {
-              setDateTo(v);
-              setPage(1);
-            }}
-          />
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="space-y-1">
+              <Label className="text-xs">From</Label>
+              <Input
+                type="date"
+                value={listFrom}
+                onChange={(e) => setListFrom(e.target.value)}
+                className="h-9 w-40"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">To</Label>
+              <Input
+                type="date"
+                value={listTo}
+                onChange={(e) => setListTo(e.target.value)}
+                className="h-9 w-40"
+              />
+            </div>
+          </div>
 
-          <BookingsTable
-            data={listBookings.data?.items ?? []}
-            isLoading={listBookings.isLoading}
+          <EventsTable
+            isLoading={
+              listBookings.isLoading ||
+              availabilityRules.isLoading ||
+              specificDateSlots.isLoading
+            }
+            fromDate={listFromDate}
+            toDate={listToDate}
+            availabilityRules={availabilityRules.data ?? []}
+            specificDateSlots={specificDateSlots.data ?? []}
+            bookings={listBookings.data?.items ?? []}
           />
-
-          {listBookings.data && (
-            <Pagination
-              page={page}
-              pageSize={20}
-              total={listBookings.data.total}
-              onPageChange={setPage}
-            />
-          )}
         </>
       )}
     </div>

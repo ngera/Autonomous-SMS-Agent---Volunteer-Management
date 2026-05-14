@@ -6,6 +6,7 @@ import type {
   RescheduleRequest,
   StatusUpdateRequest,
   BookingHistoryResponse,
+  EventRosterResponse,
   SlotResponse,
 } from "@/types/api";
 
@@ -71,6 +72,35 @@ export async function getBookingHistory(
 ): Promise<BookingHistoryResponse[]> {
   const { data } = await api.get<BookingHistoryResponse[]>(
     `/bookings/${id}/history`
+  );
+  return data;
+}
+
+export async function getBookingEventRoster(
+  id: string
+): Promise<EventRosterResponse> {
+  const { data } = await api.get<EventRosterResponse>(
+    `/bookings/${id}/event-roster`
+  );
+  return data;
+}
+
+export async function getSpecificSlotEventRoster(
+  slotId: string
+): Promise<EventRosterResponse> {
+  const { data } = await api.get<EventRosterResponse>(
+    `/availability/specific-slots/${slotId}/event-roster`
+  );
+  return data;
+}
+
+export async function getWeeklyRuleEventRoster(
+  ruleId: string,
+  date: string
+): Promise<EventRosterResponse> {
+  const { data } = await api.get<EventRosterResponse>(
+    `/availability/rules/${ruleId}/event-roster`,
+    { params: { date } }
   );
   return data;
 }

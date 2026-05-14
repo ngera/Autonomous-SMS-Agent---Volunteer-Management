@@ -12,6 +12,15 @@ export async function listAppointmentTypes(): Promise<AppointmentTypeResponse[]>
   return data;
 }
 
+export async function listAppointmentTypesForTenant(
+  tenantId: string
+): Promise<AppointmentTypeResponse[]> {
+  const { data } = await api.get<AppointmentTypeResponse[]>("/appointment-types", {
+    headers: { "X-Tenant-Id": tenantId },
+  });
+  return data;
+}
+
 export async function createAppointmentType(
   body: AppointmentTypeCreate
 ): Promise<AppointmentTypeResponse> {

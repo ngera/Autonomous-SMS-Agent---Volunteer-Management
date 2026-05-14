@@ -160,6 +160,79 @@ async def handle_list_services(ctx: ToolContext, tool_input: dict) -> str:
     return json.dumps({"services": items})
 
 
+async def _slot_allow_roster_sharing(
+    ctx: ToolContext, target_date, start_t, end_t
+) -> bool:
+    """Return whether this slot's source rule/slot permits roster sharing.
+
+    Specific-date events take precedence over weekly rules. Default to True if
+    no covering source is found.
+    """
+    from app.models.availability import AvailabilityRule, SpecificDateSlot
+
+    sd = (await ctx.db.execute(
+        select(SpecificDateSlot.allow_roster_sharing).where(
+            SpecificDateSlot.tenant_id == ctx.tenant.id,
+            SpecificDateSlot.date == target_date,
+            SpecificDateSlot.is_active.is_(True),
+            SpecificDateSlot.start_time <= start_t,
+            SpecificDateSlot.end_time >= end_t,
+        ).limit(1)
+    )).scalar_one_or_none()
+    if sd is not None:
+        return bool(sd)
+
+    wr = (await ctx.db.execute(
+        select(AvailabilityRule.allow_roster_sharing).where(
+            AvailabilityRule.tenant_id == ctx.tenant.id,
+            AvailabilityRule.day_of_week == target_date.weekday(),
+            AvailabilityRule.is_active.is_(True),
+            AvailabilityRule.start_time <= start_t,
+            AvailabilityRule.end_time >= end_t,
+        ).limit(1)
+    )).scalar_one_or_none()
+    if wr is not None:
+        return bool(wr)
+    return True
+
+
+def _format_roster_name(name: str | None, phone: str, visibility: str) -> str | None:
+    """Apply visibility to a roster entry. Returns None when hidden."""
+    if visibility == "hidden":
+        return None
+    display = (name or "").strip() or phone
+    if visibility == "first_name":
+        first = display.split()[0] if display else display
+        return first
+    return display  # full_name
+
+
+async def _fetch_slot_roster(
+    ctx: ToolContext, appt_type_id, slot_start, duration_minutes
+) -> list[dict]:
+    """Bookings on this slot with their roster_visibility, joined with contact."""
+    slot_end = slot_start + timedelta(minutes=duration_minutes)
+    rows = (await ctx.db.execute(
+        select(
+            Contact.name,
+            Contact.phone,
+            Booking.roster_visibility,
+        )
+        .join(Contact, Contact.id == Booking.contact_id)
+        .where(
+            Booking.tenant_id == ctx.tenant.id,
+            Booking.appointment_type_id == appt_type_id,
+            Booking.scheduled_at >= slot_start,
+            Booking.scheduled_at < slot_end,
+            Booking.status.in_([BookingStatus.SCHEDULED, BookingStatus.RESCHEDULED]),
+        )
+    )).all()
+    return [
+        {"name": n, "phone": p, "visibility": v if isinstance(v, str) else (v.value if v else "first_name")}
+        for (n, p, v) in rows
+    ]
+
+
 async def handle_check_availability(ctx: ToolContext, tool_input: dict) -> str:
     try:
         target_date = date.fromisoformat(tool_input["date"])
@@ -208,10 +281,49 @@ async def handle_check_availability(ctx: ToolContext, tool_input: dict) -> str:
                 "service": appt_type.name,
                 "time": start.strftime("%I:%M %p"),
                 "price": float(appt_type.price),
+                "max_volunteers": max_allow,
+                "signed_up": booked,
                 "spots_remaining": remaining,
             }
             if needs_more > 0:
                 slot_info["needs_more_to_confirm"] = needs_more
+
+            if booked > 0:
+                slot_end_t = (start + timedelta(minutes=appt_type.duration_minutes)).time()
+                if ctx.is_admin:
+                    # Admins always see the full roster, regardless of event-level sharing
+                    # or per-booking visibility — they need to know who's coming.
+                    roster_rows = await _fetch_slot_roster(
+                        ctx, appt_type.id, start, appt_type.duration_minutes
+                    )
+                    names = [
+                        ((r["name"] or "").strip() or r["phone"]) for r in roster_rows
+                    ]
+                    if names:
+                        slot_info["who_signed_up"] = names
+                else:
+                    allow_share = await _slot_allow_roster_sharing(
+                        ctx, target_date, start.time(), slot_end_t
+                    )
+                    if allow_share:
+                        roster_rows = await _fetch_slot_roster(
+                            ctx, appt_type.id, start, appt_type.duration_minutes
+                        )
+                        names: list[str] = []
+                        hidden_count = 0
+                        for r in roster_rows:
+                            formatted = _format_roster_name(
+                                r["name"], r["phone"], r["visibility"]
+                            )
+                            if formatted is None:
+                                hidden_count += 1
+                            else:
+                                names.append(formatted)
+                        if names:
+                            slot_info["who_signed_up"] = names
+                        if hidden_count > 0:
+                            slot_info["hidden_signups"] = hidden_count
+
             all_slots.append(slot_info)
 
     if not all_slots:
@@ -254,9 +366,19 @@ async def handle_get_my_appointments(ctx: ToolContext, tool_input: dict) -> str:
 
 
 async def handle_book_appointment(ctx: ToolContext, tool_input: dict) -> str:
+    from app.models.booking import RosterVisibility
+
     service_name = tool_input.get("service_name", "")
     date_str = tool_input.get("date", "")
     time_str = tool_input.get("time", "")
+
+    raw_visibility = tool_input.get("share_on_roster", "first_name")
+    try:
+        roster_visibility = RosterVisibility(raw_visibility)
+    except ValueError:
+        return json.dumps({
+            "error": "share_on_roster must be 'hidden', 'first_name', or 'full_name'.",
+        })
 
     appt_type = await _resolve_appointment_type(ctx.db, ctx.tenant.id, service_name)
     if not appt_type:
@@ -293,6 +415,44 @@ async def handle_book_appointment(ctx: ToolContext, tool_input: dict) -> str:
         scheduled_at = scheduled_at.replace(tzinfo=tz)
     except (ValueError, KeyError):
         return json.dumps({"error": "Invalid date or time format."})
+
+    # Block volunteers from holding two overlapping bookings — they can't be
+    # in two places at once. Admins booking on behalf of others can also hit
+    # this; that's still the right call (e.g. a volunteer can't physically
+    # work two services at the same minute).
+    if not ctx.is_admin and ctx.contact_id is not None:
+        from app.services.booking import find_volunteer_overlap
+
+        conflict = await find_volunteer_overlap(
+            ctx.db, ctx.tenant.id, ctx.contact_id, scheduled_at, appt_type.duration_minutes
+        )
+        if conflict is not None:
+            existing_booking, existing_type = conflict
+            existing_end = existing_booking.scheduled_at + timedelta(
+                minutes=existing_type.duration_minutes
+            )
+            return json.dumps({
+                "error": "overlap_with_existing_booking",
+                "message": (
+                    f"This volunteer is already booked for '{existing_type.name}' from "
+                    f"{existing_booking.scheduled_at.strftime('%I:%M %p')} to "
+                    f"{existing_end.strftime('%I:%M %p')} on "
+                    f"{existing_booking.scheduled_at.strftime('%A %B %d')}, "
+                    f"which overlaps this slot."
+                ),
+                "conflicting_booking_ref": _booking_ref(existing_booking.id),
+                "conflicting_service": existing_type.name,
+                "conflicting_start": existing_booking.scheduled_at.strftime("%I:%M %p"),
+                "conflicting_end": existing_end.strftime("%I:%M %p"),
+                "conflicting_date": existing_booking.scheduled_at.strftime("%A %B %d"),
+                "instruction_for_assistant": (
+                    "Do NOT silently book either service. Tell the volunteer the two "
+                    "services overlap (mention both service names and times), and ask "
+                    "whether they want to keep the existing booking, cancel it and book "
+                    "this new one, or pick a different time. Wait for their answer "
+                    "before calling book_appointment or cancel_appointment."
+                ),
+            })
 
     # Check slot capacity before booking
     min_required, max_allowed = await get_service_limits_for_booking(
@@ -331,6 +491,7 @@ async def handle_book_appointment(ctx: ToolContext, tool_input: dict) -> str:
         scheduled_at=scheduled_at,
         price_at_booking=float(appt_type.price),
         status=BookingStatus.SCHEDULED,
+        roster_visibility=roster_visibility.value,
         confirmed_at=datetime.now(timezone.utc),
     )
     ctx.db.add(booking)
@@ -380,7 +541,7 @@ async def handle_cancel_appointment(ctx: ToolContext, tool_input: dict) -> str:
     booking.status = BookingStatus.CANCELLED
     history = BookingHistory(
         booking_id=booking.id,
-        event_type=BookingEventType.STATUS_CHANGE,
+        event_type=BookingEventType.STATUS_CHANGED,
         new_status=BookingStatus.CANCELLED,
         changed_by=ChangedBy.USER_SMS if not ctx.is_admin else ChangedBy.ADMIN,
         tenant_id=ctx.tenant.id,
@@ -941,7 +1102,7 @@ async def handle_block_date(ctx: ToolContext, tool_input: dict) -> str:
             b.status = BookingStatus.CANCELLED
             history = BookingHistory(
                 booking_id=b.id,
-                event_type=BookingEventType.STATUS_CHANGE,
+                event_type=BookingEventType.STATUS_CHANGED,
                 new_status=BookingStatus.CANCELLED,
                 changed_by=ChangedBy.ADMIN,
                 tenant_id=ctx.tenant.id,
@@ -996,6 +1157,180 @@ async def handle_unblock_date(ctx: ToolContext, tool_input: dict) -> str:
     await ctx.db.delete(blocked)
     await ctx.db.flush()
     return json.dumps({"success": True, "message": f"Date block starting {date_from} has been removed."})
+
+
+async def handle_cancel_event_bookings(ctx: ToolContext, tool_input: dict) -> str:
+    """Cancel all active bookings on an event date and notify each volunteer.
+
+    The event itself (specific-date slot or weekly window) is NOT touched —
+    only the bookings against it. After cancellation each affected volunteer
+    is sent a single SMS containing the reason (if any) and an invitation to
+    sign up again. Two-phase: first call returns the preview, second call
+    with ``confirm=true`` performs the work.
+    """
+    from app.services.sms import send_sms
+
+    try:
+        event_date = date.fromisoformat(tool_input["event_date"])
+    except (ValueError, KeyError):
+        return json.dumps({"error": "Invalid event_date. Use YYYY-MM-DD."})
+
+    confirm = bool(tool_input.get("confirm"))
+    reason = (tool_input.get("reason") or "").strip()
+    rebook_message = (
+        (tool_input.get("rebook_message") or "").strip()
+        or "You can sign up again whenever you're ready — just text us back."
+    )
+
+    # Resolve service filter, if any.
+    appt_filter_id = None
+    appt_filter_name = None
+    service_name = (tool_input.get("service_name") or "").strip()
+    if service_name:
+        appt_type = await _resolve_appointment_type(ctx.db, ctx.tenant.id, service_name)
+        if not appt_type:
+            return json.dumps({"error": f"Service '{service_name}' not found."})
+        appt_filter_id = appt_type.id
+        appt_filter_name = appt_type.name
+
+    # Find every active booking on that date for this tenant.
+    import zoneinfo
+    tz = zoneinfo.ZoneInfo(ctx.tenant.business_timezone or "America/New_York")
+    day_start = datetime.combine(event_date, datetime.min.time()).replace(tzinfo=tz)
+    day_end = datetime.combine(event_date, datetime.max.time()).replace(tzinfo=tz)
+
+    booking_query = select(Booking).where(
+        Booking.tenant_id == ctx.tenant.id,
+        Booking.scheduled_at >= day_start,
+        Booking.scheduled_at <= day_end,
+        Booking.status.in_([BookingStatus.SCHEDULED, BookingStatus.RESCHEDULED]),
+    )
+    if appt_filter_id is not None:
+        booking_query = booking_query.where(Booking.appointment_type_id == appt_filter_id)
+
+    result = await ctx.db.execute(booking_query)
+    bookings = list(result.scalars().all())
+
+    if not bookings:
+        scope = f" for '{appt_filter_name}'" if appt_filter_name else ""
+        return json.dumps({
+            "message": f"No active bookings on {event_date}{scope}. Nothing to cancel.",
+        })
+
+    # Hydrate appointment-type names in one query.
+    type_ids = list({b.appointment_type_id for b in bookings})
+    types_q = await ctx.db.execute(
+        select(AppointmentType.id, AppointmentType.name).where(
+            AppointmentType.id.in_(type_ids)
+        )
+    )
+    name_by_type = {row.id: row.name for row in types_q.all()}
+
+    # Preview phase — return the list and ask the admin to confirm.
+    if not confirm:
+        preview = [
+            {
+                "ref": _booking_ref(b.id),
+                "service": name_by_type.get(b.appointment_type_id, "Unknown"),
+                "volunteer_phone": b.contact_phone,
+                "time": b.scheduled_at.strftime("%I:%M %p"),
+            }
+            for b in bookings
+        ]
+        scope = f" for '{appt_filter_name}'" if appt_filter_name else ""
+        return json.dumps({
+            "preview": True,
+            "event_date": event_date.isoformat(),
+            "service_filter": appt_filter_name,
+            "total_to_cancel": len(preview),
+            "bookings": preview,
+            "message": (
+                f"This will cancel {len(preview)} booking(s) on "
+                f"{event_date.strftime('%A %B %d')}{scope} and SMS each volunteer. "
+                f"Confirm to proceed."
+            ),
+        })
+
+    # Execute phase.
+    cancelled = 0
+    notified = 0
+    sms_failures = 0
+    cancelled_phones: set[str] = set()
+    notification_errors: list[str] = []
+    preview_messages: list[dict] = []
+
+    for booking in bookings:
+        booking.status = BookingStatus.CANCELLED
+        ctx.db.add(BookingHistory(
+            booking_id=booking.id,
+            event_type=BookingEventType.STATUS_CHANGED,
+            new_status=BookingStatus.CANCELLED,
+            changed_by=ChangedBy.ADMIN if ctx.is_admin else ChangedBy.USER_SMS,
+            tenant_id=ctx.tenant.id,
+            notes=f"Bulk cancellation: {reason}" if reason else "Bulk cancellation",
+        ))
+        cancelled += 1
+
+        # Calendar deletion only — we'll send our own SMS with the bulk
+        # context (reason + rebook invite) instead of the per-booking default.
+        try:
+            await process_booking_cancellation(
+                ctx.db, booking, ctx.tenant, send_sms_notification=False
+            )
+        except Exception as e:
+            logger.error("Calendar cleanup failed for booking %s: %s", booking.id, e)
+
+        # One SMS (or preview) per affected volunteer — dedupe across
+        # multi-service signups so a volunteer with three shifts on the same
+        # day gets one notification, not three.
+        if booking.contact_phone in cancelled_phones:
+            continue
+        cancelled_phones.add(booking.contact_phone)
+
+        service_name_str = name_by_type.get(booking.appointment_type_id, "your shift")
+        time_str = booking.scheduled_at.strftime("%A %B %d at %I:%M %p")
+        reason_clause = f" ({reason})" if reason else ""
+        sms_body = (
+            f"Your booking for {service_name_str} on {time_str} has been "
+            f"cancelled{reason_clause}. {rebook_message}"
+        )
+
+        if ctx.test_mode:
+            # Surface what each volunteer would have received so the
+            # Multi-Volunteer Test page can mirror it into the panels.
+            preview_messages.append({"phone": booking.contact_phone, "body": sms_body})
+            notified += 1
+            continue
+
+        try:
+            await send_sms(
+                to=booking.contact_phone,
+                body=sms_body,
+                tenant=ctx.tenant,
+            )
+            notified += 1
+        except Exception as e:
+            sms_failures += 1
+            notification_errors.append(f"{booking.contact_phone}: {e}")
+            logger.error("Failed to SMS %s: %s", booking.contact_phone, e)
+
+    await ctx.db.flush()
+
+    summary: dict = {
+        "success": True,
+        "event_date": event_date.isoformat(),
+        "service_filter": appt_filter_name,
+        "cancelled": cancelled,
+        "volunteers_notified": notified,
+        "unique_volunteers": len(cancelled_phones),
+    }
+    if sms_failures:
+        summary["sms_failures"] = sms_failures
+        summary["sms_errors"] = notification_errors[:5]  # cap noise
+    if ctx.test_mode and preview_messages:
+        summary["test_mode"] = True
+        summary["preview_messages"] = preview_messages
+    return json.dumps(summary)
 
 
 async def handle_get_schedule(ctx: ToolContext, tool_input: dict) -> str:
@@ -1230,6 +1565,28 @@ async def handle_send_announcement(ctx: ToolContext, tool_input: dict) -> str:
     if not phones:
         return json.dumps({"message": "No recipients match the specified filters.", "total_recipients": 0})
 
+    # Determine scope + build event_context when this is an event-specific send
+    from app.models.announcement import RecipientScope
+    from app.api.announcements import _render_announcement_message
+    from app.prompts.conversation import get_announcement_header_template
+
+    is_event_send = bool(booking_date_str and service_name)
+    event_context: dict | None = None
+    if is_event_send:
+        event_context = {
+            "event_label": service_name,
+            "event_date": booking_date_str,
+            "service_name": service_name,
+            "appointment_type_id": str(appt_type_id) if appt_type_id else None,
+        }
+
+    # Build outgoing message: prepend rendered header for event sends.
+    if event_context:
+        template = await get_announcement_header_template(ctx.db, tenant_id)
+        outgoing_message = _render_announcement_message(template, event_context, message)
+    else:
+        outgoing_message = message
+
     # Create announcement record
     announcement = Announcement(
         tenant_id=tenant_id,
@@ -1237,6 +1594,12 @@ async def handle_send_announcement(ctx: ToolContext, tool_input: dict) -> str:
         filter_appointment_type_ids=[str(appt_type_id)] if appt_type_id else None,
         status=AnnouncementStatus.SENDING,
         total_recipients=len(phones),
+        event_context=event_context,
+        recipient_scope=(
+            RecipientScope.EVENT_SIGNUPS.value
+            if is_event_send
+            else RecipientScope.ALL.value
+        ),
         created_by_admin_id=ctx.contact_id,
     )
     ctx.db.add(announcement)
@@ -1250,7 +1613,7 @@ async def handle_send_announcement(ctx: ToolContext, tool_input: dict) -> str:
     else:
         for phone in phones:
             try:
-                sms_result = await send_sms(phone, message, ctx.tenant)
+                sms_result = await send_sms(phone, outgoing_message, ctx.tenant)
                 if sms_result:
                     sent += 1
                 else:
@@ -1276,13 +1639,21 @@ async def handle_send_announcement(ctx: ToolContext, tool_input: dict) -> str:
         audience_parts.append(f"status: {status_filter}")
     audience = ", ".join(audience_parts) if audience_parts else "all opted-in customers"
 
-    return json.dumps({
+    response: dict = {
         "success": True,
         "total_recipients": len(phones),
         "sent": sent,
         "failed": failed,
         "audience": audience,
-    })
+    }
+    # In test mode, include the rendered body + recipient phones so the
+    # Multi-Volunteer Test page can preview the announcement against each
+    # selected volunteer instead of silently dropping it.
+    if ctx.test_mode:
+        response["test_mode"] = True
+        response["preview_message"] = outgoing_message
+        response["preview_recipients"] = list(phones)
+    return json.dumps(response)
 
 
 async def handle_suspend_customer(ctx: ToolContext, tool_input: dict) -> str:
@@ -1464,6 +1835,7 @@ async def handle_manage_availability(ctx: ToolContext, tool_input: dict) -> str:
             buffer_minutes=tool_input.get("buffer_minutes", 0),
             service_config=svc_config,
             is_active=True,
+            allow_roster_sharing=bool(tool_input.get("allow_roster_sharing", True)),
         )
         ctx.db.add(rule)
         await ctx.db.flush()
@@ -1517,6 +1889,8 @@ async def handle_manage_availability(ctx: ToolContext, tool_input: dict) -> str:
                 return json.dumps({"error": "Invalid end_time. Use HH:MM."})
         if "buffer_minutes" in tool_input and tool_input["buffer_minutes"] is not None:
             rule.buffer_minutes = tool_input["buffer_minutes"]
+        if "allow_roster_sharing" in tool_input and tool_input["allow_roster_sharing"] is not None:
+            rule.allow_roster_sharing = bool(tool_input["allow_roster_sharing"])
         if "services" in tool_input:
             svc_config, err = await _build_service_config(ctx, tool_input["services"])
             if err:
@@ -1612,6 +1986,7 @@ async def handle_manage_specific_date_slot(ctx: ToolContext, tool_input: dict) -
             buffer_minutes=tool_input.get("buffer_minutes", 0),
             service_config=svc_config,
             is_active=True,
+            allow_roster_sharing=bool(tool_input.get("allow_roster_sharing", True)),
         )
         ctx.db.add(slot)
         await ctx.db.flush()
@@ -1668,6 +2043,8 @@ async def handle_manage_specific_date_slot(ctx: ToolContext, tool_input: dict) -
             slot.location = tool_input["location"]
         if "buffer_minutes" in tool_input and tool_input["buffer_minutes"] is not None:
             slot.buffer_minutes = tool_input["buffer_minutes"]
+        if "allow_roster_sharing" in tool_input and tool_input["allow_roster_sharing"] is not None:
+            slot.allow_roster_sharing = bool(tool_input["allow_roster_sharing"])
         if "services" in tool_input:
             svc_config, err = await _build_service_config(ctx, tool_input["services"])
             if err:
@@ -1698,6 +2075,7 @@ TOOL_HANDLERS = {
     "manage_volunteer": handle_manage_volunteer,
     "block_date": handle_block_date,
     "unblock_date": handle_unblock_date,
+    "cancel_event_bookings": handle_cancel_event_bookings,
     "get_schedule": handle_get_schedule,
     "manage_service": handle_manage_service,
     "manage_availability": handle_manage_availability,

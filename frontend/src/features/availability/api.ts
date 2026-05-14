@@ -27,8 +27,15 @@ export async function getBlockedDates(): Promise<BlockedDateResponse[]> {
   return data;
 }
 
-export async function createBlockedDate(body: BlockedDateCreate): Promise<BlockedDateResponse> {
-  const { data } = await api.post<BlockedDateResponse>("/availability/blocked-dates", body);
+export async function createBlockedDate(
+  body: BlockedDateCreate,
+  options: { force?: boolean } = {}
+): Promise<BlockedDateResponse> {
+  const { data } = await api.post<BlockedDateResponse>(
+    "/availability/blocked-dates",
+    body,
+    { params: options.force ? { force: true } : undefined }
+  );
   return data;
 }
 
@@ -41,18 +48,27 @@ export async function listSpecificDateSlots(): Promise<SpecificDateSlotResponse[
   return data;
 }
 
-export async function createSpecificDateSlot(body: SpecificDateSlotCreate): Promise<SpecificDateSlotResponse> {
-  const { data } = await api.post<SpecificDateSlotResponse>("/availability/specific-slots", body);
+export async function createSpecificDateSlot(
+  body: SpecificDateSlotCreate,
+  options: { force?: boolean } = {}
+): Promise<SpecificDateSlotResponse> {
+  const { data } = await api.post<SpecificDateSlotResponse>(
+    "/availability/specific-slots",
+    body,
+    { params: options.force ? { force: true } : undefined }
+  );
   return data;
 }
 
 export async function updateSpecificDateSlot(
   id: string,
-  body: SpecificDateSlotUpdate
+  body: SpecificDateSlotUpdate,
+  options: { force?: boolean } = {}
 ): Promise<SpecificDateSlotResponse> {
   const { data } = await api.put<SpecificDateSlotResponse>(
     `/availability/specific-slots/${id}`,
-    body
+    body,
+    { params: options.force ? { force: true } : undefined }
   );
   return data;
 }

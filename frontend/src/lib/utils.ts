@@ -21,6 +21,13 @@ export function formatPhone(phone: string): string {
 }
 
 export function formatDate(date: string | Date): string {
+  // Date-only ISO strings ("YYYY-MM-DD") parse as UTC midnight, which shifts
+  // a day backwards when rendered in negative-UTC offsets. Build a local
+  // Date from the parts so the displayed day matches what was stored.
+  if (typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    const [y, m, d] = date.split("-").map(Number);
+    return format(new Date(y, m - 1, d), "dd MMM yyyy");
+  }
   return format(new Date(date), "dd MMM yyyy");
 }
 

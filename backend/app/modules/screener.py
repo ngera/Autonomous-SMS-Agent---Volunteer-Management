@@ -79,20 +79,26 @@ def stage1_rule_based(message: str) -> ScreenerResult | None:
                 is_opt_out=True,
             )
 
-    # Empty or near-empty message
-    if len(text) < 2:
+    # Empty message — hard reject. Single-character replies like "1", "y", "n"
+    # are intentionally allowed through to stage 2 because they are common
+    # contextual answers (e.g. "Reply with 1, 2, or 3 to pick a slot").
+    if len(text) == 0:
         return ScreenerResult(
             classification=Classification.IRRELEVANT,
             method=ScreenerMethod.RULE_BASED,
         )
 
-    # Garbage characters (>85% non-alphabetic)
-    alpha_count = sum(1 for c in text if c.isalpha())
-    if len(text) > 0 and (alpha_count / len(text)) < 0.15:
-        return ScreenerResult(
-            classification=Classification.IRRELEVANT,
-            method=ScreenerMethod.RULE_BASED,
-        )
+    # Garbage characters (>85% non-alphabetic). Short replies like "1", "12:00",
+    # "9pm" can have low alpha ratios but be perfectly relevant in context, so
+    # only apply this heuristic to longer messages where pure noise is a
+    # plausible interpretation.
+    if len(text) >= 8:
+        alpha_count = sum(1 for c in text if c.isalpha())
+        if (alpha_count / len(text)) < 0.15:
+            return ScreenerResult(
+                classification=Classification.IRRELEVANT,
+                method=ScreenerMethod.RULE_BASED,
+            )
 
     # Prompt injection patterns
     if INJECTION_PATTERNS.search(text):

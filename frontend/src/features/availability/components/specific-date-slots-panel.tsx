@@ -1,17 +1,13 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Pencil, Plus, Trash2, X } from "lucide-react";
-import {
-  DropdownMenu,
-  DropdownMenuCheckboxItem,
-  DropdownMenuContent,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { DataTable, type Column } from "@/components/shared/data-table";
+import { MapsLink } from "@/components/shared/maps-link";
+import { ServiceCategoryPicker } from "@/components/shared/service-category-picker";
 import { useAppointmentTypes } from "@/features/appointment-types/hooks/use-appointment-types";
 import {
   useSpecificDateSlots,
@@ -23,6 +19,10 @@ import type { SpecificDateSlotResponse, ServiceSlotConfig } from "@/types/api";
 
 interface Props {
   canEdit: boolean;
+  /** When set, find this slot once it's loaded and open it in edit mode. */
+  editSlotId?: string | null;
+  /** Called once the editSlotId has been consumed so the URL can be cleared. */
+  onConsumeEditSlot?: () => void;
 }
 
 const EMPTY_FORM = {
@@ -33,6 +33,7 @@ const EMPTY_FORM = {
   end: "17:00",
   buffer: 0,
   config: [] as ServiceSlotConfig[],
+  allowRosterSharing: true,
 };
 
 function trimTime(t: string | null | undefined): string {
@@ -40,7 +41,15 @@ function trimTime(t: string | null | undefined): string {
   return t.length >= 5 ? t.slice(0, 5) : t;
 }
 
-export function SpecificDateSlotsPanel({ canEdit }: Props) {
+function errDetail(err: unknown): unknown {
+  return (err as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+}
+
+export function SpecificDateSlotsPanel({
+  canEdit,
+  editSlotId,
+  onConsumeEditSlot,
+}: Props) {
   const { data: slots, isLoading } = useSpecificDateSlots();
   const createSlot = useCreateSpecificDateSlot();
   const updateSlot = useUpdateSpecificDateSlot();
@@ -57,6 +66,7 @@ export function SpecificDateSlotsPanel({ canEdit }: Props) {
   const [formEnd, setFormEnd] = useState(EMPTY_FORM.end);
   const [formBuffer, setFormBuffer] = useState(EMPTY_FORM.buffer);
   const [formConfig, setFormConfig] = useState<ServiceSlotConfig[]>(EMPTY_FORM.config);
+  const [formAllowRosterSharing, setFormAllowRosterSharing] = useState(EMPTY_FORM.allowRosterSharing);
 
   const showForm = creating || editingId !== null;
   const isPending = createSlot.isPending || updateSlot.isPending;
@@ -69,6 +79,7 @@ export function SpecificDateSlotsPanel({ canEdit }: Props) {
     setFormEnd(EMPTY_FORM.end);
     setFormBuffer(EMPTY_FORM.buffer);
     setFormConfig(EMPTY_FORM.config);
+    setFormAllowRosterSharing(EMPTY_FORM.allowRosterSharing);
   }
 
   function closeForm() {
@@ -99,7 +110,21 @@ export function SpecificDateSlotsPanel({ canEdit }: Props) {
         max_allowed: c.max_allowed,
       }))
     );
+    setFormAllowRosterSharing(s.allow_roster_sharing ?? true);
   }
+
+  // Honour the ?edit_slot=<id> deep link from the event roster page: once the
+  // slot list arrives, find the requested row and open it in edit mode, then
+  // tell the parent to clear the URL param so reloads stay idempotent.
+  useEffect(() => {
+    if (!editSlotId || !slots) return;
+    const target = slots.find((s) => s.id === editSlotId);
+    if (target) {
+      startEdit(target);
+    }
+    onConsumeEditSlot?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editSlotId, slots]);
 
   function toggleType(typeId: string) {
     const existing = formConfig.find((c) => c.appointment_type_id === typeId);
@@ -144,20 +169,56 @@ export function SpecificDateSlotsPanel({ canEdit }: Props) {
       end_time: formEnd,
       buffer_minutes: formBuffer,
       service_config: formConfig.length > 0 ? formConfig : null,
+      allow_roster_sharing: formAllowRosterSharing,
     };
     const onSuccess = () => closeForm();
-    const onError = (err: unknown) => {
-      const detail =
-        (err as { response?: { data?: { detail?: string } } })?.response?.data
-          ?.detail || (err as Error)?.message || "Failed to save event";
-      alert(`Could not save event: ${detail}`);
+    const showError = (err: unknown) => {
+      const detail = errDetail(err) ?? (err as Error)?.message ?? "Failed to save event";
+      alert(`Could not save event: ${typeof detail === "string" ? detail : JSON.stringify(detail)}`);
     };
 
-    if (editingId) {
-      updateSlot.mutate({ id: editingId, body }, { onSuccess, onError });
-    } else {
-      createSlot.mutate(body, { onSuccess, onError });
+    function submit(force: boolean) {
+      if (editingId) {
+        updateSlot.mutate(
+          { id: editingId, body, force },
+          { onSuccess, onError: handleError }
+        );
+      } else {
+        createSlot.mutate(
+          { body, force },
+          { onSuccess, onError: handleError }
+        );
+      }
     }
+
+    function handleError(err: unknown) {
+      const detail = errDetail(err);
+      if (
+        detail &&
+        typeof detail === "object" &&
+        (detail as { code?: string }).code === "blocked_date_conflict"
+      ) {
+        const ranges = (
+          (detail as { blocked_dates?: Array<{ date_from: string; date_to: string; reason?: string | null }> })
+            .blocked_dates ?? []
+        )
+          .map(
+            (b) =>
+              `${b.date_from}${b.date_from === b.date_to ? "" : ` – ${b.date_to}`}${
+                b.reason ? ` (${b.reason})` : ""
+              }`
+          )
+          .join(", ");
+        const ok = window.confirm(
+          `${(detail as { message: string }).message}\n\nBlocked range: ${ranges}\n\nSchedule the event anyway?`
+        );
+        if (ok) submit(true);
+        return;
+      }
+      showError(err);
+    }
+
+    submit(false);
   }
 
   const columns: Column<SpecificDateSlotResponse>[] = [
@@ -165,8 +226,16 @@ export function SpecificDateSlotsPanel({ canEdit }: Props) {
     { key: "label", header: "Label", render: (s) => s.label || "—" },
     {
       key: "location",
-      header: "Location",
-      render: (s) => s.location || "—",
+      header: "Address",
+      render: (s) =>
+        s.location ? (
+          <span className="inline-flex items-center gap-1.5">
+            <span>{s.location}</span>
+            <MapsLink address={s.location} />
+          </span>
+        ) : (
+          "—"
+        ),
     },
     {
       key: "time",
@@ -275,12 +344,12 @@ export function SpecificDateSlotsPanel({ canEdit }: Props) {
                   className="h-8"
                 />
               </div>
-              <div className="space-y-1">
-                <Label className="text-xs">Location</Label>
+              <div className="space-y-1 col-span-2">
+                <Label className="text-xs">Address</Label>
                 <Input
                   value={formLocation}
                   onChange={(e) => setFormLocation(e.target.value)}
-                  placeholder="e.g. Main Hall"
+                  placeholder="e.g. 123 Main St, Springfield, IL 62701"
                   className="h-8"
                 />
               </div>
@@ -314,46 +383,25 @@ export function SpecificDateSlotsPanel({ canEdit }: Props) {
               </div>
             </div>
 
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={formAllowRosterSharing}
+                onChange={(e) => setFormAllowRosterSharing(e.target.checked)}
+                className="h-3.5 w-3.5"
+              />
+              Allow volunteers to see who else is signed up for this event
+            </label>
+
             <div className="space-y-1.5">
-              <div className="flex items-center gap-2">
-                <Label className="text-xs text-muted-foreground">
-                  Services needed:
-                </Label>
-                {formConfig.length === 0 && (
-                  <span className="text-xs text-muted-foreground italic">
-                    All services (min 1, max 1)
-                  </span>
-                )}
-                {activeTypes.length > 0 && (
-                  <DropdownMenu>
-                    <DropdownMenuTrigger
-                      render={
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="h-6 text-xs px-2"
-                        >
-                          <Plus className="h-3 w-3 mr-1" />{" "}
-                          {formConfig.length === 0 ? "Configure..." : "Add"}
-                        </Button>
-                      }
-                    />
-                    <DropdownMenuContent align="start" className="w-56">
-                      {activeTypes.map((type) => (
-                        <DropdownMenuCheckboxItem
-                          key={type.id}
-                          checked={formConfig.some(
-                            (c) => c.appointment_type_id === type.id
-                          )}
-                          onCheckedChange={() => toggleType(type.id)}
-                        >
-                          {type.name} ({type.duration_minutes}min)
-                        </DropdownMenuCheckboxItem>
-                      ))}
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                )}
-              </div>
+              <Label className="text-xs text-muted-foreground">
+                Services needed:
+              </Label>
+              {formConfig.length === 0 && (
+                <p className="text-xs text-muted-foreground italic">
+                  All services (min 1, max 1) — add specific services below to override.
+                </p>
+              )}
               {formConfig.length > 0 && (
                 <div className="flex flex-wrap gap-2">
                   {formConfig.map((cfg) => (
@@ -399,6 +447,14 @@ export function SpecificDateSlotsPanel({ canEdit }: Props) {
                     </div>
                   ))}
                 </div>
+              )}
+              {activeTypes.length > 0 && (
+                <ServiceCategoryPicker
+                  activeTypes={activeTypes}
+                  excludeIds={formConfig.map((c) => c.appointment_type_id)}
+                  onAdd={(typeId) => toggleType(typeId)}
+                  size="sm"
+                />
               )}
             </div>
 

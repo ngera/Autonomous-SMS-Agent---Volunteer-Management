@@ -31,6 +31,9 @@ class AvailabilityRule(Base):
     buffer_minutes: Mapped[int] = mapped_column(Integer, default=0)
     service_config: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    allow_roster_sharing: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="true", nullable=False
+    )
 
 
 class SpecificDateSlot(Base):
@@ -54,3 +57,6 @@ class SpecificDateSlot(Base):
     buffer_minutes: Mapped[int] = mapped_column(Integer, default=0)
     service_config: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    allow_roster_sharing: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="true", nullable=False
+    )

@@ -48,6 +48,9 @@ class Contact(Base):
     background_check_required: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false", nullable=False
     )
+    is_archived: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False, index=True
+    )
     availability: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     weekly_hours: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     unavailable_dates: Mapped[list | None] = mapped_column(JSONB, nullable=True)

@@ -13,6 +13,7 @@ import {
   Building2,
   Megaphone,
   FlaskConical,
+  MessagesSquare,
   Coins,
   ChevronLeft,
   ChevronRight,
@@ -29,7 +30,7 @@ interface SidebarProps {
 
 const navItems = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { to: "/bookings", label: "Bookings", icon: Calendar },
+  { to: "/bookings", label: "Calendar", icon: Calendar },
   { to: "/customers", label: "Volunteers", icon: Users },
   { to: "/appointment-types", label: "Types", icon: ClipboardList },
   { to: "/availability", label: "Schedule Setup", icon: Clock },
@@ -40,6 +41,7 @@ const navItems = [
   { to: "/token-usage", label: "Token Usage", icon: Coins },
   { to: "/announcements", label: "Announcements", icon: Megaphone },
   { to: "/test-tool", label: "SMS Test", icon: FlaskConical },
+  { to: "/multi-test", label: "Multi-Volunteer Test", icon: MessagesSquare },
 ];
 
 export function Sidebar({ collapsed, onToggle }: SidebarProps) {

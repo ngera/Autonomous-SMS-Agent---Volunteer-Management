@@ -7,7 +7,7 @@ import { TenantFilterProvider } from "@/context/tenant-filter-context";
 const PAGE_TITLES: Record<string, string> = {
   "/dashboard": "Dashboard",
   "/tenant-dashboard": "Tenant Dashboard",
-  "/bookings": "Bookings",
+  "/bookings": "Calendar",
   "/customers": "Volunteers",
   "/appointment-types": "Service Types",
   "/availability": "Schedule Setup",
@@ -18,6 +18,7 @@ const PAGE_TITLES: Record<string, string> = {
   "/settings": "Settings",
   "/announcements": "Announcements",
   "/test-tool": "SMS Test Tool",
+  "/multi-test": "Multi-Volunteer SMS Test",
   "/tenants": "Tenants",
 };
 

@@ -12,7 +12,7 @@ from app.core.dependencies import CurrentTenant, CurrentUser, DbSession, Manager
 logger = logging.getLogger(__name__)
 from app.models.appointment_type import AppointmentType
 from app.models.booking import Booking, BookingStatus
-from app.models.contact import Contact, ContactStatus
+from app.models.contact import Contact, ContactSex, ContactStatus
 from app.models.contact_preferred_type import ContactPreferredType
 from app.models.contact_consent import (
     ContactConsent,
@@ -73,6 +73,121 @@ async def _sync_preferred_types(db, contact_id, tenant_id, type_ids: list):
     await db.flush()
 
 
+_BOOL_TRUE = {"yes", "y", "true", "1"}
+_BOOL_FALSE = {"no", "n", "false", "0", ""}
+_DOW_NAMES = {
+    "mon": 0, "monday": 0,
+    "tue": 1, "tues": 1, "tuesday": 1,
+    "wed": 2, "weds": 2, "wednesday": 2,
+    "thu": 3, "thur": 3, "thurs": 3, "thursday": 3,
+    "fri": 4, "friday": 4,
+    "sat": 5, "saturday": 5,
+    "sun": 6, "sunday": 6,
+}
+_VALID_AVAILABILITY = {
+    "weekday_am", "weekday_pm", "weekday_eve",
+    "weekend_am", "weekend_pm", "weekend_eve",
+}
+
+
+def _parse_bool_or_none(s: str | None) -> bool | None:
+    if s is None:
+        return None
+    v = s.strip().lower()
+    if v == "":
+        return None
+    if v in _BOOL_TRUE:
+        return True
+    if v in _BOOL_FALSE - {""}:
+        return False
+    raise ValueError(f"invalid yes/no value: {s!r}")
+
+
+def _parse_time_str(t: str) -> str:
+    """Accept 'HH:MM' or 'HH:MM:SS' and return 'HH:MM:SS'."""
+    t = t.strip()
+    if len(t) == 5:
+        t = f"{t}:00"
+    # Quick sanity check
+    parts = t.split(":")
+    if len(parts) != 3 or not all(p.isdigit() for p in parts):
+        raise ValueError(f"invalid time {t!r}")
+    return t
+
+
+def _parse_weekly_hours(s: str) -> list[dict]:
+    """Parse 'Mon 09:00-12:00; Wed 13:00-15:00' into JSONB blocks."""
+    s = (s or "").strip()
+    if not s:
+        return []
+    blocks: list[dict] = []
+    for raw in s.split(";"):
+        piece = raw.strip()
+        if not piece:
+            continue
+        try:
+            day_part, time_part = piece.split(" ", 1)
+            start_raw, end_raw = time_part.split("-", 1)
+            dow = _DOW_NAMES[day_part.strip().lower()]
+            blocks.append({
+                "day_of_week": dow,
+                "start_time": _parse_time_str(start_raw),
+                "end_time": _parse_time_str(end_raw),
+            })
+        except (KeyError, ValueError) as exc:
+            raise ValueError(f"invalid weekly_hours block: {piece!r}") from exc
+    return blocks
+
+
+def _parse_availability(s: str) -> list[str]:
+    s = (s or "").strip()
+    if not s:
+        return []
+    out: list[str] = []
+    for raw in s.split(";"):
+        v = raw.strip().lower()
+        if not v:
+            continue
+        if v not in _VALID_AVAILABILITY:
+            raise ValueError(f"invalid availability slot: {v!r}")
+        if v not in out:
+            out.append(v)
+    return out
+
+
+def _parse_unavailable_dates(s: str) -> list[str]:
+    s = (s or "").strip()
+    if not s:
+        return []
+    out: list[str] = []
+    for raw in s.split(";"):
+        v = raw.strip()
+        if not v:
+            continue
+        try:
+            date.fromisoformat(v)
+        except ValueError as exc:
+            raise ValueError(f"invalid date {v!r} (expected YYYY-MM-DD)") from exc
+        out.append(v)
+    return out
+
+
+def _parse_services(s: str, name_to_id: dict[str, "uuid.UUID"]) -> list:
+    s = (s or "").strip()
+    if not s or s.upper() == "ALL":
+        return []
+    ids = []
+    for raw in s.split(";"):
+        name = raw.strip()
+        if not name:
+            continue
+        tid = name_to_id.get(name.lower())
+        if tid is None:
+            raise ValueError(f"unknown service {name!r}")
+        ids.append(tid)
+    return ids
+
+
 def _build_customer_response(
     contact, consent_status, preferred_type_ids=None, total_minutes: int = 0
 ):
@@ -111,10 +226,13 @@ async def list_customers(
     consent_filter: ConsentStatus | None = Query(None, alias="consent_status"),
     background_check_required: bool | None = None,
     availability: str | None = None,
+    include_archived: bool = False,
 ):
     base = select(Contact).options(joinedload(Contact.consent)).where(
         Contact.tenant_id == tenant.id
     )
+    if not include_archived:
+        base = base.where(Contact.is_archived.is_(False))
     unfiltered_total = (await db.execute(
         select(func.count()).select_from(base.subquery())
     )).scalar() or 0
@@ -309,8 +427,15 @@ async def create_customer(
     )
 
 
-@router.delete("/{phone}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{phone}")
 async def delete_customer(phone: str, db: DbSession, current_user: ManagerUser, tenant: CurrentTenant):
+    """Delete a volunteer.
+
+    Hard-deletes the row only when there's nothing to preserve. If the
+    volunteer has any bookings or conversations, archives them instead so the
+    audit trail stays intact. Returns ``{"action": "deleted"|"archived"}`` so
+    the UI can word the success message correctly.
+    """
     result = await db.execute(
         select(Contact).where(Contact.phone == phone, Contact.tenant_id == tenant.id)
     )
@@ -328,8 +453,52 @@ async def delete_customer(phone: str, db: DbSession, current_user: ManagerUser, 
     if (active_count.scalar() or 0) > 0:
         raise HTTPException(status_code=400, detail="Cannot delete customer with active bookings")
 
+    booking_count = (await db.execute(
+        select(func.count()).select_from(Booking).where(
+            Booking.contact_id == contact.id, Booking.tenant_id == tenant.id,
+        )
+    )).scalar() or 0
+    convo_count = (await db.execute(
+        select(func.count()).select_from(Conversation).where(
+            Conversation.contact_id == contact.id, Conversation.tenant_id == tenant.id,
+        )
+    )).scalar() or 0
+
+    if booking_count > 0 or convo_count > 0:
+        # Preserve history — archive the volunteer instead of removing the row.
+        contact.is_archived = True
+        await db.flush()
+        return {"action": "archived", "booking_count": booking_count, "conversation_count": convo_count}
+
+    # No history → safe to hard-delete. Most child tables don't have
+    # ON DELETE CASCADE on their contact_id FK, so we clear them explicitly,
+    # children-first, inside the request transaction.
+    from sqlalchemy import delete as sql_delete
+    from app.models.reminder import Reminder
+    from app.models.strike import ContactStrike
+    from app.models.suspension import ContactSuspension
+    from app.models.token_usage import TokenUsage
+
+    for model in (
+        Reminder,
+        ContactSuspension,
+        TokenUsage,
+        ContactConsentHistory,
+        ContactConsent,
+        ContactStrike,
+        CustomerAppointmentPattern,
+        ContactPreferredType,
+    ):
+        await db.execute(
+            sql_delete(model).where(
+                model.contact_id == contact.id,
+                model.tenant_id == tenant.id,
+            )
+        )
+
     await db.delete(contact)
     await db.flush()
+    return {"action": "deleted"}
 
 
 @router.put("/{phone}", response_model=CustomerResponse)
@@ -400,46 +569,153 @@ async def import_customers_csv(
     file: UploadFile, db: DbSession, current_user: ManagerUser, tenant: CurrentTenant
 ):
     content = await file.read()
-    text = content.decode("utf-8")
+    # utf-8-sig strips the BOM that the frontend export prepends; without it
+    # the first column header reads as "﻿phone" and every row fails.
+    text = content.decode("utf-8-sig")
     reader = csv.DictReader(io.StringIO(text))
+    fieldnames = set(reader.fieldnames or [])
+
+    # Build a tenant-scoped service-name → ID map once so the row loop can
+    # resolve the semicolon-separated names from the export's `services` column.
+    type_rows = await db.execute(
+        select(AppointmentType.id, AppointmentType.name).where(
+            AppointmentType.tenant_id == tenant.id,
+        )
+    )
+    name_to_id: dict[str, "uuid.UUID"] = {
+        n.strip().lower(): tid for tid, n in type_rows.all()
+    }
 
     imported = 0
+    updated = 0
     skipped = 0
-    errors = []
+    errors: list[str] = []
+    # Track phones already processed in this file so the second occurrence
+    # of the same phone is reported as a duplicate instead of silently
+    # overwriting the first.
+    seen_phones: set[str] = set()
+
+    def _norm_name(s: str | None) -> str:
+        return (s or "").strip().lower()
 
     for i, row in enumerate(reader, start=2):
-        phone = row.get("phone", "").strip()
+        phone = (row.get("phone") or "").strip()
         if not phone:
             errors.append(f"Row {i}: missing phone number")
+            skipped += 1
+            continue
+
+        if phone in seen_phones:
+            errors.append(
+                f"Row {i}: duplicate phone {phone} appears earlier in this file"
+            )
+            skipped += 1
+            continue
+        seen_phones.add(phone)
+
+        # Parse every column that's present in the file. Missing columns are
+        # left untouched on update (and default-empty on create).
+        try:
+            updates: dict = {}
+            if "name" in fieldnames:
+                updates["name"] = (row.get("name") or "").strip() or None
+            if "email" in fieldnames:
+                updates["email"] = (row.get("email") or "").strip() or None
+            if "sex" in fieldnames:
+                v = (row.get("sex") or "").strip().lower()
+                updates["sex"] = ContactSex(v) if v else None
+            if "status" in fieldnames:
+                v = (row.get("status") or "").strip().lower()
+                updates["status"] = ContactStatus(v) if v else ContactStatus.ACTIVE
+            if "background_check_required" in fieldnames:
+                bc = _parse_bool_or_none(row.get("background_check_required"))
+                if bc is not None:
+                    updates["background_check_required"] = bc
+            if "all_services_enabled" in fieldnames:
+                ase = _parse_bool_or_none(row.get("all_services_enabled"))
+                if ase is not None:
+                    updates["all_services_enabled"] = ase
+            if "availability" in fieldnames:
+                avail = _parse_availability(row.get("availability") or "")
+                updates["availability"] = avail or None
+            if "weekly_hours" in fieldnames:
+                wh = _parse_weekly_hours(row.get("weekly_hours") or "")
+                updates["weekly_hours"] = wh or None
+            if "unavailable_dates" in fieldnames:
+                ud = _parse_unavailable_dates(row.get("unavailable_dates") or "")
+                updates["unavailable_dates"] = ud or None
+            if "reminder_preference_days" in fieldnames:
+                v = (row.get("reminder_preference_days") or "").strip()
+                if v:
+                    updates["reminder_preference_days"] = int(v)
+
+            services_present = "services" in fieldnames
+            service_ids: list = []
+            if services_present:
+                service_ids = _parse_services(row.get("services") or "", name_to_id)
+
+            consent_value: ConsentStatus | None = None
+            if "consent" in fieldnames:
+                cv = (row.get("consent") or "").strip().lower()
+                if cv:
+                    consent_value = ConsentStatus(cv)
+        except (ValueError, KeyError) as exc:
+            errors.append(f"Row {i}: {exc}")
+            skipped += 1
             continue
 
         existing = await db.execute(
             select(Contact).where(Contact.phone == phone, Contact.tenant_id == tenant.id)
         )
-        if existing.scalar_one_or_none():
-            skipped += 1
-            continue
+        contact = existing.scalar_one_or_none()
 
-        contact = Contact(
-            tenant_id=tenant.id,
-            phone=phone,
-            name=row.get("name", "").strip() or None,
-            email=row.get("email", "").strip() or None,
-        )
-        db.add(contact)
-        await db.flush()
+        # (phone, name) is the identity key for import. If a row's phone matches
+        # an existing contact whose stored name differs from the row's name,
+        # treat it as a different person and skip — never silently overwrite.
+        if contact is not None and "name" in fieldnames:
+            row_name = _norm_name(updates.get("name"))
+            existing_name = _norm_name(contact.name)
+            if row_name and existing_name and row_name != existing_name:
+                errors.append(
+                    f"Row {i}: phone {phone} already belongs to "
+                    f"{contact.name!r}; refusing to overwrite with {updates['name']!r}"
+                )
+                skipped += 1
+                continue
 
-        consent = ContactConsent(
-            tenant_id=tenant.id,
-            contact_id=contact.id,
-            contact_phone=phone,
-            status=ConsentStatus.UNCONTACTED,
-        )
-        db.add(consent)
-        imported += 1
+        if contact is None:
+            contact = Contact(tenant_id=tenant.id, phone=phone, **updates)
+            db.add(contact)
+            await db.flush()
+
+            db.add(ContactConsent(
+                tenant_id=tenant.id,
+                contact_id=contact.id,
+                contact_phone=phone,
+                status=consent_value or ConsentStatus.UNCONTACTED,
+            ))
+
+            if services_present and service_ids:
+                for tid in service_ids:
+                    db.add(ContactPreferredType(
+                        tenant_id=tenant.id,
+                        contact_id=contact.id,
+                        appointment_type_id=tid,
+                    ))
+            imported += 1
+        else:
+            for field, value in updates.items():
+                setattr(contact, field, value)
+            if services_present:
+                # Replace the preferred-types set so updates are deterministic.
+                await _sync_preferred_types(db, contact.id, tenant.id, service_ids)
+            await db.flush()
+            updated += 1
 
     await db.flush()
-    return CsvImportResponse(imported=imported, skipped=skipped, errors=errors)
+    return CsvImportResponse(
+        imported=imported, updated=updated, skipped=skipped, errors=errors
+    )
 
 
 @router.get("/{phone}/bookings")
@@ -514,6 +790,56 @@ async def get_customer_conversations(
         .order_by(Conversation.created_at.desc())
     )
     return result.scalars().all()
+
+
+@router.get("/{phone}/recent-messages")
+async def get_customer_recent_messages(
+    phone: str,
+    db: DbSession,
+    current_user: CurrentUser,
+    tenant: CurrentTenant,
+    days: int = Query(7, ge=1, le=90),
+):
+    """Flat chronological list of {role, content, timestamp} from this volunteer's
+    conversations, filtered to messages whose timestamp is within the last N days.
+    Used by the test tools to seed history.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+    result = await db.execute(
+        select(Conversation.message_history, Conversation.last_message_at)
+        .where(
+            Conversation.contact_phone == phone,
+            Conversation.tenant_id == tenant.id,
+            Conversation.last_message_at >= cutoff,
+        )
+        .order_by(Conversation.last_message_at.asc())
+    )
+
+    flat: list[dict] = []
+    for history, _last in result.all():
+        if not history:
+            continue
+        for msg in history:
+            ts_raw = msg.get("timestamp")
+            if not ts_raw:
+                continue
+            try:
+                ts = datetime.fromisoformat(ts_raw)
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+            except (ValueError, TypeError):
+                continue
+            if ts < cutoff:
+                continue
+            role = msg.get("role")
+            content = msg.get("content")
+            if role not in ("user", "assistant") or not isinstance(content, str):
+                continue
+            flat.append({"role": role, "content": content, "timestamp": ts.isoformat()})
+
+    flat.sort(key=lambda m: m["timestamp"])
+    return {"messages": flat, "days": days}
 
 
 @router.get("/{phone}/pattern", response_model=list[PatternResponse])

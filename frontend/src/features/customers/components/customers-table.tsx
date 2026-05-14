@@ -5,7 +5,10 @@ import { StatusBadge } from "@/components/shared/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { formatTimeAgo } from "@/lib/utils";
 import { ContactStatus, AVAILABILITY_OPTIONS } from "@/types/enums";
-import { useAppointmentTypes } from "@/features/appointment-types/hooks/use-appointment-types";
+import {
+  useAppointmentTypes,
+  useMultiTenantAppointmentTypes,
+} from "@/features/appointment-types/hooks/use-appointment-types";
 import type { CustomerResponse, CustomerWithTenant } from "@/types/api";
 import { VolunteerAvatar } from "./volunteer-avatar";
 
@@ -41,12 +44,28 @@ export function CustomersTable({
   showTenantColumn,
 }: CustomersTableProps) {
   const navigate = useNavigate();
-  const { data: appointmentTypes } = useAppointmentTypes();
+  const { data: singleTenantTypes } = useAppointmentTypes();
+
+  // In multi-tenant mode the active-tenant single fetch is disabled, so derive the
+  // tenants visible in `data` and fetch types for each so service names resolve
+  // across tenants. In single-tenant mode `multiTenantIds` is empty and no extra
+  // requests fire.
+  const multiTenantIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const c of data) {
+      const t = (c as CustomerWithTenant).tenant_id;
+      if (t) set.add(t);
+    }
+    return Array.from(set);
+  }, [data]);
+  const { data: multiTenantTypes } = useMultiTenantAppointmentTypes(multiTenantIds);
+
   const typeMap = useMemo(() => {
     const map: Record<string, string> = {};
-    for (const t of appointmentTypes ?? []) map[t.id] = t.name;
+    for (const t of singleTenantTypes ?? []) map[t.id] = t.name;
+    for (const t of multiTenantTypes ?? []) map[t.id] = t.name;
     return map;
-  }, [appointmentTypes]);
+  }, [singleTenantTypes, multiTenantTypes]);
 
   const baseColumns: Column<CustomerResponse>[] = [
     {
@@ -92,7 +111,7 @@ export function CustomersTable({
           <div className="flex flex-wrap gap-1">
             {ids.map((id) => (
               <Badge key={id} variant="secondary" className="text-xs">
-                {typeMap[id] || id.slice(0, 8)}
+                {typeMap[id] ?? "Unknown"}
               </Badge>
             ))}
           </div>

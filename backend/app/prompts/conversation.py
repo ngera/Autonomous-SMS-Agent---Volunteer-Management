@@ -42,6 +42,10 @@ CUSTOMER_SYSTEM_PROMPT = (
     "After booking, confirm the service, date/time, and booking reference number (ref).\n"
     "When a booking is created, rescheduled, or cancelled, the tool response includes a calendar_link and a ref.\n"
     "Always share the ref and calendar_link with the volunteer so they can add/update/remove it from their calendar.\n"
+    "OVERLAPPING BOOKINGS:\n"
+    "- A volunteer can only be in one place at a time. If the services they want to sign up for have overlapping start/end times, do NOT book any of them silently.\n"
+    "- If the volunteer asks to sign up for two or more services in one message and their times overlap, do NOT call book_appointment yet. List the services with their times, point out the overlap, and ask which one they want to book. Only call book_appointment after they pick.\n"
+    "- If book_appointment returns an overlap error against an existing booking, tell the volunteer which existing booking conflicts (service name, time) and ask whether they'd like to cancel that existing booking, pick a different time, or skip the new one. Do not auto-cancel or auto-book.\n"
     "{custom_instructions}"
 )
 
@@ -67,6 +71,14 @@ TECHNICAL_ERROR_MESSAGE = (
     "Sorry, I'm having a technical issue. Please try again shortly."
 )
 
+ANNOUNCEMENT_HEADER_TEMPLATE = (
+    "[{event_label} on {event_date} at {event_start_time}{event_location_part}]\n\n"
+)
+
+REMINDER_FORMAT_TEMPLATE = (
+    "We still need volunteers for {service_name} on {date}. Reply to sign up for a time slot!"
+)
+
 # ── Setting keys ──
 
 PROMPT_KEYS = {
@@ -76,6 +88,8 @@ PROMPT_KEYS = {
     "prompt_screener_system": None,  # default lives in screener.py
     "prompt_fallback_message": FALLBACK_MESSAGE,
     "prompt_error_message": TECHNICAL_ERROR_MESSAGE,
+    "prompt_announcement_header": ANNOUNCEMENT_HEADER_TEMPLATE,
+    "prompt_reminder_format": REMINDER_FORMAT_TEMPLATE,
 }
 
 
@@ -122,3 +136,19 @@ async def get_error_message(
     db: AsyncSession, tenant_id: uuid.UUID | None = None,
 ) -> str:
     return await _get_prompt(db, "prompt_error_message", TECHNICAL_ERROR_MESSAGE, tenant_id)
+
+
+async def get_announcement_header_template(
+    db: AsyncSession, tenant_id: uuid.UUID | None = None,
+) -> str:
+    return await _get_prompt(
+        db, "prompt_announcement_header", ANNOUNCEMENT_HEADER_TEMPLATE, tenant_id
+    )
+
+
+async def get_reminder_format_template(
+    db: AsyncSession, tenant_id: uuid.UUID | None = None,
+) -> str:
+    return await _get_prompt(
+        db, "prompt_reminder_format", REMINDER_FORMAT_TEMPLATE, tenant_id
+    )
