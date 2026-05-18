@@ -162,6 +162,7 @@ async def _append_announcement_to_history(
         db.add(convo)
         await db.flush()
 
+    from app.modules.conversation import trim_message_history
     history = list(convo.message_history or [])
     history.append({
         "role": "assistant",
@@ -169,7 +170,7 @@ async def _append_announcement_to_history(
         "timestamp": ts.isoformat(),
         "kind": "announcement",
     })
-    convo.message_history = history
+    convo.message_history = trim_message_history(history)
     convo.last_message_at = ts
 
 

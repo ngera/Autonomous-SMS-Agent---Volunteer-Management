@@ -37,6 +37,8 @@ import { RescheduleDialog } from "../components/reschedule-dialog";
 import { StatusUpdateDialog } from "../components/status-update-dialog";
 import { AnnouncementForm } from "@/features/announcements/components/announcement-form";
 import { useCreateAnnouncement } from "@/features/announcements/hooks/use-announcements";
+import { useCreateCampaign } from "@/features/recruitment/hooks/use-recruitment";
+import { Users2 } from "lucide-react";
 import type {
   EventContext,
   EventRosterService,
@@ -272,18 +274,21 @@ export function BookingDetailPage() {
             </div>
             <div className="flex items-center gap-2">
               {canModify && event?.source_id && event.source === "specific_date" && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() =>
-                    navigate(
-                      `/availability?tab=specific&edit_slot=${event.source_id}`
-                    )
-                  }
-                >
-                  <Pencil className="mr-2 h-3.5 w-3.5" />
-                  Edit event
-                </Button>
+                <>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      navigate(
+                        `/availability?tab=specific&edit_slot=${event.source_id}`
+                      )
+                    }
+                  >
+                    <Pencil className="mr-2 h-3.5 w-3.5" />
+                    Edit event
+                  </Button>
+                  <RecruitmentCta slotId={event.source_id} />
+                </>
               )}
               {canModify && event?.source === "weekly_rule" && (
                 <Button
@@ -662,5 +667,38 @@ function CancelledRow({ sg }: CancelledRowProps) {
         {sg.status.toLowerCase().replace("_", " ")}
       </Badge>
     </Link>
+  );
+}
+
+function RecruitmentCta({ slotId }: { slotId: string }) {
+  const navigate = useNavigate();
+  const createCampaign = useCreateCampaign();
+
+  function handleClick() {
+    createCampaign.mutate(
+      { event_slot_id: slotId },
+      {
+        onSuccess: (data) => navigate(`/campaigns/${data.id}`),
+        onError: (err: unknown) => {
+          const detail =
+            (err as { response?: { data?: { detail?: string } } })?.response
+              ?.data?.detail ?? "Could not start recruitment campaign.";
+          alert(detail);
+        },
+      }
+    );
+  }
+
+  return (
+    <Button
+      size="sm"
+      variant="outline"
+      onClick={handleClick}
+      disabled={createCampaign.isPending}
+      title="Have the recruitment agent plan SMS outreach for this event"
+    >
+      <Users2 className="mr-2 h-3.5 w-3.5" />
+      {createCampaign.isPending ? "Starting…" : "Recruit volunteers"}
+    </Button>
   );
 }

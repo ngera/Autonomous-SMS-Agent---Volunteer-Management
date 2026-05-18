@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -29,6 +30,7 @@ const EMPTY_FORM = {
   date: "",
   label: "",
   location: "",
+  description: "",
   start: "09:00",
   end: "17:00",
   buffer: 0,
@@ -62,6 +64,7 @@ export function SpecificDateSlotsPanel({
   const [formDate, setFormDate] = useState(EMPTY_FORM.date);
   const [formLabel, setFormLabel] = useState(EMPTY_FORM.label);
   const [formLocation, setFormLocation] = useState(EMPTY_FORM.location);
+  const [formDescription, setFormDescription] = useState(EMPTY_FORM.description);
   const [formStart, setFormStart] = useState(EMPTY_FORM.start);
   const [formEnd, setFormEnd] = useState(EMPTY_FORM.end);
   const [formBuffer, setFormBuffer] = useState(EMPTY_FORM.buffer);
@@ -75,6 +78,7 @@ export function SpecificDateSlotsPanel({
     setFormDate(EMPTY_FORM.date);
     setFormLabel(EMPTY_FORM.label);
     setFormLocation(EMPTY_FORM.location);
+    setFormDescription(EMPTY_FORM.description);
     setFormStart(EMPTY_FORM.start);
     setFormEnd(EMPTY_FORM.end);
     setFormBuffer(EMPTY_FORM.buffer);
@@ -100,6 +104,7 @@ export function SpecificDateSlotsPanel({
     setFormDate(s.date);
     setFormLabel(s.label ?? "");
     setFormLocation(s.location ?? "");
+    setFormDescription(s.description ?? "");
     setFormStart(trimTime(s.start_time));
     setFormEnd(trimTime(s.end_time));
     setFormBuffer(s.buffer_minutes ?? 0);
@@ -165,6 +170,7 @@ export function SpecificDateSlotsPanel({
       date: formDate,
       label: formLabel || undefined,
       location: formLocation.trim() || undefined,
+      description: formDescription.trim() || undefined,
       start_time: formStart,
       end_time: formEnd,
       buffer_minutes: formBuffer,
@@ -351,6 +357,15 @@ export function SpecificDateSlotsPanel({
                   onChange={(e) => setFormLocation(e.target.value)}
                   placeholder="e.g. 123 Main St, Springfield, IL 62701"
                   className="h-8"
+                />
+              </div>
+              <div className="space-y-1 col-span-2">
+                <Label className="text-xs">Description</Label>
+                <Textarea
+                  rows={3}
+                  value={formDescription}
+                  onChange={(e) => setFormDescription(e.target.value)}
+                  placeholder="What's this event about? Volunteers will see this when they ask the AI for event details."
                 />
               </div>
               <div className="space-y-1">

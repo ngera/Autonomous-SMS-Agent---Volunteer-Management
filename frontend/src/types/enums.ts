@@ -15,6 +15,26 @@ export const ContactSex = {
 } as const;
 export type ContactSex = (typeof ContactSex)[keyof typeof ContactSex];
 
+export const CampaignStatus = {
+  DRAFT: "draft",
+  AWAITING_APPROVAL: "awaiting_approval",
+  ACTIVE: "active",
+  PAUSED: "paused",
+  COMPLETED: "completed",
+  CANCELLED: "cancelled",
+  FAILED: "failed",
+} as const;
+export type CampaignStatus = (typeof CampaignStatus)[keyof typeof CampaignStatus];
+
+export const WaveStatus = {
+  PLANNED: "planned",
+  SENDING: "sending",
+  SENT: "sent",
+  SKIPPED: "skipped",
+  CANCELLED: "cancelled",
+} as const;
+export type WaveStatus = (typeof WaveStatus)[keyof typeof WaveStatus];
+
 export const AnnouncementStatus = {
   DRAFT: "draft",
   SCHEDULED: "scheduled",

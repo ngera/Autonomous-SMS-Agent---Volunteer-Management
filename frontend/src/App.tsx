@@ -1,4 +1,10 @@
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import {
+  BrowserRouter,
+  Routes,
+  Route,
+  Navigate,
+  useParams,
+} from "react-router-dom";
 import { ProtectedRoute } from "@/components/guards/protected-route";
 import { RoleGate } from "@/components/guards/role-gate";
 import { AppLayout } from "@/components/layout/app-layout";
@@ -18,20 +24,21 @@ import { SuspensionsPage } from "@/features/suspensions/pages/suspensions-page";
 import { AnalyticsPage } from "@/features/analytics/pages/analytics-page";
 import { TokenUsagePage } from "@/features/token-usage/pages/token-usage-page";
 import { SettingsPage } from "@/features/settings/pages/settings-page";
+import { AiPromptsPage } from "@/features/settings/pages/ai-prompts-page";
+import { TemplatesPage } from "@/features/settings/pages/templates-page";
 import AnnouncementsPage from "@/features/announcements/pages/announcements-page";
+import CampaignsListPage from "@/features/recruitment/pages/campaigns-list-page";
+import CampaignDetailPage from "@/features/recruitment/pages/campaign-detail-page";
 import { TestToolPage } from "@/features/test-tool/pages/test-tool-page";
 import { MultiVolunteerTestPage } from "@/features/test-tool/pages/multi-volunteer-test-page";
 import { TenantsPage } from "@/features/tenants/pages/tenants-page";
 import { TenantDetailPage } from "@/features/tenants/pages/tenant-detail-page";
 import { AdminRole } from "@/types/enums";
-import { useAuth } from "@/hooks/use-auth";
-import { ROLE_HIERARCHY } from "@/lib/constants";
 
 function DefaultRedirect() {
-  const { user } = useAuth();
-  const isSuperAdmin =
-    user && ROLE_HIERARCHY[user.role] >= ROLE_HIERARCHY[AdminRole.SUPER_ADMIN];
-  return <Navigate to={isSuperAdmin ? "/tenant-dashboard" : "/dashboard"} replace />;
+  // Dashboard is the default landing page for every role. Super-admins can
+  // still reach the tenant dashboard from the Monitoring section.
+  return <Navigate to="/dashboard" replace />;
 }
 
 export default function App() {
@@ -74,6 +81,32 @@ export default function App() {
               }
             />
             <Route
+              path="/campaigns"
+              element={
+                <RoleGate minimum={AdminRole.MANAGER}>
+                  <CampaignsListPage />
+                </RoleGate>
+              }
+            />
+            <Route
+              path="/campaigns/:id"
+              element={
+                <RoleGate minimum={AdminRole.MANAGER}>
+                  <CampaignDetailPage />
+                </RoleGate>
+              }
+            />
+            {/* Keep the old /recruitment paths redirecting to /campaigns
+                so any saved bookmarks or in-progress sessions don't 404. */}
+            <Route
+              path="/recruitment"
+              element={<Navigate to="/campaigns" replace />}
+            />
+            <Route
+              path="/recruitment/:id"
+              element={<RecruitmentDetailRedirect />}
+            />
+            <Route
               path="/announcements"
               element={
                 <RoleGate minimum={AdminRole.MANAGER}>
@@ -106,6 +139,22 @@ export default function App() {
               }
             />
             <Route
+              path="/ai-prompts"
+              element={
+                <RoleGate minimum={AdminRole.OWNER}>
+                  <AiPromptsPage />
+                </RoleGate>
+              }
+            />
+            <Route
+              path="/templates"
+              element={
+                <RoleGate minimum={AdminRole.OWNER}>
+                  <TemplatesPage />
+                </RoleGate>
+              }
+            />
+            <Route
               path="/tenants"
               element={
                 <RoleGate minimum={AdminRole.SUPER_ADMIN}>
@@ -128,4 +177,9 @@ export default function App() {
       </Routes>
     </BrowserRouter>
   );
+}
+
+function RecruitmentDetailRedirect() {
+  const { id } = useParams();
+  return <Navigate to={`/campaigns/${id}`} replace />;
 }

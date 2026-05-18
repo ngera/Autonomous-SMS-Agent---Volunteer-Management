@@ -11,7 +11,10 @@ from dataclasses import dataclass, field
 import httpx
 
 from app.core.logging import get_logger
-from app.modules.tool_handlers import TOOL_HANDLERS, ToolContext
+# NOTE: TOOL_HANDLERS is resolved lazily inside _execute_tool below.
+# Importing it at module level creates a cycle once recruiter chat_tools
+# (registered inside tool_handlers) imports planner → tool_executor.
+from app.modules.tool_handlers import ToolContext  # noqa: F401
 
 logger = get_logger("tool_executor")
 
@@ -38,6 +41,7 @@ async def run_tool_conversation(
     api_key: str,
     model: str = DEFAULT_MODEL,
     max_rounds: int = 5,
+    handlers: dict | None = None,
 ) -> ConversationResult:
     """Run a tool_use conversation loop with the Anthropic API.
 
@@ -120,7 +124,7 @@ async def run_tool_conversation(
                 tool_input = block.get("input", {})
                 tool_use_id = block["id"]
 
-                result_content = await _execute_tool(ctx, tool_name, tool_input)
+                result_content = await _execute_tool(ctx, tool_name, tool_input, handlers)
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": tool_use_id,
@@ -150,9 +154,19 @@ async def run_tool_conversation(
     return ConversationResult(text=final_text, total_input_tokens=total_input, total_output_tokens=total_output, model=model, rounds=round_num + 1)
 
 
-async def _execute_tool(ctx: ToolContext, tool_name: str, tool_input: dict) -> str:
+async def _execute_tool(
+    ctx: ToolContext,
+    tool_name: str,
+    tool_input: dict,
+    handlers: dict | None = None,
+) -> str:
     """Execute a single tool call via the handler registry."""
-    handler = TOOL_HANDLERS.get(tool_name)
+    if handlers is None:
+        from app.modules.tool_handlers import TOOL_HANDLERS
+        registry = TOOL_HANDLERS
+    else:
+        registry = handlers
+    handler = registry.get(tool_name)
     if not handler:
         logger.warning("Unknown tool requested: %s", tool_name)
         return f'{{"error": "Unknown tool: {tool_name}"}}'

@@ -412,6 +412,7 @@ export interface SpecificDateSlotResponse {
   service_config: ServiceSlotConfig[] | null;
   is_active: boolean;
   allow_roster_sharing: boolean;
+  description: string | null;
 }
 
 export interface SpecificDateSlotCreate {
@@ -424,6 +425,7 @@ export interface SpecificDateSlotCreate {
   service_config?: ServiceSlotConfig[] | null;
   is_active?: boolean;
   allow_roster_sharing?: boolean;
+  description?: string;
 }
 
 export interface SpecificDateSlotUpdate {
@@ -436,6 +438,7 @@ export interface SpecificDateSlotUpdate {
   service_config?: ServiceSlotConfig[] | null;
   is_active?: boolean;
   allow_roster_sharing?: boolean;
+  description?: string;
 }
 
 export interface WeeklyScheduleUpdate {
@@ -823,3 +826,105 @@ export interface AnnouncementCreate {
   event_context?: EventContext;
   recipient_scope?: RecipientScope;
 }
+
+
+// ── Recruitment Agent ──
+
+export interface CampaignGoal {
+  appointment_type_id: string;
+  target: number;
+  min_acceptable?: number | null;
+}
+
+export interface CampaignCreate {
+  event_slot_id: string;
+  goals?: CampaignGoal[];
+}
+
+export interface CampaignPlanPatch {
+  policy?: Record<string, unknown>;
+  message_templates?: Record<string, string>;
+}
+
+export interface WaveResponse {
+  id: string;
+  campaign_id: string;
+  wave_number: number;
+  appointment_type_id: string;
+  status: import("./enums").WaveStatus;
+  scheduled_at: string;
+  targeted_contact_ids: string[] | null;
+  selection_reason: string | null;
+  announcement_id: string | null;
+  sent_count: number;
+  signups_attributed: number;
+  created_at: string;
+}
+
+export interface ReportSummary {
+  id: string;
+  report_date: string;
+  narrative: string | null;
+  sent_via: "sms" | "none";
+  delivered_at: string | null;
+}
+
+export interface CampaignResponse {
+  id: string;
+  tenant_id: string;
+  event_slot_id: string;
+  status: import("./enums").CampaignStatus;
+  goals: Array<Record<string, unknown>>;
+  policy: Record<string, unknown>;
+  plan_summary: string | null;
+  plan_preview: Record<string, unknown> | null;
+  message_templates: Record<string, string> | null;
+  created_by_admin_id: string;
+  approved_by_admin_id: string | null;
+  approved_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CampaignDetailResponse extends CampaignResponse {
+  waves: WaveResponse[];
+  recent_reports: ReportSummary[];
+  current_signups: Record<string, number>;
+}
+
+export interface FillPerService {
+  service_name: string | null;
+  target: number; // legacy alias for min_required
+  min_required: number;
+  max_allowed: number | null;
+  signups: number;
+}
+
+export interface CampaignListItem {
+  id: string;
+  event_slot_id: string;
+  event_label: string | null;
+  event_date: string;
+  days_to_event: number;
+  status: import("./enums").CampaignStatus;
+  fill_per_service: Record<string, FillPerService>;
+  overall_fill_pct: number;
+  last_wave_sent_at: string | null;
+  next_wave_due_at: string | null;
+  at_risk: boolean;
+}
+
+export interface CampaignAggregate {
+  active_campaigns: number;
+  total_volunteers_needed: number;
+  total_signed_up: number;
+  total_messaged_7d: number;
+  at_risk_count: number;
+}
+
+export interface CampaignListResponse {
+  items: CampaignListItem[];
+  aggregate: CampaignAggregate;
+  total: number;
+}
+

@@ -407,7 +407,13 @@ MANAGE_AVAILABILITY = {
 MANAGE_SPECIFIC_DATE_SLOT = {
     "name": "manage_specific_date_slot",
     "description": (
-        "View or manage one-off events on specific dates. "
+        "View or manage one-off events on specific dates. ONLY use 'add' "
+        "when the admin is explicitly creating a NEW event (they will "
+        "typically mention a new date, time, and location). If the admin "
+        "is referring to an event already on the calendar — even by a "
+        "vague phrase like 'plan the food drive' — do NOT call 'add'; the "
+        "intent is recruitment, route to start_recruitment_campaign "
+        "instead. "
         "Use 'list' to see upcoming events (returns ids). "
         "Use 'add' to create a new event. "
         "Use 'update' to modify an existing event by id (only fields you provide are changed). "
@@ -430,6 +436,15 @@ MANAGE_SPECIFIC_DATE_SLOT = {
             "end_time": {"type": "string", "description": "End time HH:MM. Required for 'add'."},
             "label": {"type": "string", "description": "Event name/label (optional)."},
             "location": {"type": "string", "description": "Event location (optional)."},
+            "description": {
+                "type": "string",
+                "description": (
+                    "Free-form description of the event (what it's about, "
+                    "what volunteers will be doing, parking/dress notes, "
+                    "etc.). Surfaced to volunteers when they ask the AI "
+                    "about the event. Optional."
+                ),
+            },
             "buffer_minutes": {"type": "integer", "description": "Buffer between appointments (default 0)."},
             "allow_roster_sharing": {
                 "type": "boolean",
@@ -579,6 +594,128 @@ UNSUSPEND_CUSTOMER = {
     },
 }
 
+# ── Recruitment agent tools (admin-only) ──
+
+START_RECRUITMENT_CAMPAIGN = {
+    "name": "start_recruitment_campaign",
+    "description": (
+        "**USE THIS TOOL IMMEDIATELY** whenever the admin's message "
+        "contains any of these words: plan, fill, staff, recruit, "
+        "outreach, volunteers — REGARDLESS of whether they mention a "
+        "date, time, or location. Examples of messages that REQUIRE this "
+        "tool as the first call: 'plan food drive event', 'plan food "
+        "drive', 'plan recruitment for the BBQ', 'plan the food drive', "
+        "'recruit for Saturday', 'fill the event on 29th', 'staff the "
+        "May 29 food drive', 'get volunteers for next week'.\n\n"
+        "You MUST call this tool BEFORE asking ANY clarifying questions, "
+        "BEFORE calling check_availability, BEFORE calling "
+        "manage_specific_date_slot, and BEFORE calling get_schedule. The "
+        "tool itself resolves the event by fuzzy-matching event_label "
+        "against existing scheduled events and returns "
+        "`needs_clarification: true` with `matches` or `upcoming_events` "
+        "if it can't pick one. ONLY THEN do you ask the admin to "
+        "disambiguate.\n\n"
+        "This tool is NEVER about creating a new event. It only operates "
+        "on events ALREADY on the calendar. If no event matches, the "
+        "tool returns the upcoming events list — show it to the admin "
+        "and ask them to pick.\n\n"
+        "Inputs: pass event_date and/or event_label from the admin's "
+        "message. If the admin gave only an event name, pass just "
+        "event_label. If the admin gave only a date, pass just "
+        "event_date. If the admin gave neither, pass an empty input "
+        "and the tool will return the upcoming events list. NEVER ask "
+        "for start_time, end_time, or location — those are not inputs "
+        "to recruitment."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "event_date": {
+                "type": "string",
+                "description": (
+                    "Date of the event in YYYY-MM-DD format. Optional if "
+                    "event_label is provided."
+                ),
+            },
+            "event_label": {
+                "type": "string",
+                "description": (
+                    "Name/label of the event (e.g. 'BBQ', 'food drive'). "
+                    "Case-insensitive substring match against upcoming "
+                    "events. Optional if event_date is provided."
+                ),
+            },
+            "service_name": {
+                "type": "string",
+                "description": (
+                    "Optional. If omitted, the agent will fill all services "
+                    "the event needs."
+                ),
+            },
+            "target_per_service": {
+                "type": "integer",
+                "description": (
+                    "Optional. Override the per-service target volunteer "
+                    "count. If omitted, uses the event's min_required."
+                ),
+            },
+        },
+        "required": [],
+    },
+}
+
+APPROVE_RECRUITMENT_CAMPAIGN = {
+    "name": "approve_recruitment_campaign",
+    "description": (
+        "**CALL THIS IMMEDIATELY** whenever the admin's message contains "
+        "ANY affirmative response to a previously-proposed recruitment "
+        "plan. Trigger words include: 'approve', 'approved', 'yes', "
+        "'go', 'go ahead', 'do it', 'start', 'launch', 'start it', "
+        "'proceed', 'sounds good', 'looks good', 'lgtm', 'ok', 'okay', "
+        "'sure', 'yep', or just '✓'/'✅'. The campaign_id is "
+        "OPTIONAL — leave it blank and the tool will resolve to the most "
+        "recent awaiting_approval campaign for this tenant.\n\n"
+        "DO NOT just emit text saying 'Approved!' — you MUST call this "
+        "tool to actually flip the campaign status. DO NOT call "
+        "recruitment_status first to verify; this tool will tell you if "
+        "there's no pending campaign. Only after the tool returns ok:true "
+        "should you confirm to the admin that planning has started."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "campaign_id": {
+                "type": "string",
+                "description": (
+                    "Optional. Specific campaign UUID. If omitted, resolves "
+                    "to the most recent awaiting_approval campaign for this "
+                    "tenant."
+                ),
+            },
+        },
+        "required": [],
+    },
+}
+
+RECRUITMENT_STATUS = {
+    "name": "recruitment_status",
+    "description": (
+        "Report the current state of recruitment campaigns. With no "
+        "arguments, summarizes all active campaigns sorted by closest event. "
+        "With event_date, focuses on campaigns for that date."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "event_date": {
+                "type": "string",
+                "description": "Optional event date filter (YYYY-MM-DD).",
+            },
+        },
+        "required": [],
+    },
+}
+
 # ── Tool sets ──
 
 CUSTOMER_TOOLS = [
@@ -609,4 +746,7 @@ ADMIN_TOOLS = [
     SEND_ANNOUNCEMENT,
     SUSPEND_CUSTOMER,
     UNSUSPEND_CUSTOMER,
+    START_RECRUITMENT_CAMPAIGN,
+    APPROVE_RECRUITMENT_CAMPAIGN,
+    RECRUITMENT_STATUS,
 ]

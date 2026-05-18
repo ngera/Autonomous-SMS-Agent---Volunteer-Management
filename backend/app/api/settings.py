@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 
 from app.core.dependencies import CurrentTenant, CurrentUser, DbSession, OwnerUser
@@ -51,12 +51,30 @@ async def get_prompts(db: DbSession, current_user: OwnerUser, tenant: CurrentTen
     ]
 
 
+# Settings whose update requires super-admin role, not just owner. Used
+# to guard cost-sensitive caps like llm_rate_limit_rpm. The UI also
+# disables these for non-super-admins, but the API check is the
+# enforcement boundary — a malicious owner could otherwise craft a raw
+# request.
+SUPER_ADMIN_ONLY_SETTING_KEYS = {"llm_rate_limit_rpm"}
+
+
 @router.put("")
 async def update_settings(
     body: SystemSettingsUpdate, db: DbSession, current_user: OwnerUser, tenant: CurrentTenant
 ):
+    from app.models.admin_user import AdminRole
+    is_super_admin = current_user.role == AdminRole.SUPER_ADMIN
+
     now = datetime.now(timezone.utc)
     for key, value in body.settings.items():
+        # Reject super-admin-only keys for non-super-admins. Reject silently
+        # would mask a UI-bypass attempt; raising 403 surfaces it.
+        if key in SUPER_ADMIN_ONLY_SETTING_KEYS and not is_super_admin:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Only super-admins can change setting '{key}'.",
+            )
         result = await db.execute(
             select(SystemSetting).where(
                 SystemSetting.tenant_id == tenant.id,

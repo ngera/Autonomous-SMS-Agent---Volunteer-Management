@@ -12,6 +12,12 @@ from app.models.contact_preferred_type import ContactPreferredType
 from app.models.conversation import Conversation
 from app.models.notification import AdminNotification
 from app.models.pattern import CustomerAppointmentPattern
+from app.models.recruitment_campaign import (
+    RecruitmentCampaign,
+    RecruitmentReport,
+    RecruitmentSignup,
+    RecruitmentWave,
+)
 from app.models.related_service import RelatedService
 from app.models.reminder import Reminder
 from app.models.strike import ContactStrike
@@ -35,6 +41,10 @@ __all__ = [
     "Conversation",
     "AdminNotification",
     "CustomerAppointmentPattern",
+    "RecruitmentCampaign",
+    "RecruitmentReport",
+    "RecruitmentSignup",
+    "RecruitmentWave",
     "RelatedService",
     "Reminder",
     "ContactStrike",

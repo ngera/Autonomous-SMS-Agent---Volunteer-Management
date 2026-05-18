@@ -1,9 +1,16 @@
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { usePrompts, useUpdateSettings } from "../hooks/use-settings";
 import { useTenantFilter } from "@/context/tenant-filter-context";
 
@@ -27,6 +34,20 @@ const AI_PROMPT_ENTRIES: PromptEntry[] = [
     label: "Admin SMS Prompt",
     description:
       "System prompt for admin SMS conversations (tool_use mode). Template variables: {business_name}, {custom_instructions}",
+    rows: 8,
+  },
+  {
+    key: "prompt_recruitment_agent",
+    label: "Recruitment Agent Prompt (Campaign Planner)",
+    description:
+      "System prompt for the Volunteer Recruitment Agent's planner. Runs once per campaign to gather facts via tools and propose policy + message templates + wave preview. The agent's final sentence becomes the SMS sent to the admin. No template variables; tool descriptions are passed separately.",
+    rows: 12,
+  },
+  {
+    key: "prompt_recruitment_approval",
+    label: "Recruitment Approval Routing",
+    description:
+      "Routing rule injected into the Admin SMS Prompt that tells the AI how to recognize an admin 'approve' reply (yes / go / lgtm / etc.) and force-call the approve_recruitment_campaign tool. Edit to add/remove trigger words or tighten the wording. Substituted into the admin prompt at the {recruitment_approval} placeholder.",
     rows: 8,
   },
   {
@@ -65,6 +86,13 @@ const TEMPLATE_ENTRIES: PromptEntry[] = [
       "Sent to volunteers who have NOT yet signed up when an admin clicks 'Send reminder' on an event. Variables: {service_name}, {date}. Missing variables render as empty strings.",
     rows: 4,
   },
+  {
+    key: "prompt_recruitment_message",
+    label: "Recruitment Agent Message",
+    description:
+      "Default SMS the Recruitment Agent sends to volunteers when a campaign's per-wave message_templates don't override it. Variables: {first_name}, {name_part} (' Alice' or empty), {event_label}, {event_date}, {event_start_time}, {event_end_time}, {hours} (computed duration, e.g. '2' or '1.5'), {event_location}, {service_name}. Keep under ~160 characters where possible.",
+    rows: 4,
+  },
 ];
 
 interface PromptEditorProps {
@@ -82,9 +110,12 @@ export function PromptEditor({
   const hasTenant = !isSuperAdmin || selectedTenantIds.length === 1;
   const { data: prompts, isLoading } = usePrompts();
   const update = useUpdateSettings();
+
   const [values, setValues] = useState<Record<string, string>>({});
   const [defaults, setDefaults] = useState<Record<string, string>>({});
   const [savedOverrides, setSavedOverrides] = useState<Record<string, boolean>>({});
+  const [selectedKey, setSelectedKey] = useState<string>(entries[0]?.key ?? "");
+  const [savedSnapshot, setSavedSnapshot] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (prompts) {
@@ -93,27 +124,62 @@ export function PromptEditor({
       const overrideMap: Record<string, boolean> = {};
       for (const p of prompts) {
         valMap[p.key] = p.value;
-        // Backwards-compatible: older API responses may not yet include
-        // default_value, in which case fall back to the saved value.
         defMap[p.key] = p.default_value ?? p.value;
         overrideMap[p.key] = !p.is_default;
       }
       setValues(valMap);
       setDefaults(defMap);
       setSavedOverrides(overrideMap);
+      setSavedSnapshot(valMap);
     } else {
       setValues({});
       setDefaults({});
       setSavedOverrides({});
+      setSavedSnapshot({});
     }
   }, [prompts]);
 
-  function handleSave() {
-    // Save only the entries this editor manages so the two tabs don't stomp each other
+  // If the entries list ever changes (e.g., switching between AI / Templates
+  // tabs), reset the selected key to the first valid one.
+  useEffect(() => {
+    if (entries.length > 0 && !entries.some((e) => e.key === selectedKey)) {
+      setSelectedKey(entries[0].key);
+    }
+  }, [entries, selectedKey]);
+
+  const selectedEntry = useMemo(
+    () => entries.find((e) => e.key === selectedKey) ?? entries[0],
+    [entries, selectedKey]
+  );
+
+  // Per-key dirty tracking so the dropdown can flag unsaved edits when the
+  // user switches between prompts without saving first.
+  const dirtyKeys = useMemo(() => {
+    const out = new Set<string>();
+    for (const e of entries) {
+      const current = values[e.key];
+      const saved = savedSnapshot[e.key];
+      if (current !== undefined && saved !== undefined && current !== saved) {
+        out.add(e.key);
+      }
+    }
+    return out;
+  }, [entries, values, savedSnapshot]);
+
+  function handleSaveSelected() {
+    if (!selectedEntry) return;
+    const subset: Record<string, string> = {
+      [selectedEntry.key]: values[selectedEntry.key] ?? "",
+    };
+    update.mutate({ settings: subset });
+  }
+
+  function handleSaveAll() {
     const subset: Record<string, string> = {};
     for (const e of entries) {
-      if (values[e.key] !== undefined) subset[e.key] = values[e.key];
+      if (dirtyKeys.has(e.key)) subset[e.key] = values[e.key] ?? "";
     }
+    if (Object.keys(subset).length === 0) return;
     update.mutate({ settings: subset });
   }
 
@@ -144,59 +210,123 @@ export function PromptEditor({
     );
   }
 
+  if (!selectedEntry) {
+    return null;
+  }
+
+  const current = values[selectedEntry.key] ?? "";
+  const def = defaults[selectedEntry.key] ?? "";
+  const isOverride = !!savedOverrides[selectedEntry.key];
+  const canReset = current !== def;
+  const isDirty = dirtyKeys.has(selectedEntry.key);
+  const dirtyCount = dirtyKeys.size;
+
   return (
     <Card>
-      <CardHeader className="flex flex-row items-center justify-between">
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 gap-3">
         <CardTitle className="text-base">{title}</CardTitle>
-        <Button size="sm" onClick={handleSave} disabled={update.isPending}>
-          {update.isPending ? "Saving..." : "Save All"}
-        </Button>
+        <div className="flex items-center gap-2">
+          {dirtyCount > 1 && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleSaveAll}
+              disabled={update.isPending}
+              title={`Save all ${dirtyCount} unsaved prompts`}
+            >
+              Save All ({dirtyCount})
+            </Button>
+          )}
+          <Button
+            size="sm"
+            onClick={handleSaveSelected}
+            disabled={update.isPending || !isDirty}
+          >
+            {update.isPending ? "Saving…" : "Save"}
+          </Button>
+        </div>
       </CardHeader>
-      <CardContent className="space-y-6">
-        {entries.map((entry) => {
-          const current = values[entry.key] ?? "";
-          const def = defaults[entry.key] ?? "";
-          const isOverride = savedOverrides[entry.key];
-          const isDirty = current !== def;
-          return (
-            <div key={entry.key} className="space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <Label className="text-sm font-medium">{entry.label}</Label>
-                  {isOverride && (
-                    <Badge variant="secondary" className="text-[10px]">
-                      Customized
-                    </Badge>
-                  )}
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => handleReset(entry.key)}
-                  disabled={!isDirty}
-                  title={
-                    isDirty
-                      ? "Replace with the latest shipped default"
-                      : "Already matches the latest default"
-                  }
-                >
-                  Reset to Default
-                </Button>
-              </div>
-              {entry.description && (
-                <p className="text-xs text-muted-foreground">{entry.description}</p>
+      <CardContent className="space-y-4">
+        <div className="space-y-2">
+          <Label className="text-sm font-medium">Prompt</Label>
+          <Select value={selectedEntry.key} onValueChange={setSelectedKey}>
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {entries.map((e) => {
+                const overridden = !!savedOverrides[e.key];
+                const dirty = dirtyKeys.has(e.key);
+                const suffix =
+                  dirty && overridden
+                    ? " · unsaved, customized"
+                    : dirty
+                      ? " · unsaved"
+                      : overridden
+                        ? " · customized"
+                        : "";
+                return (
+                  <SelectItem key={e.key} value={e.key}>
+                    {e.label}
+                    {suffix}
+                  </SelectItem>
+                );
+              })}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Label className="text-sm font-medium">
+                {selectedEntry.label}
+              </Label>
+              {isOverride && (
+                <Badge variant="secondary" className="text-[10px]">
+                  Customized
+                </Badge>
               )}
-              <Textarea
-                className="min-h-[120px] font-mono text-sm"
-                value={current}
-                onChange={(e) =>
-                  setValues((prev) => ({ ...prev, [entry.key]: e.target.value }))
-                }
-                rows={entry.rows ?? 4}
-              />
+              {isDirty && (
+                <Badge
+                  variant="outline"
+                  className="text-[10px] border-amber-500 text-amber-700 dark:text-amber-400"
+                >
+                  Unsaved
+                </Badge>
+              )}
             </div>
-          );
-        })}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => handleReset(selectedEntry.key)}
+              disabled={!canReset}
+              title={
+                canReset
+                  ? "Replace with the latest shipped default"
+                  : "Already matches the latest default"
+              }
+            >
+              Reset to Default
+            </Button>
+          </div>
+          {selectedEntry.description && (
+            <p className="text-xs text-muted-foreground">
+              {selectedEntry.description}
+            </p>
+          )}
+          <Textarea
+            className="min-h-[160px] font-mono text-sm"
+            value={current}
+            onChange={(e) =>
+              setValues((prev) => ({
+                ...prev,
+                [selectedEntry.key]: e.target.value,
+              }))
+            }
+            rows={selectedEntry.rows ?? 8}
+          />
+        </div>
       </CardContent>
     </Card>
   );

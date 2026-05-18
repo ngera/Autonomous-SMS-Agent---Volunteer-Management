@@ -16,6 +16,8 @@ class NotificationType(str, enum.Enum):
     NEW_BOOKING = "new_booking"
     OPT_OUT = "opt_out"
     UNASSIGNED_SERVICE = "unassigned_service"
+    RECRUITMENT_PLAN_READY = "recruitment_plan_ready"
+    RECRUITMENT_PLAN_FAILED = "recruitment_plan_failed"
 
 
 class AdminNotification(Base):

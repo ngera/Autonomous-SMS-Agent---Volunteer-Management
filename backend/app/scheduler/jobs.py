@@ -11,6 +11,7 @@ Multi-tenant: reminder and follow-up jobs iterate over all active tenants,
 checking each tenant's local time before dispatching.
 """
 
+import uuid
 from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import select, update
@@ -324,3 +325,210 @@ async def announcement_dispatch() -> None:
         except Exception as e:
             await db.rollback()
             logger.error("Announcement dispatch failed: %s", str(e), exc_info=True)
+
+
+async def recruitment_daily_report() -> None:
+    """Once daily — write the per-campaign progress SMS to admin's phone."""
+    from app.agents.recruiter.reporter import daily_report_run
+    try:
+        await daily_report_run()
+    except Exception as e:  # noqa: BLE001
+        logger.error("recruitment_daily_report failed: %s", e, exc_info=True)
+
+
+async def recruitment_tick() -> None:
+    """Every 15 min — drive active recruitment campaigns.
+
+    For each active tenant, load active campaigns sorted by event date ASC
+    (locked decision #5 — closest event first). For each, ask
+    scheduler_engine for the next action and dispatch via executor.
+    """
+    from app.agents.recruiter import executor, scheduler_engine
+    from app.models.availability import SpecificDateSlot
+    from app.models.recruitment_campaign import (
+        CampaignStatus,
+        RecruitmentCampaign,
+        RecruitmentWave,
+    )
+
+    async with async_session_factory() as db:
+        try:
+            tenants_result = await db.execute(
+                select(Tenant).where(Tenant.is_active.is_(True))
+            )
+            tenants = tenants_result.scalars().all()
+
+            for tenant in tenants:
+                try:
+                    await _recruitment_tick_for_tenant(db, tenant)
+                except Exception as e:
+                    logger.error(
+                        "Recruitment tick failed for tenant %s: %s",
+                        tenant.slug, str(e), exc_info=True,
+                    )
+
+            await db.commit()
+        except Exception as e:
+            await db.rollback()
+            logger.error("Recruitment tick failed: %s", str(e), exc_info=True)
+
+
+async def _recruitment_tick_for_tenant(db, tenant: Tenant) -> None:
+    from app.agents.recruiter import executor, scheduler_engine
+    from app.models.availability import SpecificDateSlot
+    from app.models.recruitment_campaign import (
+        CampaignStatus,
+        RecruitmentCampaign,
+        RecruitmentWave,
+    )
+
+    # Pull ACTIVE campaigns joined to their event slots; order by event
+    # date ASC so the closest-event-first ordering is intrinsic.
+    rows_q = await db.execute(
+        select(RecruitmentCampaign, SpecificDateSlot)
+        .join(
+            SpecificDateSlot,
+            SpecificDateSlot.id == RecruitmentCampaign.event_slot_id,
+        )
+        .where(
+            RecruitmentCampaign.tenant_id == tenant.id,
+            RecruitmentCampaign.status == CampaignStatus.ACTIVE,
+        )
+        .order_by(SpecificDateSlot.date.asc())
+    )
+    rows = list(rows_q.all())
+    if not rows:
+        return
+
+    # Pre-compute the per-campaign fill snapshot so we can derive the
+    # tenant-wide min-phase service set in one pass. A service is in
+    # min-phase if ANY active campaign has signups < min_required for it.
+    from datetime import datetime as _dt
+    snapshots: list[tuple] = []  # (campaign, slot, fill, event_dt, waves)
+    min_phase_service_ids: set[str] = set()
+    for campaign, slot in rows:
+        waves_q = await db.execute(
+            select(RecruitmentWave).where(
+                RecruitmentWave.campaign_id == campaign.id
+            )
+        )
+        waves = list(waves_q.scalars().all())
+        service_ids = [
+            uuid.UUID(g["appointment_type_id"])
+            for g in campaign.goals or []
+            if g.get("appointment_type_id")
+        ]
+        fill = scheduler_engine.FillSnapshot(
+            per_service=await executor.current_signups_per_service(
+                db, slot, service_ids
+            )
+        )
+        # Min-phase contribution from this campaign
+        for goal in campaign.goals or []:
+            sid = goal.get("appointment_type_id")
+            if not sid:
+                continue
+            min_req = (
+                goal.get("min_required")
+                if goal.get("min_required") is not None
+                else goal.get("min_acceptable")
+                if goal.get("min_acceptable") is not None
+                else goal.get("target", 0)
+            )
+            try:
+                min_int = int(min_req or 0)
+            except (TypeError, ValueError):
+                min_int = 0
+            current = fill.per_service.get(str(sid), 0)
+            if current < min_int:
+                min_phase_service_ids.add(str(sid))
+
+        event_dt = _dt.combine(
+            slot.date,
+            slot.start_time or _dt.min.time(),
+            tzinfo=timezone.utc,
+        )
+        snapshots.append((campaign, slot, fill, event_dt, waves))
+
+    fired = 0
+    completed = 0
+    for campaign, slot, fill, event_dt, waves in snapshots:
+        action = scheduler_engine.next_action(
+            campaign,
+            waves,
+            fill,
+            event_dt,
+            min_phase_service_ids=min_phase_service_ids,
+        )
+
+        if action.kind == scheduler_engine.ActionKind.SEND_WAVE and action.wave_id:
+            wave = next((w for w in waves if w.id == action.wave_id), None)
+            if wave:
+                try:
+                    await executor.execute_send_wave(
+                        db, tenant, campaign, wave, slot, phase=action.phase
+                    )
+                    fired += 1
+                except Exception as e:  # noqa: BLE001
+                    logger.exception(
+                        "Failed to send wave %s for campaign %s: %s",
+                        wave.id, campaign.id, e,
+                    )
+        elif action.kind == scheduler_engine.ActionKind.COMPLETE:
+            await executor.mark_campaign_completed(db, campaign, action.reason)
+            completed += 1
+        elif action.kind == scheduler_engine.ActionKind.ABANDON:
+            await executor.mark_campaign_completed(
+                db, campaign, action.reason
+            )
+            completed += 1
+        elif action.kind == scheduler_engine.ActionKind.ESCALATE:
+            await executor.mark_campaign_paused(db, campaign, action.reason)
+            try:
+                await _send_escalation_alert(db, tenant, campaign, slot, action.reason)
+            except Exception as e:  # noqa: BLE001
+                logger.exception(
+                    "Failed to send escalation alert for campaign %s: %s",
+                    campaign.id, e,
+                )
+
+    if fired or completed:
+        logger.info(
+            "Recruitment tick tenant %s: %d waves fired, %d completed",
+            tenant.slug, fired, completed,
+        )
+
+
+async def _send_escalation_alert(
+    db, tenant, campaign, slot, reason: str
+) -> None:
+    """SMS the campaign's creating admin when the agent has to pause.
+
+    Mirrors the message into the admin's test-conversation history so the
+    admin can see the alert next to the rest of the recruitment exchange.
+    """
+    from app.agents.recruiter import executor as recruiter_executor
+    from app.models.admin_user import AdminUser
+    from app.services.sms import send_sms
+
+    admin = await db.get(AdminUser, campaign.created_by_admin_id)
+    if not admin or not admin.phone:
+        return
+    body = (
+        f"Recruitment paused for {slot.label or 'event'} on "
+        f"{slot.date.isoformat()}: {reason} "
+        "Open the dashboard to review and resume."
+    )
+    try:
+        ok = await send_sms(admin.phone, body, tenant)
+    except Exception:
+        ok = False
+    if ok:
+        try:
+            await recruiter_executor._append_to_admin_conversation(
+                db, tenant.id, admin.phone, body
+            )
+        except Exception:
+            logger.exception(
+                "Failed to mirror escalation alert into admin conversation"
+            )

@@ -3,6 +3,7 @@ import uuid
 import httpx
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.core.config import settings
 from app.core.dependencies import CurrentTenant, CurrentUser, DbSession
@@ -90,9 +91,22 @@ async def create_admin_user(
         tenant_id=tenant.id,
         email=body.email,
         role=role,
+        phone=(body.phone or None) if body.phone is not None else None,
     )
     db.add(admin_user)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError as err:
+        await db.rollback()
+        if "ix_admin_users_tenant_phone" in str(err.orig) or "tenant_phone" in str(err):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Another admin in this tenant already uses that phone "
+                    "number."
+                ),
+            )
+        raise
     await db.refresh(admin_user)
     return admin_user
 
@@ -126,7 +140,27 @@ async def update_admin_user(
     if body.is_active is not None:
         user.is_active = body.is_active
 
-    await db.flush()
+    # Phone is in AdminUserUpdate but was previously dropped on the floor.
+    # ``model_fields_set`` lets us distinguish "not provided" (leave as-is)
+    # from "explicitly cleared" (empty string → store as NULL so the
+    # uniqueness constraint doesn't choke on multiple empty phones).
+    if "phone" in body.model_fields_set:
+        new_phone = body.phone.strip() if body.phone else None
+        user.phone = new_phone or None
+
+    try:
+        await db.flush()
+    except IntegrityError as err:
+        await db.rollback()
+        if "ix_admin_users_tenant_phone" in str(err.orig) or "tenant_phone" in str(err):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Another admin in this tenant already uses that phone "
+                    "number."
+                ),
+            )
+        raise
     await db.refresh(user)
     return user
 

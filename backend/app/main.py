@@ -19,6 +19,7 @@ from app.api.dashboard import router as dashboard_router
 from app.api.reminders import router as reminders_router
 from app.api.settings import router as settings_router
 from app.api.suspensions import router as suspensions_router
+from app.api.recruitment import router as recruitment_router
 from app.api.tenants import router as tenants_router
 from app.api.test_conversation import router as test_conversation_router
 from app.api.token_usage import router as token_usage_router
@@ -31,6 +32,8 @@ from app.scheduler.jobs import (
     announcement_dispatch,
     conversation_expiry,
     follow_up_dispatch,
+    recruitment_daily_report,
+    recruitment_tick,
     reminder_dispatch,
     strike_decay,
 )
@@ -72,6 +75,18 @@ async def lifespan(app: FastAPI):
         announcement_dispatch,
         CronTrigger(minute=0),
         id="announcement_dispatch",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        recruitment_tick,
+        CronTrigger(minute="*/15"),
+        id="recruitment_tick",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        recruitment_daily_report,
+        CronTrigger(hour=8, minute=15),
+        id="recruitment_daily_report",
         replace_existing=True,
     )
     scheduler.start()
@@ -124,6 +139,7 @@ app.include_router(tenants_router)
 app.include_router(announcements_router)
 app.include_router(test_conversation_router)
 app.include_router(token_usage_router)
+app.include_router(recruitment_router)
 
 
 @app.get("/health")

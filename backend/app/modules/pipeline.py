@@ -31,7 +31,10 @@ from app.models.strike import ContactStrike
 from app.models.strike import ScreenerMethod as StrikeScreenerMethod
 from app.models.strike import StrikeClassification
 from app.models.suspension import ContactSuspension, SuspensionType
-from app.modules.conversation import get_ai_response_with_tools
+from app.modules.conversation import (
+    get_ai_response_with_tools,
+    trim_message_history,
+)
 from app.modules.memory_extraction import extract_and_save_memory
 from app.modules.screener import Classification, screen_message
 from app.services.notification import create_notification, notify_suspension
@@ -105,6 +108,45 @@ async def _process_admin_message(
         contact_id=None, sender_type="admin",
     )
 
+    # Server-side intent routers for recruitment intents — the LLM has
+    # consistently failed to invoke approve_recruitment_campaign and
+    # recruitment_status despite explicit prompt rules, so we
+    # short-circuit unambiguous phrases here.
+    from app.agents.recruiter.chat_tools import (
+        maybe_handle_approval_directly,
+        maybe_handle_status_directly,
+    )
+
+    auto_reply = await maybe_handle_approval_directly(
+        db, tenant, message_body, admin_user
+    )
+    if auto_reply is None:
+        auto_reply = await maybe_handle_status_directly(
+            db, tenant, message_body
+        )
+    if auto_reply is not None:
+        await send_sms(to=from_phone, body=auto_reply, tenant=tenant)
+        now = datetime.now(timezone.utc)
+        updated_history = list(conversation.message_history or [])
+        updated_history.append({
+            "role": "user",
+            "content": message_body,
+            "timestamp": now.isoformat(),
+        })
+        updated_history.append({
+            "role": "assistant",
+            "content": auto_reply,
+            "timestamp": now.isoformat(),
+        })
+        conversation.message_history = trim_message_history(updated_history)
+        conversation.last_message_at = now
+        await db.flush()
+        logger.info(
+            "Admin SMS auto-routed recruitment intent for %s (admin: %s)",
+            from_phone, admin_user.email,
+        )
+        return
+
     # Call AI with admin tools
     ai_response = await get_ai_response_with_tools(
         db=db,
@@ -132,7 +174,7 @@ async def _process_admin_message(
         "content": ai_response.message_to_user,
         "timestamp": now.isoformat(),
     })
-    conversation.message_history = updated_history
+    conversation.message_history = trim_message_history(updated_history)
     conversation.last_message_at = now
 
     await db.flush()
@@ -274,7 +316,7 @@ async def process_inbound_message(
         "content": ai_response.message_to_user,
         "timestamp": now.isoformat(),
     })
-    conversation.message_history = updated_history
+    conversation.message_history = trim_message_history(updated_history)
     conversation.last_message_at = now
 
     await db.flush()

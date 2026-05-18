@@ -188,6 +188,15 @@ async def test_conversation(
     system_prompt += f"\nToday's date is {today.strftime('%A %B %d, %Y')}."
     system_prompt += "\n[TEST MODE] This is a test conversation. No real SMS will be sent."
 
+    # Inject a fresh-state preamble for admin turns so the LLM grounds
+    # its replies in current DB state instead of parroting stale history.
+    if is_admin:
+        from app.agents.recruiter.chat_tools import build_admin_state_preamble
+        from app.models.admin_user import AdminUser as _AdminUser
+        _admin = await db.get(_AdminUser, current_user.id)
+        preamble = await build_admin_state_preamble(db, tenant, _admin)
+        system_prompt += "\n\n" + preamble
+
     if not is_admin and body.use_test_user:
         system_prompt += "\nThis is a new volunteer who is not yet in the system."
     elif not is_admin and body.phone:
@@ -204,9 +213,21 @@ async def test_conversation(
     # Select tools
     tools = ADMIN_TOOLS if is_admin else CUSTOMER_TOOLS
 
+    # Cap history sent to the LLM — see design_decisions.md #13. Test-tool
+    # sessions accumulate quickly; without a cap a single conversation can
+    # ship hundreds of turns of context per request.
+    from app.modules.conversation import (
+        LLM_HISTORY_CAP_ADMIN,
+        LLM_HISTORY_CAP_CUSTOMER,
+    )
+    cap = LLM_HISTORY_CAP_ADMIN if is_admin else LLM_HISTORY_CAP_CUSTOMER
+    trimmed_history = (
+        body.history[-cap:] if len(body.history) > cap else body.history
+    )
+
     # Build API messages
     api_messages = []
-    for msg in body.history:
+    for msg in trimmed_history:
         api_messages.append({
             "role": msg.get("role", "user"),
             "content": msg.get("content", ""),
@@ -232,6 +253,46 @@ async def test_conversation(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No Anthropic API key configured. Set it in tenant settings or environment.",
         )
+
+    # Server-side intent routers for recruitment intents. The LLM has
+    # consistently failed to call approve_recruitment_campaign and
+    # recruitment_status despite explicit prompt rules; these
+    # short-circuits unambiguous phrases and skip the LLM round-trip.
+    if is_admin:
+        from app.agents.recruiter.chat_tools import (
+            maybe_handle_approval_directly,
+            maybe_handle_status_directly,
+        )
+        from app.models.admin_user import AdminUser as _AdminUser
+        admin_user = await db.get(_AdminUser, current_user.id)
+        approval_reply = await maybe_handle_approval_directly(
+            db, tenant, body.message, admin_user
+        )
+        if approval_reply is not None:
+            return TestConversationResponse(
+                reply=approval_reply,
+                tool_calls=[
+                    ToolCallInfo(
+                        tool="approve_recruitment_campaign",
+                        input={},
+                        output='{"ok": true, "auto_routed": true}',
+                    )
+                ],
+            )
+        status_reply = await maybe_handle_status_directly(
+            db, tenant, body.message
+        )
+        if status_reply is not None:
+            return TestConversationResponse(
+                reply=status_reply,
+                tool_calls=[
+                    ToolCallInfo(
+                        tool="recruitment_status",
+                        input={},
+                        output='{"ok": true, "auto_routed": true}',
+                    )
+                ],
+            )
 
     try:
         result = await run_tool_conversation(
@@ -263,21 +324,35 @@ async def test_conversation(
             detail=f"Conversation engine error: {str(e)}",
         )
 
-    # Save conversation if requested (customer mode only — skip for test user)
-    if body.save_conversation and not is_admin and not body.use_test_user:
+    # Save conversation if requested. Skip the test_user case (we don't
+    # want to pollute that synthetic phone). Persist both customer and
+    # admin modes so the multi-volunteer test page can rehydrate the
+    # admin chat on reload — admin entries go under sender_type="admin"
+    # so they don't mix with volunteer-side queries.
+    if body.save_conversation and not body.use_test_user:
         try:
+            now = datetime.now(timezone.utc)
+            now_iso = now.isoformat()
+            # Each appended message carries a timestamp so the
+            # /recent-messages endpoint can include it (entries without
+            # timestamps are dropped by that filter).
             full_history = list(body.history)
-            full_history.append({"role": "user", "content": body.message})
-            full_history.append({"role": "assistant", "content": result_text})
+            full_history.append(
+                {"role": "user", "content": body.message, "timestamp": now_iso}
+            )
+            full_history.append(
+                {"role": "assistant", "content": result_text, "timestamp": now_iso}
+            )
 
+            from app.modules.conversation import trim_message_history
             conversation = Conversation(
                 tenant_id=tenant_id,
-                contact_id=contact_id,
+                contact_id=contact_id if not is_admin else None,
                 contact_phone=contact_phone,
-                message_history=full_history,
+                message_history=trim_message_history(full_history),
                 status=ConversationStatus.ACTIVE,
-                sender_type="customer",
-                last_message_at=datetime.now(timezone.utc),
+                sender_type="admin" if is_admin else "customer",
+                last_message_at=now,
             )
             db.add(conversation)
             await db.flush()

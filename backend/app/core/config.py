@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     twilio_account_sid: str
     twilio_auth_token: str
     twilio_phone_number: str
+    # When true, services/sms.py::send_sms short-circuits and returns a fake
+    # SID without calling Twilio. Used while the Twilio Subaccounts plan
+    # (memory/twilio_subaccounts_plan.md) is pending so the Multi-Volunteer
+    # Test workflow can run without valid per-tenant Twilio credentials.
+    sms_suppress: bool = False
 
     # Anthropic
     anthropic_api_key: str

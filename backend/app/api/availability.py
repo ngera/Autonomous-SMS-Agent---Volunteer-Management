@@ -158,10 +158,19 @@ async def update_specific_date_slot(
         if conflicts:
             raise HTTPException(status_code=409, detail=_format_blocked_conflict(conflicts))
 
+    service_config_changed = "service_config" in update_data
     for field, value in update_data.items():
         setattr(slot, field, value)
     await db.flush()
     await db.refresh(slot)
+
+    # Mirror volunteer-requirement changes into any active/pending
+    # recruitment campaigns tied to this slot so the Campaigns page's
+    # Goals stays in sync with the event's Roster section.
+    if service_config_changed:
+        from app.agents.recruiter import executor as recruiter_executor
+        await recruiter_executor.sync_campaign_goals_from_slot(db, slot)
+
     return slot
 
 

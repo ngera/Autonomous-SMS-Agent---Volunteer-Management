@@ -1,7 +1,9 @@
 import asyncio
+import uuid
 
 import httpx
 
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.models.tenant import Tenant
 
@@ -15,7 +17,22 @@ async def send_sms(to: str, body: str, tenant: Tenant) -> str | None:
     """Send an SMS via Twilio with exponential backoff retry.
 
     Returns the message SID on success, None on failure.
+
+    When ``settings.sms_suppress`` is true (env: ``SMS_SUPPRESS=true``),
+    bypass Twilio entirely: log the would-be send and return a synthetic
+    SID. This lets the Multi-Volunteer Test workflow and other in-app
+    flows exercise the end-to-end path while the Twilio Subaccounts plan
+    (memory/twilio_subaccounts_plan.md) is still pending. The fake SID is
+    truthy so downstream callers treat the send as successful.
     """
+    if settings.sms_suppress:
+        fake_sid = f"SM_SUPPRESSED_{uuid.uuid4().hex[:24]}"
+        logger.info(
+            "[SMS_SUPPRESSED] tenant=%s to=%s sid=%s body=%r",
+            tenant.id, to, fake_sid, body[:120],
+        )
+        return fake_sid
+
     if not tenant.twilio_account_sid or not tenant.twilio_auth_token or not tenant.twilio_phone_number:
         logger.warning("Twilio credentials not configured for tenant %s, skipping SMS to %s", tenant.id, to)
         return None

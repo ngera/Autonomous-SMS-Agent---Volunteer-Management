@@ -120,6 +120,110 @@ async def process_booking_creation(db: AsyncSession, booking: Booking, tenant: T
             tenant=tenant,
         )
 
+    # Recruitment attribution: if this booking matches an active campaign's
+    # event slot + service AND the contact was in a recent wave's
+    # targeted_contact_ids, write a RecruitmentSignup row + bump the wave's
+    # signups_attributed counter. Best-effort; failures here must not break
+    # the booking write path.
+    try:
+        await _attribute_to_recruitment_campaign(db, booking)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "Recruitment attribution failed for booking %s: %s",
+            booking.id, e,
+        )
+
+
+async def _attribute_to_recruitment_campaign(
+    db: AsyncSession, booking: Booking
+) -> None:
+    """Link a new booking to a recruitment campaign + wave when applicable."""
+    from app.models.availability import SpecificDateSlot
+    from app.models.recruitment_campaign import (
+        CampaignStatus,
+        RecruitmentCampaign,
+        RecruitmentSignup,
+        RecruitmentWave,
+        WaveStatus,
+    )
+
+    # Find any active/pending campaign for an event slot on this booking's
+    # date that includes this service.
+    booking_date = booking.scheduled_at.date()
+    slot_q = await db.execute(
+        select(SpecificDateSlot).where(
+            SpecificDateSlot.tenant_id == booking.tenant_id,
+            SpecificDateSlot.date == booking_date,
+        )
+    )
+    slots = list(slot_q.scalars().all())
+    matching_slot: SpecificDateSlot | None = None
+    for slot in slots:
+        for entry in slot.service_config or []:
+            if str(entry.get("appointment_type_id")) == str(
+                booking.appointment_type_id
+            ):
+                matching_slot = slot
+                break
+        if matching_slot:
+            break
+    if not matching_slot:
+        return
+
+    campaign_q = await db.execute(
+        select(RecruitmentCampaign).where(
+            RecruitmentCampaign.tenant_id == booking.tenant_id,
+            RecruitmentCampaign.event_slot_id == matching_slot.id,
+            RecruitmentCampaign.status.in_(
+                [CampaignStatus.ACTIVE, CampaignStatus.PAUSED]
+            ),
+        )
+    )
+    campaign = campaign_q.scalar_one_or_none()
+    if not campaign:
+        return
+
+    # Find the wave (if any) that targeted this contact for this service.
+    contact_id_str = str(booking.contact_id)
+    waves_q = await db.execute(
+        select(RecruitmentWave).where(
+            RecruitmentWave.tenant_id == booking.tenant_id,
+            RecruitmentWave.campaign_id == campaign.id,
+            RecruitmentWave.appointment_type_id == booking.appointment_type_id,
+            RecruitmentWave.status == WaveStatus.SENT,
+        )
+    )
+    attributed_wave: RecruitmentWave | None = None
+    for wave in waves_q.scalars().all():
+        if wave.targeted_contact_ids and contact_id_str in [
+            str(x) for x in wave.targeted_contact_ids
+        ]:
+            attributed_wave = wave
+            break
+
+    # Skip if no wave actually messaged this contact (self-driven booking) —
+    # attribution should reflect causation, not just coincidence.
+    if not attributed_wave:
+        return
+
+    signup = RecruitmentSignup(
+        tenant_id=booking.tenant_id,
+        campaign_id=campaign.id,
+        wave_id=attributed_wave.id,
+        contact_id=booking.contact_id,
+        appointment_type_id=booking.appointment_type_id,
+        booking_id=booking.id,
+    )
+    db.add(signup)
+    attributed_wave.signups_attributed = (
+        (attributed_wave.signups_attributed or 0) + 1
+    )
+    await db.flush()
+    logger.info(
+        "Recruitment signup attributed: campaign=%s wave=%s booking=%s",
+        campaign.id, attributed_wave.id, booking.id,
+    )
+
 
 async def process_booking_reschedule(db: AsyncSession, booking: Booking, tenant: Tenant, send_sms_notification: bool = True) -> None:
     """After a reschedule: update calendar event, send SMS + ICS update."""

@@ -61,6 +61,9 @@ class Announcement(Base):
     created_by_admin_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("admin_users.id"), nullable=False
     )
+    recruitment_wave_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("recruitment_waves.id"), nullable=True
+    )
     created_at: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

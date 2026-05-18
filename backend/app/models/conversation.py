@@ -24,8 +24,8 @@ class Conversation(Base):
     tenant_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False, index=True
     )
-    contact_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("contacts.id"), nullable=False
+    contact_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("contacts.id"), nullable=True
     )
     contact_phone: Mapped[str] = mapped_column(String(20), nullable=False)
     message_history: Mapped[dict] = mapped_column(JSONB, default=list)

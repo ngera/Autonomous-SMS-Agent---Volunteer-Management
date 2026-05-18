@@ -65,6 +65,7 @@ class SpecificDateSlotResponse(BaseModel):
     service_config: list[ServiceSlotConfig] | None
     is_active: bool
     allow_roster_sharing: bool = True
+    description: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -79,6 +80,7 @@ class SpecificDateSlotCreate(BaseModel):
     service_config: list[ServiceSlotConfig] | None = None
     is_active: bool = True
     allow_roster_sharing: bool = True
+    description: str | None = None
 
 
 class SpecificDateSlotUpdate(BaseModel):
@@ -91,6 +93,7 @@ class SpecificDateSlotUpdate(BaseModel):
     service_config: list[ServiceSlotConfig] | None = None
     is_active: bool | None = None
     allow_roster_sharing: bool | None = None
+    description: str | None = None
 
 
 # ── Blocked dates ──

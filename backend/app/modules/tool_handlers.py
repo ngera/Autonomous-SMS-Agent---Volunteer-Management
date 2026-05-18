@@ -241,6 +241,28 @@ async def handle_check_availability(ctx: ToolContext, tool_input: dict) -> str:
 
     service_name = tool_input.get("service_name")
 
+    # Pre-load any specific-date events on this date so we can attach
+    # event_label / event_description to each slot a volunteer asks about.
+    # The AI uses these so it can answer "what's this event about?"
+    # without needing a separate tool call.
+    from app.models.availability import SpecificDateSlot as _SDS
+    specific_q = await ctx.db.execute(
+        select(_SDS).where(
+            _SDS.tenant_id == ctx.tenant.id,
+            _SDS.date == target_date,
+            _SDS.is_active.is_(True),
+        )
+    )
+    specific_slots_today = list(specific_q.scalars().all())
+
+    def _event_meta_for(start_t):
+        """Return (label, description, location) for the event window containing
+        the given slot start time, if any."""
+        for s in specific_slots_today:
+            if s.start_time <= start_t < s.end_time:
+                return (s.label, s.description, s.location)
+        return (None, None, None)
+
     # Get volunteer's allowed services (if not admin)
     allowed_ids = None
     if not ctx.is_admin:
@@ -287,6 +309,17 @@ async def handle_check_availability(ctx: ToolContext, tool_input: dict) -> str:
             }
             if needs_more > 0:
                 slot_info["needs_more_to_confirm"] = needs_more
+
+            # Attach event metadata when this slot belongs to a one-off
+            # event on this date. The description gives the AI enough
+            # context to answer volunteer questions like "what is this?"
+            ev_label, ev_desc, ev_location = _event_meta_for(start.time())
+            if ev_label:
+                slot_info["event_label"] = ev_label
+            if ev_desc:
+                slot_info["event_description"] = ev_desc
+            if ev_location:
+                slot_info["event_location"] = ev_location
 
             if booked > 0:
                 slot_end_t = (start + timedelta(minutes=appt_type.duration_minutes)).time()
@@ -1981,6 +2014,7 @@ async def handle_manage_specific_date_slot(ctx: ToolContext, tool_input: dict) -
             date=slot_date,
             label=tool_input.get("label"),
             location=tool_input.get("location"),
+            description=tool_input.get("description"),
             start_time=start_time,
             end_time=end_time,
             buffer_minutes=tool_input.get("buffer_minutes", 0),
@@ -2041,28 +2075,48 @@ async def handle_manage_specific_date_slot(ctx: ToolContext, tool_input: dict) -
             slot.label = tool_input["label"]
         if "location" in tool_input:
             slot.location = tool_input["location"]
+        if "description" in tool_input:
+            slot.description = tool_input["description"]
         if "buffer_minutes" in tool_input and tool_input["buffer_minutes"] is not None:
             slot.buffer_minutes = tool_input["buffer_minutes"]
         if "allow_roster_sharing" in tool_input and tool_input["allow_roster_sharing"] is not None:
             slot.allow_roster_sharing = bool(tool_input["allow_roster_sharing"])
+        service_config_changed = False
         if "services" in tool_input:
             svc_config, err = await _build_service_config(ctx, tool_input["services"])
             if err:
                 return json.dumps(err)
             slot.service_config = svc_config if svc_config else None
+            service_config_changed = True
         await ctx.db.flush()
+
+        if service_config_changed:
+            from app.agents.recruiter import executor as recruiter_executor
+            synced = await recruiter_executor.sync_campaign_goals_from_slot(
+                ctx.db, slot
+            )
+        else:
+            synced = 0
+
         return json.dumps({
             "success": True,
             "id": str(slot.id),
             "date": slot.date.isoformat(),
             "start": str(slot.start_time)[:5],
             "end": str(slot.end_time)[:5],
+            **({"campaigns_synced": synced} if synced else {}),
         })
 
     return json.dumps({"error": f"Unknown action '{action}'. Use 'list', 'add', 'update', or 'delete'."})
 
 
 # ── Handler registry ──
+
+from app.agents.recruiter.chat_tools import (
+    handle_approve_recruitment_campaign,
+    handle_recruitment_status,
+    handle_start_recruitment_campaign,
+)
 
 TOOL_HANDLERS = {
     "list_services": handle_list_services,
@@ -2083,4 +2137,7 @@ TOOL_HANDLERS = {
     "send_announcement": handle_send_announcement,
     "suspend_customer": handle_suspend_customer,
     "unsuspend_customer": handle_unsuspend_customer,
+    "start_recruitment_campaign": handle_start_recruitment_campaign,
+    "approve_recruitment_campaign": handle_approve_recruitment_campaign,
+    "recruitment_status": handle_recruitment_status,
 }

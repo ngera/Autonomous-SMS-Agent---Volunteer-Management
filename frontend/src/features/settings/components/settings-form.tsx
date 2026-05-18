@@ -12,6 +12,8 @@ import {
 } from "@/components/ui/select";
 import { useSettings, useUpdateSettings } from "../hooks/use-settings";
 import { formatDateTime } from "@/lib/utils";
+import { useAuth } from "@/hooks/use-auth";
+import { AdminRole } from "@/types/enums";
 
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
@@ -34,7 +36,29 @@ const SUSPENSION_DEFAULTS: Record<string, string> = {
 
 const SUSPENSION_KEYS = Object.keys(SUSPENSION_DEFAULTS);
 
+// Per-tenant LLM rate limit (calls per rolling 60-second window). See
+// design_decisions.md #15. Backend enforces bounds [10, 1000]; out-of-
+// range values silently fall back to the default.
+const LLM_RATE_LIMIT_KEY = "llm_rate_limit_rpm";
+const LLM_RATE_LIMIT_DEFAULT = "60";
+const LLM_RATE_LIMIT_MIN = 10;
+const LLM_RATE_LIMIT_MAX = 1000;
+
+// Special-cased keys we render with their own typed input.
+const SPECIAL_KEYS = new Set([LLM_RATE_LIMIT_KEY]);
+
+// Setting keys that are internal state markers (written by background jobs)
+// rather than configuration. They're stored in system_settings for
+// per-tenant scoping but shouldn't appear in the admin UI.
+const HIDDEN_KEY_PREFIXES = ["last_reminder_"];
+
+function isHiddenSettingKey(key: string): boolean {
+  return HIDDEN_KEY_PREFIXES.some((p) => key.startsWith(p));
+}
+
 export function SettingsForm() {
+  const { hasRole } = useAuth();
+  const isSuperAdmin = hasRole(AdminRole.SUPER_ADMIN);
   const { data: settings, isLoading } = useSettings();
   const update = useUpdateSettings();
   const [values, setValues] = useState<Record<string, string>>({});
@@ -104,12 +128,45 @@ export function SettingsForm() {
             </SelectContent>
           </Select>
         </div>
-        {settings && settings.filter((s) => s.key !== "ai_model" && !SUSPENSION_KEYS.includes(s.key)).length === 0 && (
+        {/* LLM rate limit — super-admin only. Read-only display for
+            non-super-admins so owners understand what's enforced but
+            can't change it. */}
+        <div className="space-y-1">
+          <Label className="text-sm font-medium">
+            LLM rate limit (calls per minute, per tenant)
+          </Label>
+          <p className="text-xs text-muted-foreground">
+            Maximum Anthropic API calls this tenant may make in a rolling
+            60-second window. Catches runaway loops without affecting
+            normal use. Default {LLM_RATE_LIMIT_DEFAULT}; bounds{" "}
+            {LLM_RATE_LIMIT_MIN}–{LLM_RATE_LIMIT_MAX}. Super-admin only.
+          </p>
+          <Input
+            type="number"
+            min={LLM_RATE_LIMIT_MIN}
+            max={LLM_RATE_LIMIT_MAX}
+            value={values[LLM_RATE_LIMIT_KEY] ?? LLM_RATE_LIMIT_DEFAULT}
+            onChange={(e) =>
+              setValues((prev) => ({
+                ...prev,
+                [LLM_RATE_LIMIT_KEY]: e.target.value,
+              }))
+            }
+            disabled={!isSuperAdmin}
+            className="w-32"
+            title={
+              isSuperAdmin
+                ? undefined
+                : "Only super-admins can change this limit."
+            }
+          />
+        </div>
+        {settings && settings.filter((s) => s.key !== "ai_model" && !SUSPENSION_KEYS.includes(s.key) && !SPECIAL_KEYS.has(s.key) && !isHiddenSettingKey(s.key)).length === 0 && (
           <p className="text-sm text-muted-foreground">
             No additional settings configured.
           </p>
         )}
-        {settings?.filter((s) => s.key !== "ai_model" && !SUSPENSION_KEYS.includes(s.key)).map((s) => (
+        {settings?.filter((s) => s.key !== "ai_model" && !SUSPENSION_KEYS.includes(s.key) && !SPECIAL_KEYS.has(s.key) && !isHiddenSettingKey(s.key)).map((s) => (
           <div key={s.key} className="space-y-1">
             <div className="flex items-center justify-between">
               <Label className="text-sm font-medium">{s.key}</Label>

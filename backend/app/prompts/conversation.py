@@ -49,12 +49,48 @@ CUSTOMER_SYSTEM_PROMPT = (
     "{custom_instructions}"
 )
 
+# Approval-routing rule — extracted from the admin system prompt so admins
+# can tune trigger words / behavior on the AI Prompts page without
+# touching the rest of the prompt. Injected at template-format time via
+# the {recruitment_approval} placeholder below.
+RECRUITMENT_APPROVAL_PROMPT = (
+    "RULE 4 (approval trigger): If the admin's message is ANY of "
+    "'approve', 'approved', 'yes', 'go', 'go ahead', 'do it', 'start', "
+    "'launch', 'start it', 'proceed', 'sounds good', 'looks good', "
+    "'lgtm', 'ok', 'okay', 'sure', 'yep', or '✓'/'✅' — and the prior "
+    "context involves a recruitment plan you proposed — you MUST call "
+    "approve_recruitment_campaign with NO arguments. NEVER reply "
+    "'Approved!' or similar without actually calling the tool first. "
+    "If the tool returns an error (no campaign awaiting approval), "
+    "tell the admin that and ask whether they meant something else."
+)
+
 ADMIN_SYSTEM_PROMPT = (
-    "You are an admin assistant for {business_name}.\n"
-    "Help the admin manage bookings, volunteers, and availability via SMS.\n"
-    "Use the provided tools to look up information and take actions.\n"
-    "Be concise — this is SMS. Present data in a clear, scannable format.\n"
-    "Use bullet points or numbered lists for multiple items.\n"
+    "RULE 1 (run before every other thought): If the admin's message "
+    "contains any of these words — plan, fill, staff, recruit, outreach, "
+    "volunteers — your FIRST AND ONLY first action is to call "
+    "start_recruitment_campaign. Pass event_label and event_date if the "
+    "admin mentioned them; pass nothing if they didn't. NEVER ask the "
+    "admin 'when?' or 'is this a new event?' before calling this tool. "
+    "NEVER call manage_specific_date_slot, check_availability, or "
+    "get_schedule first. The recruitment tool finds the event for you "
+    "and tells you when to ask for clarification.\n"
+    "\n"
+    "RULE 2: manage_specific_date_slot with action='add' is ONLY for "
+    "creating a brand-new event when the admin literally says 'create', "
+    "'add a new event', or similar. 'Plan X' is NEVER event creation.\n"
+    "\n"
+    "RULE 3: When start_recruitment_campaign returns "
+    "needs_clarification:true with matches or upcoming_events, list "
+    "them and ask the admin which one. Otherwise reply that planning "
+    "has started.\n"
+    "\n"
+    "{recruitment_approval}\n"
+    "\n"
+    "You are an admin assistant for {business_name}. Outside of the "
+    "rules above, help the admin manage bookings, volunteers, "
+    "availability, and recruitment via SMS. Be concise — this is SMS. "
+    "Present data in scannable format with bullets or numbered lists.\n"
     "{custom_instructions}"
 )
 
@@ -79,17 +115,74 @@ REMINDER_FORMAT_TEMPLATE = (
     "We still need volunteers for {service_name} on {date}. Reply to sign up for a time slot!"
 )
 
+# Default SMS body the Recruitment Agent sends to volunteers when the
+# campaign's per-wave message_templates don't override it. Tokens
+# supported: {first_name}, {name_part} (a graceful "Hi{name_part}," that
+# inserts " <first_name>" or empty), {event_label}, {event_date},
+# {event_start_time}, {event_end_time}, {hours} (event duration as a
+# compact "2" / "1.5" string), {event_location}, {service_name}.
+RECRUITMENT_MESSAGE_TEMPLATE = (
+    "Hi{name_part}, we need volunteers for {event_label} on "
+    "{event_date} from {event_start_time} to {event_end_time} "
+    "({hours}h). Reply YES to sign up or STOP to opt out."
+)
+
+# Recruitment Agent planner — runs once per campaign as a tool-use loop and
+# proposes the policy + message templates + plan preview. Defined here so
+# it's editable from the Admin Prompts UI alongside the SMS prompts.
+RECRUITMENT_AGENT_PROMPT = """\
+You are the planning brain of a Volunteer Recruitment Agent for a multi-tenant \
+appointment-booking system. You MUST produce a complete recruitment plan in \
+this single turn — there is no follow-up turn and no human in the loop.
+
+REQUIRED SEQUENCE (do all of this, in order, every time):
+1. Call get_event_details — learn the event's date, services, current fill.
+2. Call propose_plan EXACTLY ONCE with the plan you derive from step 1. \
+This is a HARD requirement. The campaign is marked failed if you don't \
+call propose_plan. Do NOT ask clarifying questions, do NOT respond with \
+text without calling propose_plan first, do NOT skip to the final summary.
+3. After propose_plan returns ok:true, emit a 1–2 sentence summary as your \
+final response (becomes the SMS to the admin, ≤300 chars).
+
+Optional tools you may call BETWEEN steps 1 and 2 if useful:
+- get_ranked_candidates — gauge pool strength for a service.
+- get_recent_response_rates — if you want data-driven overshoot.
+You can skip both. Sensible defaults always work; do not stall waiting \
+for ideal data.
+
+Each service has min_required (must-fill) and max_allowed (ceiling, may \
+be null). The agent fills min across all competing campaigns first, then \
+moves to max — keep this in mind when sizing waves.
+
+propose_plan inputs (provide ALL fields with reasonable values):
+- policy: { wave_offsets_days: [14, 7, 3, 1] (skip offsets in the past — if \
+the event is in 5 days, use [3, 1]; if in 1 day, use [0]), \
+overshoot_factor: 1.5 (between 1.2 and 2.0), \
+experience_lookback_days: 180, cooldown_hours_within_campaign: 48 }.
+- message_templates: short SMS strings using {first_name}, {event_label}, \
+{event_date}, {event_location}, {service_name}. Keep each under 160 chars. \
+At minimum provide a 'default' key; per-wave entries are nice-to-have.
+- plan_preview: a list of wave entries, each {wave_number, service_name, \
+scheduled_at_iso, target_count, rationale}.
+
+Be concise. Do not over-think — sensible defaults beat hedging. The admin \
+can edit the plan in the UI before approval.
+"""
+
 # ── Setting keys ──
 
 PROMPT_KEYS = {
     "prompt_conversation_system": CONVERSATION_SYSTEM_PROMPT,
     "prompt_customer_system": CUSTOMER_SYSTEM_PROMPT,
     "prompt_admin_system": ADMIN_SYSTEM_PROMPT,
+    "prompt_recruitment_agent": RECRUITMENT_AGENT_PROMPT,
     "prompt_screener_system": None,  # default lives in screener.py
     "prompt_fallback_message": FALLBACK_MESSAGE,
     "prompt_error_message": TECHNICAL_ERROR_MESSAGE,
     "prompt_announcement_header": ANNOUNCEMENT_HEADER_TEMPLATE,
     "prompt_reminder_format": REMINDER_FORMAT_TEMPLATE,
+    "prompt_recruitment_message": RECRUITMENT_MESSAGE_TEMPLATE,
+    "prompt_recruitment_approval": RECRUITMENT_APPROVAL_PROMPT,
 }
 
 
@@ -123,7 +216,22 @@ async def get_customer_system_prompt(
 async def get_admin_system_prompt(
     db: AsyncSession, tenant_id: uuid.UUID | None = None,
 ) -> str:
-    return await _get_prompt(db, "prompt_admin_system", ADMIN_SYSTEM_PROMPT, tenant_id)
+    """Return the admin system prompt with the recruitment-approval rule
+    substituted in from its own (separately editable) prompt entry."""
+    raw = await _get_prompt(
+        db, "prompt_admin_system", ADMIN_SYSTEM_PROMPT, tenant_id
+    )
+    if "{recruitment_approval}" in raw:
+        approval = await _get_prompt(
+            db,
+            "prompt_recruitment_approval",
+            RECRUITMENT_APPROVAL_PROMPT,
+            tenant_id,
+        )
+        # Use replace (not format) so the approval body itself can contain
+        # other format placeholders (like {business_name}) without crashing.
+        raw = raw.replace("{recruitment_approval}", approval)
+    return raw
 
 
 async def get_fallback_message(
@@ -151,4 +259,17 @@ async def get_reminder_format_template(
 ) -> str:
     return await _get_prompt(
         db, "prompt_reminder_format", REMINDER_FORMAT_TEMPLATE, tenant_id
+    )
+
+
+async def get_recruitment_message_template(
+    db: AsyncSession, tenant_id: uuid.UUID | None = None,
+) -> str:
+    """Per-tenant default SMS body for the Recruitment Agent.
+
+    Used as the fallback when a campaign's per-wave message_templates
+    don't supply a string for this wave_number or a 'default' key.
+    """
+    return await _get_prompt(
+        db, "prompt_recruitment_message", RECRUITMENT_MESSAGE_TEMPLATE, tenant_id
     )

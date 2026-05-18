@@ -1,7 +1,7 @@
 import csv
 import io
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Query, UploadFile, status
 from sqlalchemy import func, select
@@ -817,20 +817,30 @@ async def get_customer_recent_messages(
     )
 
     flat: list[dict] = []
-    for history, _last in result.all():
+    for history, last in result.all():
         if not history:
             continue
+        # Some legacy / test-tool conversation entries don't carry a
+        # per-message timestamp. Don't drop them — fall back to the
+        # conversation's last_message_at so they still appear in the
+        # rehydration. They'll just cluster at the same time, which is
+        # acceptable for display.
+        fallback_ts = last if isinstance(last, datetime) else None
+        if fallback_ts and fallback_ts.tzinfo is None:
+            fallback_ts = fallback_ts.replace(tzinfo=timezone.utc)
         for msg in history:
             ts_raw = msg.get("timestamp")
-            if not ts_raw:
-                continue
-            try:
-                ts = datetime.fromisoformat(ts_raw)
-                if ts.tzinfo is None:
-                    ts = ts.replace(tzinfo=timezone.utc)
-            except (ValueError, TypeError):
-                continue
-            if ts < cutoff:
+            ts: datetime | None = None
+            if ts_raw:
+                try:
+                    ts = datetime.fromisoformat(ts_raw)
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                except (ValueError, TypeError):
+                    ts = None
+            if ts is None:
+                ts = fallback_ts
+            if ts is None or ts < cutoff:
                 continue
             role = msg.get("role")
             content = msg.get("content")

@@ -8,12 +8,23 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import { useCustomers } from "@/features/customers/hooks/use-customers";
-import { getCustomerRecentMessages } from "@/features/customers/api";
+import {
+  getCustomer,
+  getCustomerRecentMessages,
+} from "@/features/customers/api";
 import type { CustomerResponse } from "@/types/api";
 import { sendTestMessage, type ToolCallInfo } from "../api";
 
 const STORAGE_KEY = "multi-volunteer-test-selected-phones";
 const HISTORY_DAYS = 7;
+// UI-only cap. The full message_history is preserved in state (and sent to
+// the AI for context) but the transcript only ever shows the most recent
+// DISPLAY_MESSAGE_LIMIT items so the panel doesn't fill up.
+const DISPLAY_MESSAGE_LIMIT = 5;
+// The test_conversation endpoint stores admin-mode chats under this
+// fallback phone when the admin user has no real phone configured. Used
+// to seed the admin panel's history on page load.
+const ADMIN_TEST_PHONE = "+10000000000";
 const POLL_INTERVAL_MS = 10_000; // refresh open panels for incoming announcements
 const POLL_DEDUPE_WINDOW_MS = 5_000; // treat near-identical timestamps as the same message
 
@@ -57,23 +68,20 @@ export function MultiVolunteerTestPage() {
   const selectedPhones = useMemo(() => Object.keys(panels), [panels]);
   const selectedCount = selectedPhones.length;
 
-  // Persist selection: write phone list to localStorage whenever it changes.
-  // Skip until we've finished hydrating, so the first render doesn't clobber saved state.
+  // Rehydrate from localStorage on first mount — runs synchronously and does
+  // NOT depend on the customer list, so phones beyond the first page (or for
+  // customers not yet in the cached list) are still restored. The name fills
+  // in from the customer list when that resolves; history is fetched directly
+  // from the server by phone.
   const [hydrated, setHydrated] = useState(false);
   useEffect(() => {
-    if (!hydrated) return;
-    if (selectedPhones.length > 0) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(selectedPhones));
-    } else {
-      localStorage.removeItem(STORAGE_KEY);
-    }
-  }, [selectedPhones, hydrated]);
-
-  // Rehydrate selection once customers have loaded — match saved phones against the
-  // current tenant's customer list, seed panels with loadingHistory, then fetch each.
-  useEffect(() => {
     if (hydrated) return;
-    if (customersData === undefined) return; // still loading
+    // Admin history is fetched unconditionally — independent of whether
+    // any volunteer panels were rehydrated from localStorage. This used
+    // to be skipped on a fresh page load (no saved phones) because of an
+    // early return below.
+    void loadAdminHistory();
+
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) {
       setHydrated(true);
@@ -86,29 +94,155 @@ export function MultiVolunteerTestPage() {
     } catch {
       phones = [];
     }
-    const matched = phones
-      .map((p) => customers.find((c) => c.phone === p))
-      .filter((c): c is CustomerResponse => !!c);
-    if (matched.length > 0) {
+    if (phones.length > 0) {
       setPanels((prev) => {
         const next = { ...prev };
-        for (const c of matched) {
-          if (!next[c.phone]) {
-            next[c.phone] = {
+        for (const phone of phones) {
+          if (!next[phone]) {
+            next[phone] = {
               ...EMPTY_CHAT,
-              phone: c.phone,
-              name: c.name,
+              phone,
+              name: null, // backfilled below
               loadingHistory: true,
             };
           }
         }
         return next;
       });
-      // Fire history fetch for each rehydrated volunteer (no need to await)
-      matched.forEach((c) => void loadHistoryForPhone(c.phone));
+      phones.forEach((phone) => void loadHistoryForPhone(phone));
+      // Resolve each rehydrated phone to a full Contact so we have the name,
+      // independent of whether the customer is in the first page of the
+      // `useCustomers` cache. Failures are silent — panel will just show
+      // the phone number.
+      phones.forEach((phone) => {
+        getCustomer(phone)
+          .then((c) => {
+            if (!c.name) return;
+            setPanels((prev) => {
+              const panel = prev[phone];
+              if (!panel || panel.name) return prev;
+              return { ...prev, [phone]: { ...panel, name: c.name } };
+            });
+          })
+          .catch(() => {
+            // 404 or transient — keep panel as phone-only.
+          });
+      });
     }
     setHydrated(true);
-  }, [customersData, customers, hydrated]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [hydrated]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function loadAdminHistory() {
+    try {
+      const resp = await getCustomerRecentMessages(
+        ADMIN_TEST_PHONE,
+        HISTORY_DAYS
+      );
+      const transcript: TranscriptItem[] = resp.messages.map((m, i) => ({
+        kind: m.role,
+        content: m.content,
+        ts: new Date(m.timestamp).getTime() || Date.now() + i,
+      }));
+      const history = resp.messages.map((m) => ({
+        role: m.role,
+        content: m.content,
+      }));
+      setAdmin((prev) => {
+        // If the admin has already typed something, don't clobber it —
+        // just merge the loaded history before whatever is in transcript.
+        if (prev.transcript.length > 0 || prev.history.length > 0) {
+          return prev;
+        }
+        return { ...prev, transcript, history };
+      });
+    } catch {
+      // Silent — admin panel just stays empty if the seed fails.
+    }
+  }
+
+  // Persist selection: write phone list to localStorage whenever it changes.
+  // Guarded behind `hydrated` so the initial render doesn't clobber saved state.
+  useEffect(() => {
+    if (!hydrated) return;
+    if (selectedPhones.length > 0) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(selectedPhones));
+    } else {
+      localStorage.removeItem(STORAGE_KEY);
+    }
+  }, [selectedPhones, hydrated]);
+
+  // Backfill names as the customer list resolves — rehydrated panels start
+  // with name=null and pick up the real name on the next render where the
+  // matching CustomerResponse is available.
+  useEffect(() => {
+    if (!hydrated) return;
+    if (customers.length === 0) return;
+    setPanels((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const phone of Object.keys(next)) {
+        const panel = next[phone];
+        if (panel.name) continue;
+        const match = customers.find((c) => c.phone === phone);
+        if (match && match.name && match.name !== panel.name) {
+          next[phone] = { ...panel, name: match.name };
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [customers, hydrated]);
+
+  // Poll the admin's sender_type='admin' conversation for backend
+  // appends — recruitment planner summaries, daily reports, escalation
+  // alerts. Without this poll the test-page admin panel only shows local
+  // turn-by-turn replies and misses anything written outside the request.
+  useEffect(() => {
+    if (!hydrated) return;
+    let cancelled = false;
+    async function pollAdmin() {
+      try {
+        const resp = await getCustomerRecentMessages(
+          ADMIN_TEST_PHONE,
+          HISTORY_DAYS
+        );
+        if (cancelled) return;
+        setAdmin((prev) => {
+          // Build a Set of (role|content) keys we already know about so
+          // we can append only NEW server-side messages without replacing
+          // the local transcript (which carries client-side timestamps).
+          const seen = new Set(
+            prev.transcript.map((m) => `${m.kind}|${m.content}`)
+          );
+          const newItems: TranscriptItem[] = [];
+          for (const m of resp.messages) {
+            const key = `${m.role}|${m.content}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            newItems.push({
+              kind: m.role,
+              content: m.content,
+              ts: new Date(m.timestamp).getTime() || Date.now(),
+            });
+          }
+          if (newItems.length === 0) return prev;
+          return {
+            ...prev,
+            transcript: [...prev.transcript, ...newItems].sort(
+              (a, b) => a.ts - b.ts
+            ),
+          };
+        });
+      } catch {
+        // ignore — next tick will retry
+      }
+    }
+    const id = setInterval(pollAdmin, POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [hydrated]);
 
   const filteredCustomers = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -628,11 +762,32 @@ function ChatPanel({
   onRemove,
 }: ChatPanelProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  // Track whether THIS panel was the one that initiated a send, so that only
+  // its input gets refocused when pending flips back to false — sending from
+  // panel A while typing in panel B should NOT steal focus from B.
+  const justSentRef = useRef(false);
 
   // Auto-scroll to the latest message whenever the transcript grows or a turn finishes.
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [transcript.length, pending, loadingHistory]);
+
+  // Refocus the input after a send completes. requestAnimationFrame defers
+  // until after the Input has re-enabled (disabled→enabled in the same tick
+  // would otherwise leave the cursor blurred).
+  useEffect(() => {
+    if (!pending && justSentRef.current) {
+      justSentRef.current = false;
+      requestAnimationFrame(() => inputRef.current?.focus());
+    }
+  }, [pending]);
+
+  function triggerSend() {
+    if (pending || !input.trim()) return;
+    justSentRef.current = true;
+    onSend();
+  }
   return (
     <Card
       className={cn(
@@ -683,7 +838,14 @@ function ChatPanel({
             {emptyHint}
           </p>
         ) : (
-          transcript.map((item, i) => <TranscriptRow key={i} item={item} />)
+          transcript
+            .slice(-DISPLAY_MESSAGE_LIMIT)
+            .map((item, i) => <TranscriptRow key={i} item={item} />)
+        )}
+        {transcript.length > DISPLAY_MESSAGE_LIMIT && (
+          <p className="text-center text-[10px] text-muted-foreground">
+            Showing last {DISPLAY_MESSAGE_LIMIT} of {transcript.length} messages
+          </p>
         )}
         {pending && (
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -706,12 +868,13 @@ function ChatPanel({
       <div className="border-t p-2">
         <div className="flex gap-2">
           <Input
+            ref={inputRef}
             value={input}
             onChange={(e) => onInputChange(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                onSend();
+                triggerSend();
               }
             }}
             placeholder={placeholder}
@@ -720,7 +883,7 @@ function ChatPanel({
           />
           <Button
             size="sm"
-            onClick={onSend}
+            onClick={triggerSend}
             disabled={!input.trim() || pending}
           >
             <Send className="h-3.5 w-3.5" />

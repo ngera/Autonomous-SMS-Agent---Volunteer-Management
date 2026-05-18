@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import Boolean, Date, ForeignKey, Integer, String, Time
+from sqlalchemy import Boolean, Date, ForeignKey, Integer, String, Text, Time
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -60,3 +60,8 @@ class SpecificDateSlot(Base):
     allow_roster_sharing: Mapped[bool] = mapped_column(
         Boolean, default=True, server_default="true", nullable=False
     )
+    # Free-form description used by the AI when a volunteer asks about
+    # the event. Surfaced via check_availability and the new
+    # get_event_info tool so the assistant can answer "what's this
+    # event about?" without an admin in the loop.
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)

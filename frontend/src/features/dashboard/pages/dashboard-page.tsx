@@ -5,6 +5,7 @@ import { WeeklyScheduleList } from "../components/weekly-schedule-list";
 import { NeedsAttentionPanel } from "../components/needs-attention-panel";
 import { QuickActionsPanel } from "../components/quick-actions-panel";
 import { UpcomingOneTimeEvents } from "../components/upcoming-one-time-events";
+import { CampaignsSummaryPanel } from "../components/campaigns-summary-panel";
 import {
   useDashboardSummary,
   useSendSlotReminder,
@@ -128,6 +129,7 @@ export function DashboardPage() {
         </div>
 
         <div className="space-y-6">
+          <CampaignsSummaryPanel />
           <NeedsAttentionPanel
             understaffed={understaffed}
             unreviewedSuspensions={summary.data?.unreviewed_suspensions_count ?? 0}
