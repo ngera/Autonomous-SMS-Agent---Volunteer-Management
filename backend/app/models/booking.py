@@ -38,8 +38,23 @@ class Booking(Base):
     appointment_type_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("appointment_types.id"), nullable=False
     )
+    # Explicit link to the event the signup belongs to. NULL for
+    # regular-availability bookings (no specific-date slot). When a slot's
+    # date or time changes, this lets the cascade find affected bookings
+    # by FK instead of by date-match — see a028 migration.
+    event_slot_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("specific_date_slots.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     scheduled_at: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True), nullable=False
+    )
+    # Set when the slot's date/time changes. Volunteer is asked to
+    # confirm-or-opt-out by SMS; the customer LLM preamble surfaces
+    # this so a YES reply confirms and STOP cancels.
+    pending_reconfirmation_until: Mapped[DateTime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
     confirmed_at: Mapped[DateTime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

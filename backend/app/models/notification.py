@@ -18,6 +18,7 @@ class NotificationType(str, enum.Enum):
     UNASSIGNED_SERVICE = "unassigned_service"
     RECRUITMENT_PLAN_READY = "recruitment_plan_ready"
     RECRUITMENT_PLAN_FAILED = "recruitment_plan_failed"
+    EVENT_RESCHEDULED = "event_rescheduled"
 
 
 class AdminNotification(Base):

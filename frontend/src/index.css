@@ -1,81 +1,173 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
-@import "@fontsource-variable/geist";
+@import "@fontsource-variable/inter";
 
 @custom-variant dark (&:is(.dark *));
 
+/* ─────────────────────────────────────────────────────────────
+   Booking System — Notion-aligned theme.
+   See docs/design/migration-plan.md.
+
+   Existing CSS variable names are preserved so consuming code
+   (bg-primary, text-foreground, border-border, etc.) continues
+   to work without changes; only the values change.
+
+   New tokens (link-blue, semantic-success, semantic-warning,
+   hairline-soft, hairline-strong) are added alongside for
+   components that need them.
+   ───────────────────────────────────────────────────────────── */
 :root {
-    --background: oklch(1 0 0);
-    --foreground: oklch(0.145 0 0);
+    /* Surface (canvas, cards, popovers).
+       Light mode keeps canvas pure white but tints surfaces and ink
+       with a slight warm cast (hue ~70 = sepia/cream) — feels less
+       clinical than the cool-grey shadcn default. */
+    --background: oklch(1 0 0);                  /* canvas — pure white */
+    --foreground: oklch(0.18 0.005 70);          /* ink, warm-tinted */
     --card: oklch(1 0 0);
-    --card-foreground: oklch(0.145 0 0);
+    --card-foreground: oklch(0.18 0.005 70);
     --popover: oklch(1 0 0);
-    --popover-foreground: oklch(0.145 0 0);
-    --primary: oklch(0.205 0 0);
-    --primary-foreground: oklch(0.985 0 0);
-    --secondary: oklch(0.97 0 0);
-    --secondary-foreground: oklch(0.205 0 0);
-    --muted: oklch(0.97 0 0);
-    --muted-foreground: oklch(0.556 0 0);
-    --accent: oklch(0.97 0 0);
-    --accent-foreground: oklch(0.205 0 0);
+    --popover-foreground: oklch(0.18 0.005 70);
+
+    /* Primary — neutral dark gray with faint navy tint (hue 265 to
+       harmonize with the dark theme). Dark-on-light is the classic
+       "primary CTA" pattern for an admin app; the gray reads as
+       confident and quiet rather than brand-loud purple. */
+    --primary: oklch(0.28 0.010 265);
+    --primary-foreground: oklch(0.99 0 0);
+    --primary-pressed: oklch(0.22 0.010 265);
+    --primary-deep: oklch(0.18 0.010 265);
+
+    /* Surface tones — small warm chroma at hue 70 gives a subtle
+       cream/sepia tint rather than the standard cool grey. */
+    --secondary: oklch(0.965 0.008 70);
+    --secondary-foreground: oklch(0.25 0.005 70);
+    --muted: oklch(0.965 0.008 70);
+    --muted-foreground: oklch(0.48 0.012 70);    /* warm slate */
+    --accent: oklch(0.94 0.010 70);
+    --accent-foreground: oklch(0.25 0.005 70);
+    --surface-soft: oklch(0.978 0.006 70);
+
+    /* Semantic */
     --destructive: oklch(0.58 0.22 27);
-    --border: oklch(0.922 0 0);
-    --input: oklch(0.922 0 0);
-    --ring: oklch(0.708 0 0);
-    --chart-1: oklch(0.809 0.105 251.813);
-    --chart-2: oklch(0.623 0.214 259.815);
-    --chart-3: oklch(0.546 0.245 262.881);
-    --chart-4: oklch(0.488 0.243 264.376);
-    --chart-5: oklch(0.424 0.199 265.638);
-    --radius: 0.625rem;
-    --sidebar: oklch(0.985 0 0);
-    --sidebar-foreground: oklch(0.145 0 0);
-    --sidebar-primary: oklch(0.205 0 0);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.97 0 0);
-    --sidebar-accent-foreground: oklch(0.205 0 0);
-    --sidebar-border: oklch(0.922 0 0);
-    --sidebar-ring: oklch(0.708 0 0);
+    --semantic-error: oklch(0.58 0.22 27);
+    --semantic-success: oklch(0.62 0.17 145);
+    --semantic-warning: oklch(0.74 0.17 65);
+
+    /* Hairlines & borders — also warm-tinted */
+    --border: oklch(0.918 0.006 70);
+    --hairline-soft: oklch(0.952 0.004 70);
+    --hairline-strong: oklch(0.86 0.008 70);
+    --input: oklch(0.918 0.006 70);
+    --ring: var(--primary);
+
+    /* Inline links — Notion link-blue, distinct from primary purple */
+    --link-blue: oklch(0.55 0.18 255);
+    --link-blue-pressed: oklch(0.48 0.18 255);
+
+    /* Charts — distinct hues. chart-1 is no longer tied to primary
+       (primary is now neutral gray; a gray chart series would be
+       lifeless). chart-1 takes a confident blue to anchor the palette
+       since the brand color is no longer chromatic. */
+    --chart-1: oklch(0.54 0.16 250);    /* blue (lead chart series) */
+    --chart-2: oklch(0.62 0.16 195);    /* teal */
+    --chart-3: oklch(0.62 0.16 145);    /* green */
+    --chart-4: oklch(0.68 0.16 65);     /* amber */
+    --chart-5: oklch(0.60 0.18 350);    /* magenta-pink */
+
+    /* Radius scale — Notion targets: 4/6/8/12/16/20/24/full.
+       --radius base = 0.5rem (8px) so the canonical button radius
+       lands at exactly 8px. Card uses calc(... * 1.5) = 12px. */
+    --radius: 0.5rem;
+
+    /* Sidebar — warm-tinted off-canvas for the admin chrome */
+    --sidebar: oklch(0.982 0.006 70);
+    --sidebar-foreground: oklch(0.18 0.005 70);
+    --sidebar-primary: var(--primary);
+    --sidebar-primary-foreground: oklch(0.99 0 0);
+    --sidebar-accent: oklch(0.95 0.010 70);
+    --sidebar-accent-foreground: oklch(0.25 0.005 70);
+    --sidebar-border: var(--border);
+    --sidebar-ring: var(--primary);
 }
 
 .dark {
-    --background: oklch(0.145 0 0);
-    --foreground: oklch(0.985 0 0);
-    --card: oklch(0.205 0 0);
-    --card-foreground: oklch(0.985 0 0);
-    --popover: oklch(0.205 0 0);
-    --popover-foreground: oklch(0.985 0 0);
-    --primary: oklch(0.87 0.00 0);
-    --primary-foreground: oklch(0.205 0 0);
-    --secondary: oklch(0.269 0 0);
-    --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.269 0 0);
-    --muted-foreground: oklch(0.708 0 0);
-    --accent: oklch(0.371 0 0);
-    --accent-foreground: oklch(0.985 0 0);
-    --destructive: oklch(0.704 0.191 22.216);
-    --border: oklch(1 0 0 / 10%);
-    --input: oklch(1 0 0 / 15%);
-    --ring: oklch(0.556 0 0);
-    --chart-1: oklch(0.809 0.105 251.813);
-    --chart-2: oklch(0.623 0.214 259.815);
-    --chart-3: oklch(0.546 0.245 262.881);
-    --chart-4: oklch(0.488 0.243 264.376);
-    --chart-5: oklch(0.424 0.199 265.638);
-    --sidebar: oklch(0.205 0 0);
-    --sidebar-foreground: oklch(0.985 0 0);
-    --sidebar-primary: oklch(0.488 0.243 264.376);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.269 0 0);
-    --sidebar-accent-foreground: oklch(0.985 0 0);
-    --sidebar-border: oklch(1 0 0 / 10%);
-    --sidebar-ring: oklch(0.556 0 0);
+    /* Warm navy blue canvas — noticeable navy character (chroma 0.038)
+       at hue 265, which leans slightly purple-blue for warmth rather
+       than the icy hue-240 territory of pure cobalt. Three-step
+       surface progression: bg (deepest) → card → popover, each one
+       notch brighter so cards read as elevated. */
+    --background: oklch(0.18 0.040 265);          /* deep warm navy */
+    --foreground: oklch(0.965 0.005 265);         /* off-white, faint navy tint */
+    --card: oklch(0.23 0.038 265);                /* card one step up */
+    --card-foreground: oklch(0.965 0.005 265);
+    --popover: oklch(0.255 0.038 265);            /* popover another step up */
+    --popover-foreground: oklch(0.965 0.005 265);
+
+    /* Neutral light-gray primary — the inverse of light mode's dark
+       gray. Reads as a confident white-ish CTA against the navy
+       canvas without the brand-loud purple. Tiny navy chroma so it
+       harmonizes with the surrounding surfaces rather than reading
+       as cold tech-white. */
+    --primary: oklch(0.90 0.008 265);
+    --primary-foreground: oklch(0.18 0.040 265);
+    --primary-pressed: oklch(0.82 0.012 265);
+    --primary-deep: oklch(0.75 0.014 265);
+
+    /* Surface tones — navy-tinted, three step elevation ramp.
+       Slightly higher chroma than the warm-sepia version had so
+       the navy character shows through on these surfaces too. */
+    --secondary: oklch(0.29 0.035 265);
+    --secondary-foreground: oklch(0.965 0.005 265);
+    --muted: oklch(0.29 0.035 265);
+    --muted-foreground: oklch(0.72 0.020 265);
+    --accent: oklch(0.35 0.040 265);              /* hover surface */
+    --accent-foreground: oklch(0.965 0.005 265);
+    --surface-soft: oklch(0.25 0.038 265);
+
+    /* Semantic — slightly brighter so they read on dark navy */
+    --destructive: oklch(0.72 0.19 22);
+    --semantic-error: oklch(0.72 0.19 22);
+    --semantic-success: oklch(0.74 0.17 145);
+    --semantic-warning: oklch(0.80 0.17 65);
+
+    /* Hairlines — navy-tinted translucent whites */
+    --border: oklch(1 0.030 265 / 14%);
+    --hairline-soft: oklch(1 0.030 265 / 8%);
+    --hairline-strong: oklch(1 0.030 265 / 24%);
+    --input: oklch(1 0.030 265 / 14%);
+    --ring: var(--primary);
+
+    /* Inline link — cyan-leaning so it's distinct from the navy bg */
+    --link-blue: oklch(0.78 0.14 220);
+    --link-blue-pressed: oklch(0.68 0.14 220);
+
+    /* Dark-mode charts — chart-1 decoupled from primary (now neutral
+       gray; gray series would be lifeless). Lead with cyan-blue,
+       cycle through teal/green/amber/pink. All in 0.72-0.80 lightness
+       so each series reads clearly against the warm-navy card. */
+    --chart-1: oklch(0.74 0.14 235);    /* cyan-blue (lead series) */
+    --chart-2: oklch(0.76 0.14 195);    /* teal */
+    --chart-3: oklch(0.72 0.16 145);    /* mint green */
+    --chart-4: oklch(0.80 0.17 65);     /* amber */
+    --chart-5: oklch(0.72 0.16 340);    /* pink-magenta */
+
+    /* Sidebar — slightly darker than canvas so admin chrome reads
+       as distinct. Same warm-navy tint as the rest of dark mode. */
+    --sidebar: oklch(0.155 0.045 265);
+    --sidebar-foreground: oklch(0.965 0.005 265);
+    --sidebar-primary: var(--primary);
+    --sidebar-primary-foreground: oklch(0.18 0.040 265);
+    --sidebar-accent: oklch(0.29 0.035 265);
+    --sidebar-accent-foreground: oklch(0.965 0.005 265);
+    --sidebar-border: oklch(1 0.030 265 / 14%);
+    --sidebar-ring: var(--primary);
 }
 
 @theme inline {
-    --font-sans: 'Geist Variable', sans-serif;
+    --font-sans: 'Inter Variable', 'Inter', -apple-system, system-ui, 'Segoe UI', Helvetica, sans-serif;
+
+    /* Sidebar (admin shell) */
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-border: var(--sidebar-border);
     --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -84,36 +176,63 @@
     --color-sidebar-primary: var(--sidebar-primary);
     --color-sidebar-foreground: var(--sidebar-foreground);
     --color-sidebar: var(--sidebar);
+
+    /* Charts */
     --color-chart-5: var(--chart-5);
     --color-chart-4: var(--chart-4);
     --color-chart-3: var(--chart-3);
     --color-chart-2: var(--chart-2);
     --color-chart-1: var(--chart-1);
+
+    /* Surface + borders */
     --color-ring: var(--ring);
     --color-input: var(--input);
     --color-border: var(--border);
+    --color-hairline-soft: var(--hairline-soft);
+    --color-hairline-strong: var(--hairline-strong);
+    --color-surface-soft: var(--surface-soft);
+
+    /* Semantic */
     --color-destructive: var(--destructive);
+    --color-semantic-error: var(--semantic-error);
+    --color-semantic-success: var(--semantic-success);
+    --color-semantic-warning: var(--semantic-warning);
+
+    /* Inline links */
+    --color-link-blue: var(--link-blue);
+    --color-link-blue-pressed: var(--link-blue-pressed);
+
+    /* Accents and muted */
     --color-accent-foreground: var(--accent-foreground);
     --color-accent: var(--accent);
     --color-muted-foreground: var(--muted-foreground);
     --color-muted: var(--muted);
     --color-secondary-foreground: var(--secondary-foreground);
     --color-secondary: var(--secondary);
+
+    /* Primary */
     --color-primary-foreground: var(--primary-foreground);
     --color-primary: var(--primary);
+    --color-primary-pressed: var(--primary-pressed);
+    --color-primary-deep: var(--primary-deep);
+
+    /* Popover / card / canvas */
     --color-popover-foreground: var(--popover-foreground);
     --color-popover: var(--popover);
     --color-card-foreground: var(--card-foreground);
     --color-card: var(--card);
     --color-foreground: var(--foreground);
     --color-background: var(--background);
-    --radius-sm: calc(var(--radius) * 0.6);
-    --radius-md: calc(var(--radius) * 0.8);
-    --radius-lg: var(--radius);
-    --radius-xl: calc(var(--radius) * 1.4);
-    --radius-2xl: calc(var(--radius) * 1.8);
-    --radius-3xl: calc(var(--radius) * 2.2);
-    --radius-4xl: calc(var(--radius) * 2.6);
+
+    /* Radius scale (Notion-aligned, --radius base = 8px):
+       sm 6px / md 8px (button) / lg 12px (card) / xl 16px / 2xl 20px / 3xl 24px / 4xl 28px */
+    --radius-sm: calc(var(--radius) * 0.75);     /*  6px */
+    --radius-md: var(--radius);                  /*  8px */
+    --radius-lg: calc(var(--radius) * 1.5);      /* 12px */
+    --radius-xl: calc(var(--radius) * 2);        /* 16px */
+    --radius-2xl: calc(var(--radius) * 2.5);     /* 20px */
+    --radius-3xl: calc(var(--radius) * 3);       /* 24px */
+    --radius-4xl: calc(var(--radius) * 3.5);     /* 28px */
 }
 
 @layer base {

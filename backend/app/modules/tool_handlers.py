@@ -515,12 +515,21 @@ async def handle_book_appointment(ctx: ToolContext, tool_input: dict) -> str:
             "error": f"'{appt_type.name}' is not available during this time slot.",
         })
 
+    # Resolve the event slot (if any) so the booking links to its
+    # specific-date event by FK. Regular-availability bookings get
+    # event_slot_id=None and aren't affected by slot-edit cascades.
+    from app.services.booking import find_slot_for_booking
+    event_slot = await find_slot_for_booking(
+        ctx.db, ctx.tenant.id, scheduled_at, appt_type.id
+    )
+
     # Create booking
     booking = Booking(
         tenant_id=ctx.tenant.id,
         contact_id=ctx.contact_id,
         contact_phone=ctx.contact_phone,
         appointment_type_id=appt_type.id,
+        event_slot_id=event_slot.id if event_slot else None,
         scheduled_at=scheduled_at,
         price_at_booking=float(appt_type.price),
         status=BookingStatus.SCHEDULED,
@@ -619,6 +628,16 @@ async def handle_reschedule_appointment(ctx: ToolContext, tool_input: dict) -> s
     booking.scheduled_at = new_scheduled
     booking.status = BookingStatus.RESCHEDULED
     booking.ics_sequence = (booking.ics_sequence or 0) + 1
+    # Re-resolve the event slot — a reschedule across days can move the
+    # booking onto a different event (or off any event onto regular
+    # availability). Without this, event_slot_id would point at the
+    # previous event and the new event's roster wouldn't include this
+    # booking.
+    from app.services.booking import find_slot_for_booking
+    new_slot = await find_slot_for_booking(
+        ctx.db, ctx.tenant.id, new_scheduled, booking.appointment_type_id
+    )
+    booking.event_slot_id = new_slot.id if new_slot else None
 
     history = BookingHistory(
         booking_id=booking.id,

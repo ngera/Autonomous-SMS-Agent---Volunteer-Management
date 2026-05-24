@@ -315,12 +315,27 @@ async def get_announcement(
 
 
 @router.delete("/{announcement_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def cancel_announcement(
+async def delete_announcement(
     announcement_id: str,
     db: DbSession,
     current_user: ManagerUser,
     tenant: CurrentTenant,
 ):
+    """Delete (or cancel) an announcement.
+
+    Behavior by current status:
+    - SCHEDULED: removed before dispatch fires — the scheduler won't
+      pick it up. Effectively a cancellation.
+    - DRAFT: removed; no SMS was ever queued.
+    - SENDING: removed; in-flight dispatch may complete for some
+      recipients but no further sends will be attributed to this row.
+    - SENT / FAILED: removed from history. SMSes already went out;
+      this is an audit-cleanup action.
+
+    Recruitment waves that link back via `announcement_id` keep their
+    wave row (immutable audit) but have their announcement_id NULL'd
+    via the FK's ON DELETE SET NULL (see migration a029).
+    """
     result = await db.execute(
         select(Announcement).where(
             Announcement.id == announcement_id,
@@ -330,7 +345,50 @@ async def cancel_announcement(
     announcement = result.scalar_one_or_none()
     if not announcement:
         raise HTTPException(status_code=404, detail="Announcement not found")
-    if announcement.status != AnnouncementStatus.SCHEDULED:
-        raise HTTPException(status_code=400, detail="Only scheduled announcements can be cancelled")
     await db.delete(announcement)
     await db.flush()
+
+
+# ── Bulk delete ──
+
+# Inline body schema since this is the only place it's used. Cap the
+# batch at 500 to keep accidental "select all 10k rows" requests from
+# locking the table.
+from pydantic import BaseModel, Field  # noqa: E402
+
+
+class BulkDeleteRequest(BaseModel):
+    ids: list[str] = Field(..., min_length=1, max_length=500)
+
+
+class BulkDeleteResponse(BaseModel):
+    deleted: int
+
+
+@router.post("/bulk-delete", response_model=BulkDeleteResponse)
+async def bulk_delete_announcements(
+    body: BulkDeleteRequest,
+    db: DbSession,
+    current_user: ManagerUser,
+    tenant: CurrentTenant,
+):
+    """Delete multiple announcements in one request.
+
+    Tenant-scoped: the `WHERE tenant_id = ?` clause ensures a caller
+    can't reach across tenants by guessing UUIDs. Per-row semantics
+    match the single-row endpoint (see `delete_announcement`):
+    SCHEDULED rows are effectively cancelled; SENT/FAILED rows are
+    history cleanup. Recruitment waves' back-link is NULL'd via the
+    FK's ON DELETE SET NULL (migration a029).
+
+    IDs that don't exist (or belong to a different tenant) are
+    silently skipped — `deleted` counts how many actually matched.
+    """
+    result = await db.execute(
+        delete(Announcement).where(
+            Announcement.tenant_id == tenant.id,
+            Announcement.id.in_(body.ids),
+        )
+    )
+    await db.flush()
+    return BulkDeleteResponse(deleted=result.rowcount or 0)

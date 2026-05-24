@@ -210,6 +210,51 @@ async def test_conversation(
         if contact_for_name and contact_for_name.name:
             system_prompt += f"\nThe customer's name is {contact_for_name.name}."
 
+        # Surface the pending recruitment solicitation so a "yes" reply
+        # in the test panel resolves to the wave's actual service, not
+        # whichever same-named service the LLM would guess from the
+        # outbound SMS text. Mirrors the production pipeline path.
+        if contact_for_name:
+            from app.agents.recruiter.chat_tools import (
+                build_customer_state_preamble,
+            )
+            try:
+                volunteer_preamble = await build_customer_state_preamble(
+                    db, tenant, contact_for_name.id
+                )
+                if volunteer_preamble:
+                    system_prompt += "\n\n" + volunteer_preamble
+            except Exception:
+                logger.exception(
+                    "Failed to build customer state preamble in test mode"
+                )
+
+            # Server-side intent router for YES/STOP replies to a
+            # reschedule reconfirmation. Same as production pipeline so
+            # the test panel exercises the real short-circuit path.
+            from app.services.reconfirm import (
+                maybe_handle_reconfirmation_directly,
+            )
+            try:
+                reconfirm_reply = await maybe_handle_reconfirmation_directly(
+                    db, tenant, contact_for_name, body.message
+                )
+                if reconfirm_reply is not None:
+                    return TestConversationResponse(
+                        reply=reconfirm_reply,
+                        tool_calls=[
+                            ToolCallInfo(
+                                tool="reconfirm_or_cancel",
+                                input={},
+                                output='{"ok": true, "auto_routed": true}',
+                            )
+                        ],
+                    )
+            except Exception:
+                logger.exception(
+                    "Reconfirmation intent router failed in test mode"
+                )
+
     # Select tools
     tools = ADMIN_TOOLS if is_admin else CUSTOMER_TOOLS
 

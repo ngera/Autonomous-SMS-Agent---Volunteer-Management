@@ -173,11 +173,16 @@ async def create_booking(
             ),
         )
 
+    from app.services.booking import find_slot_for_booking
+    event_slot = await find_slot_for_booking(
+        db, tenant.id, body.scheduled_at, body.appointment_type_id
+    )
     booking = Booking(
         tenant_id=tenant.id,
         contact_id=contact.id,
         contact_phone=body.contact_phone,
         appointment_type_id=body.appointment_type_id,
+        event_slot_id=event_slot.id if event_slot else None,
         scheduled_at=body.scheduled_at,
         price_at_booking=body.price_at_booking,
         status=BookingStatus.SCHEDULED,
@@ -233,6 +238,13 @@ async def reschedule_booking(
     booking.scheduled_at = body.new_scheduled_at
     booking.status = BookingStatus.RESCHEDULED
     booking.ics_sequence += 1
+    # Re-resolve event_slot_id since a reschedule can move the booking to
+    # a different event (or off-event onto regular availability).
+    from app.services.booking import find_slot_for_booking
+    new_slot = await find_slot_for_booking(
+        db, tenant.id, body.new_scheduled_at, booking.appointment_type_id
+    )
+    booking.event_slot_id = new_slot.id if new_slot else None
 
     history = BookingHistory(
         tenant_id=tenant.id,

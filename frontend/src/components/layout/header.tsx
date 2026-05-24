@@ -1,5 +1,6 @@
-import { LogOut, User } from "lucide-react";
+import { LogOut, Moon, Sun, User } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
+import { useTheme } from "@/hooks/use-theme";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -20,6 +21,7 @@ interface HeaderProps {
 
 export function Header({ title }: HeaderProps) {
   const { user, logout } = useAuth();
+  const { mode, toggle } = useTheme();
 
   return (
     <header className="flex h-14 items-center justify-between border-b border-border bg-card px-6">
@@ -29,6 +31,16 @@ export function Header({ title }: HeaderProps) {
       </div>
 
       <div className="flex items-center gap-3">
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          onClick={toggle}
+          aria-label={mode === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+          title={mode === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+        >
+          {mode === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+        </Button>
+
         <NotificationPanel />
 
         {user?.role && (

@@ -1018,6 +1018,224 @@ async def build_admin_state_preamble(
     )
 
 
+# Lookback window for finding the wave that solicited this contact. 48h
+# matches the default cooldown_hours_within_campaign — beyond that we
+# assume any "yes" reply is unrelated to recent recruitment outreach.
+PENDING_SOLICITATION_LOOKBACK_HOURS = 48
+
+
+async def get_pending_solicitation(
+    db,
+    tenant_id: uuid.UUID,
+    contact_id: uuid.UUID | None,
+    lookback_hours: int = PENDING_SOLICITATION_LOOKBACK_HOURS,
+) -> dict | None:
+    """Find the most recent recruitment wave that targeted this contact.
+
+    Returns the service + event the volunteer was solicited for so the
+    customer LLM can resolve ambiguous "yes" / "sign me up" replies to
+    the *correct* service — not a same-named one elsewhere in the tenant.
+
+    Fixes the class of bug where the outbound SMS mentions only the
+    event label (e.g., "Food Drive") but the wave actually targets a
+    different service (e.g., "Parking lot supervision") that this
+    volunteer is eligible for. Without this lookup, the LLM had to guess
+    from message text alone and would pick the wrong service whenever
+    the event and a service shared a name.
+    """
+    if not contact_id:
+        return None
+
+    from datetime import datetime, timedelta, timezone
+
+    from app.models.appointment_type import AppointmentType
+    from app.models.availability import SpecificDateSlot
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
+    cid_str = str(contact_id)
+
+    # JSONB containment: targeted_contact_ids is a list of UUID strings.
+    # Using `?` operator via SQLAlchemy's func.jsonb_exists keeps this an
+    # index-friendly check on Postgres. Fallback to row scan is fine —
+    # the SENT-wave-within-48h population is small per tenant.
+    waves_q = await db.execute(
+        select(RecruitmentWave)
+        .where(
+            RecruitmentWave.tenant_id == tenant_id,
+            RecruitmentWave.status == WaveStatus.SENT,
+            RecruitmentWave.scheduled_at >= cutoff,
+        )
+        .order_by(RecruitmentWave.scheduled_at.desc())
+    )
+    waves = list(waves_q.scalars().all())
+    wave = next(
+        (
+            w for w in waves
+            if w.targeted_contact_ids
+            and any(str(x) == cid_str for x in w.targeted_contact_ids)
+        ),
+        None,
+    )
+    if wave is None:
+        return None
+
+    campaign = await db.get(RecruitmentCampaign, wave.campaign_id)
+    if campaign is None:
+        return None
+    slot = await db.get(SpecificDateSlot, campaign.event_slot_id)
+    appt_type = await db.get(AppointmentType, wave.appointment_type_id)
+    if slot is None or appt_type is None:
+        return None
+
+    return {
+        "wave_id": str(wave.id),
+        "campaign_id": str(campaign.id),
+        "service_id": str(appt_type.id),
+        "service_name": appt_type.name,
+        "event_slot_id": str(slot.id),
+        "event_label": slot.label or appt_type.name,
+        "event_date": slot.date.isoformat() if slot.date else "",
+        "event_start_time": slot.start_time.strftime("%H:%M")
+        if slot.start_time
+        else "",
+        "event_end_time": slot.end_time.strftime("%H:%M")
+        if slot.end_time
+        else "",
+        "event_location": slot.location or "",
+        "sent_at": wave.scheduled_at.isoformat() if wave.scheduled_at else "",
+    }
+
+
+def _humanize_hours_ago(sent_iso: str) -> str:
+    """Render an ISO timestamp as a short relative span."""
+    from datetime import datetime, timezone
+
+    if not sent_iso:
+        return "recently"
+    try:
+        sent = datetime.fromisoformat(sent_iso)
+    except (TypeError, ValueError):
+        return "recently"
+    if sent.tzinfo is None:
+        sent = sent.replace(tzinfo=timezone.utc)
+    delta = datetime.now(timezone.utc) - sent
+    minutes = int(delta.total_seconds() // 60)
+    if minutes < 1:
+        return "moments ago"
+    if minutes < 60:
+        return f"{minutes} minutes ago"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours} hour{'s' if hours != 1 else ''} ago"
+    days = hours // 24
+    return f"{days} day{'s' if days != 1 else ''} ago"
+
+
+async def _pending_reconfirm_block(
+    db, tenant: Tenant, contact_id: uuid.UUID
+) -> str | None:
+    """Render a preamble block for any pending event-reschedule
+    reconfirmations for this contact, or None when there are none.
+
+    A server-side intent router in [services/reconfirm.py] catches
+    bare YES / STOP replies, so this block is the "fall-through"
+    guidance for less-trivial replies ("can I come at noon instead?",
+    "does that include parking duty too?", "wait, what changed?").
+    """
+    from app.services.reconfirm import pending_reconfirmations
+    pending = await pending_reconfirmations(db, tenant.id, contact_id)
+    if not pending:
+        return None
+
+    lines = []
+    for booking in pending[:3]:  # cap to keep prompt small
+        when = booking.scheduled_at.strftime("%Y-%m-%d %H:%M UTC")
+        lines.append(f"- Booking at {when} (id ending {str(booking.id)[-8:]})")
+    bullets = "\n".join(lines)
+    return (
+        "=== PENDING EVENT RECONFIRMATION — AUTHORITATIVE CONTEXT ===\n"
+        "This volunteer received an SMS about an event they signed up "
+        "for being rescheduled. They have not yet confirmed or opted out.\n"
+        f"{bullets}\n"
+        "\n"
+        "Rules:\n"
+        "1. Bare YES / STOP replies are handled by a server-side router "
+        "BEFORE this LLM call, so if you're seeing this message it's "
+        "because the volunteer wrote something more nuanced.\n"
+        "2. If the volunteer is asking a question or expressing concern "
+        "about the new date/time, answer it; do NOT auto-confirm or "
+        "auto-cancel.\n"
+        "3. If they want to opt out via a non-trigger phrase (e.g., "
+        "\"I won't make it\", \"please remove me\"), use the existing "
+        "cancel_booking tool with their booking reference.\n"
+        "4. If they want to keep but reschedule to ANOTHER time, use the "
+        "reschedule_booking tool, not the reconfirmation flow.\n"
+        "=== END PENDING RECONFIRMATION ===\n"
+    )
+
+
+async def build_customer_state_preamble(
+    db,
+    tenant: Tenant,
+    contact_id: uuid.UUID | None,
+) -> str | None:
+    """Return the CURRENT VOLUNTEER STATE preamble, or None if nothing to add.
+
+    Composes (in order) any of:
+      - pending recruitment solicitation (decision #18)
+      - pending event reconfirmation (decision #19)
+    Returns None when both are absent so the caller can skip the
+    append cleanly.
+    """
+    blocks: list[str] = []
+
+    if contact_id is not None:
+        reconfirm_block = await _pending_reconfirm_block(db, tenant, contact_id)
+        if reconfirm_block:
+            blocks.append(reconfirm_block)
+
+    pending = await get_pending_solicitation(db, tenant.id, contact_id)
+    if pending is not None:
+        sent_ago = _humanize_hours_ago(pending.get("sent_at", ""))
+        when = pending.get("event_date", "")
+        start = pending.get("event_start_time", "")
+        end = pending.get("event_end_time", "")
+        window = (
+            f"{start} to {end}" if start and end
+            else (start or "the scheduled time")
+        )
+        location = pending.get("event_location") or "the event location"
+        svc = pending["service_name"]
+        label = pending["event_label"]
+        blocks.append(
+            "=== PENDING RECRUITMENT SOLICITATION — AUTHORITATIVE CONTEXT ===\n"
+            "This volunteer received a recruitment SMS asking them to fill "
+            "a specific service at a specific event. Treat the details below "
+            "as the ground truth for any sign-up reply.\n"
+            f"- Service to book: {svc}\n"
+            f"- Event: {label} on {when} ({window}, {location})\n"
+            f"- Sent: {sent_ago}\n"
+            "\n"
+            "Rules:\n"
+            "1. If the volunteer replies with a YES-style confirmation "
+            "(\"yes\", \"sure\", \"ok\", \"sign me up\", \"i'll do it\", "
+            "\"count me in\", etc.) WITHOUT naming a different service, call "
+            f"create_booking with appointment_type_name=\"{svc}\", "
+            f"date=\"{when}\", time=\"{start}\".\n"
+            "2. The service name above is authoritative. The outbound SMS "
+            "may have referred to the event by its label (which can collide "
+            "with a same-named service elsewhere) — IGNORE that ambiguity "
+            "and book the service named above.\n"
+            "3. If the volunteer explicitly names a DIFFERENT service, "
+            "follow what they said.\n"
+            "4. If the volunteer declines, asks a question, or reports a "
+            "scheduling conflict, handle normally — do not force-book.\n"
+            "=== END PENDING SOLICITATION ===\n"
+        )
+
+    return "\n".join(blocks) if blocks else None
+
+
 async def handle_recruitment_status(
     ctx: ToolContext, tool_input: dict
 ) -> str:

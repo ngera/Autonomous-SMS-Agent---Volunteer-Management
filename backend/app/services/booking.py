@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
 from app.models.appointment_type import AppointmentType
+from app.models.availability import SpecificDateSlot
 from app.models.booking import Booking, BookingStatus
 from app.models.tenant import Tenant
 from app.models.contact import Contact
@@ -17,6 +18,34 @@ from app.models.notification import NotificationType
 from app.services.sms import send_sms
 
 logger = get_logger("booking")
+
+
+async def find_slot_for_booking(
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
+    scheduled_at: datetime,
+    appointment_type_id: uuid.UUID,
+) -> SpecificDateSlot | None:
+    """Resolve which specific-date slot (if any) a booking belongs to.
+
+    Returns the slot whose ``date`` matches ``scheduled_at`` and whose
+    ``service_config`` includes ``appointment_type_id``. Returns None
+    for regular-availability bookings (those have no slot link). Used
+    by every booking creation path to populate ``Booking.event_slot_id``
+    so the slot-edit cascade can find affected bookings by FK.
+    """
+    booking_date = scheduled_at.date()
+    slot_q = await db.execute(
+        select(SpecificDateSlot).where(
+            SpecificDateSlot.tenant_id == tenant_id,
+            SpecificDateSlot.date == booking_date,
+        )
+    )
+    for slot in slot_q.scalars().all():
+        for entry in slot.service_config or []:
+            if str(entry.get("appointment_type_id")) == str(appointment_type_id):
+                return slot
+    return None
 
 
 async def find_volunteer_overlap(

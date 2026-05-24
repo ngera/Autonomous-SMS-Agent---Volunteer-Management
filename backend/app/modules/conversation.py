@@ -175,6 +175,53 @@ async def get_ai_response_with_tools(
                     f"{json.dumps(contact.preferences)}"
                 )
 
+            # Surface the wave that solicited this volunteer (if any in
+            # the lookback window) so a "yes" reply books the right
+            # service even when the outbound SMS only named the event.
+            from app.agents.recruiter.chat_tools import (
+                build_customer_state_preamble,
+            )
+            try:
+                volunteer_preamble = await build_customer_state_preamble(
+                    db, tenant, contact.id
+                )
+                if volunteer_preamble:
+                    system_prompt += "\n\n" + volunteer_preamble
+            except Exception:
+                logger.exception(
+                    "Failed to build customer state preamble; "
+                    "falling through without it"
+                )
+
+            # Server-side intent router for YES/STOP replies to event-
+            # reschedule reconfirmation SMS. Same pattern as
+            # design_decisions.md #7 — short-circuit unambiguous
+            # triggers BEFORE the LLM gets a chance to hallucinate.
+            # The router updates booking state (clears the pending
+            # flag, or cancels), so we commit before returning so the
+            # next inbound from this contact sees the new state.
+            from app.services.reconfirm import (
+                maybe_handle_reconfirmation_directly,
+            )
+            try:
+                reconfirm_reply = await maybe_handle_reconfirmation_directly(
+                    db, tenant, contact, user_message
+                )
+                if reconfirm_reply is not None:
+                    await db.commit()
+                    return AIResult(
+                        message_to_user=reconfirm_reply,
+                        booking_cancelled=(
+                            "removed from the rescheduled event"
+                            in reconfirm_reply
+                        ),
+                    )
+            except Exception:
+                logger.exception(
+                    "Reconfirmation intent router failed; "
+                    "falling through to LLM"
+                )
+
     # Select tools
     tools = ADMIN_TOOLS if is_admin else CUSTOMER_TOOLS
 

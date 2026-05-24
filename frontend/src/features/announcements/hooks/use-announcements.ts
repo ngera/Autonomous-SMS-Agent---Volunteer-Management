@@ -3,6 +3,7 @@ import {
   listAnnouncements,
   createAnnouncement,
   cancelAnnouncement,
+  bulkDeleteAnnouncements,
 } from "../api";
 import type { AnnouncementCreate } from "@/types/api";
 import { useActiveTenantId } from "@/hooks/use-active-tenant";
@@ -30,6 +31,16 @@ export function useCancelAnnouncement() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => cancelAnnouncement(id),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["announcements"] });
+    },
+  });
+}
+
+export function useBulkDeleteAnnouncements() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (ids: string[]) => bulkDeleteAnnouncements(ids),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["announcements"] });
     },

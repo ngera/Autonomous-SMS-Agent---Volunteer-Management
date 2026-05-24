@@ -158,6 +158,12 @@ async def update_specific_date_slot(
         if conflicts:
             raise HTTPException(status_code=409, detail=_format_blocked_conflict(conflicts))
 
+    # Snapshot pre-edit values BEFORE applying updates so the cascade
+    # can compute the date/time delta and decide whether to fan out.
+    old_date = slot.date
+    old_start = slot.start_time
+    old_end = slot.end_time
+
     service_config_changed = "service_config" in update_data
     for field, value in update_data.items():
         setattr(slot, field, value)
@@ -170,6 +176,31 @@ async def update_specific_date_slot(
     if service_config_changed:
         from app.agents.recruiter import executor as recruiter_executor
         await recruiter_executor.sync_campaign_goals_from_slot(db, slot)
+
+    # If the date or start/end time moved, cascade to existing bookings
+    # and any active recruitment campaign. Without this, signups stay
+    # at the old date (orphan bookings) and PLANNED waves keep firing
+    # against the old schedule. See design_decisions.md #19.
+    from app.services.event_reschedule import (
+        cascade_slot_reschedule,
+        schedule_reconfirmation_sms,
+        slot_datetime_changed,
+    )
+    if slot_datetime_changed(
+        old_date, old_start, old_end,
+        update_data.get("date"),
+        update_data.get("start_time"),
+        update_data.get("end_time"),
+    ):
+        summary = await cascade_slot_reschedule(
+            db, slot, old_date, old_start
+        )
+        # Commit before backgrounding the SMS fan-out so the task's own
+        # session sees the new state (design_decisions.md #5). Returning
+        # the slot afterwards still works — FastAPI's get_db commits
+        # again at request end as a no-op.
+        await db.commit()
+        schedule_reconfirmation_sms(summary, slot.label or "event")
 
     return slot
 

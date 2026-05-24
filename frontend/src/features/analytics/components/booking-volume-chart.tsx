@@ -34,7 +34,7 @@ export function BookingVolumeChart() {
               <XAxis dataKey="period" className="text-xs" />
               <YAxis className="text-xs" allowDecimals={false} />
               <Tooltip />
-              <Bar dataKey="count" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="count" fill="var(--primary)" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         )}

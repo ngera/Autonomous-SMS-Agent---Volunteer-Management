@@ -49,8 +49,8 @@ export function DailyUsageChart({ data, isLoading }: Props) {
                 type="monotone"
                 dataKey="input_tokens"
                 stackId="1"
-                stroke="hsl(var(--primary))"
-                fill="hsl(var(--primary))"
+                stroke="var(--primary)"
+                fill="var(--primary)"
                 fillOpacity={0.6}
                 name="Input"
               />
@@ -58,8 +58,8 @@ export function DailyUsageChart({ data, isLoading }: Props) {
                 type="monotone"
                 dataKey="output_tokens"
                 stackId="1"
-                stroke="hsl(var(--chart-2, 220 70% 50%))"
-                fill="hsl(var(--chart-2, 220 70% 50%))"
+                stroke="var(--chart-2)"
+                fill="var(--chart-2)"
                 fillOpacity={0.4}
                 name="Output"
               />

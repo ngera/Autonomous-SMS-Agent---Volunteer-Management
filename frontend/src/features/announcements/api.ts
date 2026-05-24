@@ -37,3 +37,13 @@ export async function createAnnouncement(
 export async function cancelAnnouncement(id: string): Promise<void> {
   await api.delete(`/announcements/${id}`);
 }
+
+export async function bulkDeleteAnnouncements(
+  ids: string[]
+): Promise<{ deleted: number }> {
+  const { data } = await api.post<{ deleted: number }>(
+    "/announcements/bulk-delete",
+    { ids }
+  );
+  return data;
+}
