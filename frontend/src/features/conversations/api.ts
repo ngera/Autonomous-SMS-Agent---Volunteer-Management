@@ -15,3 +15,41 @@ export async function searchConversations(
   });
   return data;
 }
+
+// Path A graph-shaped audit trace for one conversation. Rendered by
+// the Trace tab on the conversation detail view.
+export interface AgentCallLogEvent {
+  id: string;
+  created_at: string | null;
+  source_agent: string;
+  destination_agent: string | null;
+  event_type: string;
+  decision_reason: string | null;
+  state_snapshot: Record<string, unknown> | null;
+  tool_name: string | null;
+  tool_input: Record<string, unknown> | null;
+  tool_output_summary: string | null;
+  model_used: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  latency_ms: number | null;
+  status: string;
+  error_message: string | null;
+}
+
+export interface ConversationTrace {
+  conversation_id: string;
+  turns: { turn_id: string; events: AgentCallLogEvent[] }[];
+  total_events: number;
+}
+
+export async function getConversationTrace(
+  conversationId: string,
+  limit = 200
+): Promise<ConversationTrace> {
+  const { data } = await api.get<ConversationTrace>(
+    `/conversations/${conversationId}/trace`,
+    { params: { limit } }
+  );
+  return data;
+}

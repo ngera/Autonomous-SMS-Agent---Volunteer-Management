@@ -44,11 +44,60 @@ const AI_PROMPT_ENTRIES: PromptEntry[] = [
     rows: 12,
   },
   {
+    key: "prompt_recruitment_reporter",
+    label: "Recruitment Reporter Prompt (Daily Admin SMS)",
+    description:
+      "System prompt for the Recruitment Agent's daily progress SMS to the admin. Generates the 2-3 sentence update with fill rate, recent wave activity, and next action — kept under 300 chars to fit one SMS. Edit to change tone, length, what to lead with, or whether to allow emojis. The payload (numbers) is provided to the AI separately; this prompt only controls voice and structure.",
+    rows: 8,
+  },
+  {
     key: "prompt_recruitment_approval",
     label: "Recruitment Approval Routing",
     description:
       "Routing rule injected into the Admin SMS Prompt that tells the AI how to recognize an admin 'approve' reply (yes / go / lgtm / etc.) and force-call the approve_recruitment_campaign tool. Edit to add/remove trigger words or tighten the wording. Substituted into the admin prompt at the {recruitment_approval} placeholder.",
     rows: 8,
+  },
+  {
+    key: "prompt_recruitment_start",
+    label: "Recruitment Start Routing",
+    description:
+      "Routing rule injected into the Admin SMS Prompt that recognizes start-planning intent ('plan for X', 'recruit for X', 'fill X', etc.) and force-calls start_recruitment_campaign. Backstopped by a server-side regex router + Haiku classifier (decisions #20 and #22) so this prompt rule is a complementary first line — the system stays reliable even when admins reword the trigger. Substituted into the admin prompt at the {recruitment_start} placeholder.",
+    rows: 8,
+  },
+  {
+    key: "prompt_recruitment_delete",
+    label: "Recruitment Delete Routing",
+    description:
+      "Routing rule injected into the Admin SMS Prompt that recognizes explicit DELETE intent on a recruitment campaign and force-calls delete_recruitment_campaign. Includes a verb-disambiguation rule so 'cancel' / 'pause' / 'remove' do NOT trigger a destructive delete (decision #21). Substituted into the admin prompt at the {recruitment_delete} placeholder.",
+    rows: 8,
+  },
+  {
+    key: "prompt_customer_service_presentation",
+    label: "Service Presentation (Volunteer SMS)",
+    description:
+      "Tells the volunteer assistant how to present services from list_services — include the next upcoming event (date, time, location) alongside each service so volunteers don't have to ask a follow-up question. Substituted into the Volunteer SMS Prompt at the {service_presentation} placeholder. Edit to adjust how aggressively to surface event details or what to say when a service has no upcoming opportunities.",
+    rows: 6,
+  },
+  {
+    key: "prompt_customer_roster_saved",
+    label: "Roster Visibility — Saved Default (Volunteer SMS)",
+    description:
+      "Injected into the volunteer's per-turn context when they HAVE already chosen a roster-visibility preference on a prior booking. Tells the AI to OMIT share_on_roster on book_appointment (the saved value is used automatically) and not to re-ask. Placeholder {saved_display} is filled at runtime with the volunteer's saved choice (e.g. 'full name (Barbara Nguyen)').",
+    rows: 8,
+  },
+  {
+    key: "prompt_customer_roster_unset",
+    label: "Roster Visibility — Ask First Time (Volunteer SMS)",
+    description:
+      "Injected when a volunteer has NO saved roster-visibility default — drives the one-time ask and contains the 'INTERPRETING THE ANSWER' rule that prevents the AI from re-asking 'I see you mentioned full name — were you answering my earlier question?'. Placeholders {first_name_choice} and {full_name_choice} are filled at runtime with the volunteer's actual name in parens.",
+    rows: 10,
+  },
+  {
+    key: "prompt_customer_booking_roster_hint",
+    label: "Booking Confirmation Roster Hint (Volunteer SMS)",
+    description:
+      "Short hint appended to every booking confirmation telling the volunteer how they appear on the roster and how to change it. Placeholder {roster_display} is filled at runtime with the actual saved choice (e.g. 'first name only (Barbara)'). Edit the wording or trigger phrases for changing the preference.",
+    rows: 4,
   },
   {
     key: "prompt_screener_system",

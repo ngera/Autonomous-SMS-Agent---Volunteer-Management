@@ -15,7 +15,7 @@ from sqlalchemy import select
 from app.core.database import async_session_factory
 from app.core.logging import get_logger
 from app.models.tenant import Tenant
-from app.modules.pipeline import process_inbound_message
+from app.agents.orchestrator import handle_inbound as orchestrator_handle_inbound
 from app.services.sms import validate_twilio_signature
 
 router = APIRouter(prefix="/api/v1/webhook", tags=["webhook"])
@@ -106,7 +106,14 @@ async def _process_message_background(
     try:
         async with async_session_factory() as db:
             try:
-                await process_inbound_message(
+                # Path A: route through the Orchestrator instead of
+                # calling the pipeline directly. The orchestrator
+                # performs cross-cutting checks (crisis, takeover,
+                # cooldown, quiet-hours) + audit, then dispatches to
+                # the right BaseAgent. RecruiterSchedulerAgent still
+                # delegates to pipeline.process_inbound_message
+                # internally, so behavior is unchanged.
+                await orchestrator_handle_inbound(
                     db, from_phone, message_body, tenant_id=tenant_id,
                 )
                 await db.commit()

@@ -147,17 +147,156 @@ async def handle_list_services(ctx: ToolContext, tool_input: dict) -> str:
                 return json.dumps({"services": [], "message": "You do not have any services assigned yet. Please contact the administrator to get services assigned."})
             query = query.where(AppointmentType.id.in_(allowed_ids))
     result = await ctx.db.execute(query)
-    types = result.scalars().all()
-    items = [
-        {
+    types = list(result.scalars().all())
+
+    # Pre-compute upcoming opportunities per service so the AI can give
+    # the volunteer the *when* alongside the *what*. Without this, the
+    # LLM lists service names with no event/date/time and the volunteer
+    # has to ask a second question to learn when they can sign up.
+    events_by_service = await _upcoming_events_per_service(ctx, types)
+
+    items = []
+    for t in types:
+        entry = {
             "name": t.name,
             "duration_minutes": t.duration_minutes,
             "price": float(t.price),
             "description": t.description or "",
         }
-        for t in types
-    ]
-    return json.dumps({"services": items})
+        upcoming = events_by_service.get(t.id, [])
+        if upcoming:
+            entry["upcoming_events"] = upcoming
+        items.append(entry)
+
+    payload = {"services": items}
+    if any(s.get("upcoming_events") for s in items):
+        payload["presentation_hint"] = (
+            "When telling the volunteer about each service, include the next "
+            "upcoming event date/time/location from upcoming_events. Don't "
+            "just list service names — share *where and when* they can help."
+        )
+    return json.dumps(payload)
+
+
+async def _upcoming_events_per_service(
+    ctx: ToolContext,
+    types: list[AppointmentType],
+    horizon_days: int = 28,
+    per_service_limit: int = 3,
+) -> dict[uuid.UUID, list[dict]]:
+    """Return up to N upcoming events per service within the horizon.
+
+    A service is "needed" at an event when the event's service_config
+    JSONB either:
+      - lists this appointment_type_id explicitly, OR
+      - is NULL/empty (which means "all active services welcome" — see
+        AvailabilityRule docstring)
+
+    Pulls from both SpecificDateSlot (one-off events) and AvailabilityRule
+    (recurring weekly windows — next 1-2 occurrences within horizon).
+    Sorted by date+time, capped at per_service_limit.
+    """
+    from app.models.availability import AvailabilityRule, SpecificDateSlot
+
+    if not types:
+        return {}
+
+    today = date.today()
+    horizon_end = today + timedelta(days=horizon_days)
+    type_ids = {t.id for t in types}
+
+    # ── One-off events ──
+    sds_rows = (
+        await ctx.db.execute(
+            select(SpecificDateSlot).where(
+                SpecificDateSlot.tenant_id == ctx.tenant.id,
+                SpecificDateSlot.is_active.is_(True),
+                SpecificDateSlot.date >= today,
+                SpecificDateSlot.date <= horizon_end,
+            ).order_by(SpecificDateSlot.date.asc(), SpecificDateSlot.start_time.asc())
+        )
+    ).scalars().all()
+
+    # ── Recurring weekly windows ──
+    rules = (
+        await ctx.db.execute(
+            select(AvailabilityRule).where(
+                AvailabilityRule.tenant_id == ctx.tenant.id,
+                AvailabilityRule.is_active.is_(True),
+            )
+        )
+    ).scalars().all()
+
+    # Bucket: type_id -> list of {date, start, end, label, location, kind}
+    by_service: dict[uuid.UUID, list[dict]] = {tid: [] for tid in type_ids}
+
+    def _service_match(config: list | None, type_id: uuid.UUID) -> bool:
+        """True when this event needs this service. NULL/empty config
+        means all active services are welcome (per the model docstring)."""
+        if not config:
+            return True
+        try:
+            return any(
+                str(entry.get("appointment_type_id")) == str(type_id)
+                for entry in config
+                if isinstance(entry, dict)
+            )
+        except (AttributeError, TypeError):
+            return False
+
+    def _fmt_time(t) -> str:
+        return t.strftime("%I:%M %p").lstrip("0")
+
+    # Process one-off slots
+    for slot in sds_rows:
+        for tid in type_ids:
+            if _service_match(slot.service_config, tid):
+                by_service[tid].append({
+                    "date": slot.date.isoformat(),
+                    "start": _fmt_time(slot.start_time),
+                    "end": _fmt_time(slot.end_time),
+                    "label": slot.label or None,
+                    "location": slot.location or None,
+                    "kind": "one_off",
+                    "_sort_key": (slot.date, slot.start_time),
+                })
+
+    # Process recurring rules — emit next 2 occurrences within horizon
+    for rule in rules:
+        for tid in type_ids:
+            if not _service_match(rule.service_config, tid):
+                continue
+            occurrences_added = 0
+            for offset in range(horizon_days + 1):
+                if occurrences_added >= 2:
+                    break
+                candidate = today + timedelta(days=offset)
+                if candidate.weekday() != rule.day_of_week:
+                    continue
+                by_service[tid].append({
+                    "date": candidate.isoformat(),
+                    "start": _fmt_time(rule.start_time),
+                    "end": _fmt_time(rule.end_time),
+                    "label": rule.label or None,
+                    "location": rule.location or None,
+                    "kind": "recurring",
+                    "_sort_key": (candidate, rule.start_time),
+                })
+                occurrences_added += 1
+
+    # Sort each service's events and cap at limit; strip internal _sort_key
+    for tid, events in by_service.items():
+        events.sort(key=lambda e: e["_sort_key"])
+        trimmed = events[:per_service_limit]
+        for e in trimmed:
+            e.pop("_sort_key", None)
+            # Drop None-valued keys so the JSON stays compact for SMS
+            for k in list(e.keys()):
+                if e[k] is None:
+                    del e[k]
+        by_service[tid] = trimmed
+
+    return by_service
 
 
 async def _slot_allow_roster_sharing(
@@ -405,13 +544,44 @@ async def handle_book_appointment(ctx: ToolContext, tool_input: dict) -> str:
     date_str = tool_input.get("date", "")
     time_str = tool_input.get("time", "")
 
-    raw_visibility = tool_input.get("share_on_roster", "first_name")
+    # Resolve roster visibility:
+    #   1. Explicit tool_input.share_on_roster wins (and is persisted as the
+    #      contact's new default — answering once carries forward).
+    #   2. Otherwise fall back to the contact's saved default_roster_visibility.
+    #   3. Otherwise fall back to first_name (existing hardcoded default).
+    explicit_visibility = tool_input.get("share_on_roster")
+    contact_row: Contact | None = None
+    if ctx.contact_id is not None:
+        contact_row = (
+            await ctx.db.execute(
+                select(Contact).where(Contact.id == ctx.contact_id)
+            )
+        ).scalar_one_or_none()
+
+    if explicit_visibility is not None:
+        raw_visibility = explicit_visibility
+    elif contact_row and contact_row.default_roster_visibility:
+        raw_visibility = contact_row.default_roster_visibility
+    else:
+        raw_visibility = "first_name"
+
     try:
         roster_visibility = RosterVisibility(raw_visibility)
     except ValueError:
         return json.dumps({
             "error": "share_on_roster must be 'hidden', 'first_name', or 'full_name'.",
         })
+
+    # Persist the explicit pick as the contact's default so they aren't
+    # re-asked on every future booking. Only writes when the value actually
+    # differs from what's stored — avoids a no-op UPDATE on every booking.
+    if (
+        explicit_visibility is not None
+        and contact_row is not None
+        and contact_row.default_roster_visibility != roster_visibility.value
+    ):
+        contact_row.default_roster_visibility = roster_visibility.value
+        # Flush is implicit on the eventual session commit downstream.
 
     appt_type = await _resolve_appointment_type(ctx.db, ctx.tenant.id, service_name)
     if not appt_type:
@@ -560,6 +730,25 @@ async def handle_book_appointment(ctx: ToolContext, tool_input: dict) -> str:
 
     base_url = f"https://{ctx.tenant.api_domain}/api/v1/calendar/{booking.id}"
 
+    # Surface the roster-visibility hint so the assistant can include it
+    # in the booking confirmation reply. Volunteer should know how they
+    # appear AND how to change it — they won't get re-asked otherwise.
+    full_name = (contact_row.name or "").strip() if contact_row else ""
+    first_name = full_name.split()[0] if full_name else ""
+    roster_display_map = {
+        "first_name": f"first name only ({first_name})" if first_name else "first name only",
+        "full_name": f"full name ({full_name})" if full_name else "full name",
+        "hidden": "hidden (not shown to other volunteers)",
+    }
+    roster_display = roster_display_map.get(
+        roster_visibility.value, roster_visibility.value
+    )
+    from app.prompts.conversation import get_customer_booking_roster_hint_prompt
+    hint_template = await get_customer_booking_roster_hint_prompt(
+        ctx.db, ctx.tenant.id
+    )
+    roster_hint = hint_template.replace("{roster_display}", roster_display)
+
     return json.dumps({
         "success": True,
         "ref": _booking_ref(booking.id),
@@ -568,6 +757,15 @@ async def handle_book_appointment(ctx: ToolContext, tool_input: dict) -> str:
         "time": scheduled_at.strftime("%I:%M %p"),
         "price": float(appt_type.price),
         "calendar_link": f"{base_url}/new.ics",
+        "roster_visibility_used": roster_visibility.value,
+        "roster_display": roster_display,
+        "roster_confirmation_hint": roster_hint,
+        "assistant_instruction": (
+            "Include the roster_confirmation_hint verbatim in your "
+            "confirmation reply (one short paragraph after the booking "
+            "details) so the volunteer knows how they appear on the "
+            "roster and how to change it."
+        ),
     })
 
 
@@ -1961,52 +2159,194 @@ async def handle_manage_availability(ctx: ToolContext, tool_input: dict) -> str:
 
 
 async def handle_manage_specific_date_slot(ctx: ToolContext, tool_input: dict) -> str:
-    from app.models.availability import SpecificDateSlot
-    from datetime import time as dt_time
+    from app.models.availability import AvailabilityRule, SpecificDateSlot
+    from datetime import time as dt_time, timedelta as _timedelta
 
     action = tool_input.get("action", "")
 
     if action == "list":
+        # Combined list: one-off events (SpecificDateSlot) within the
+        # 4-week horizon + the NEXT occurrence of each active recurring
+        # rule (AvailabilityRule). Each entry carries a volunteer
+        # summary: total needed across services, total signed up, gap.
         today = date.today()
-        result = await ctx.db.execute(
+        horizon = today + _timedelta(days=28)
+
+        # 1. One-off events
+        one_off_q = await ctx.db.execute(
             select(SpecificDateSlot)
             .where(
                 SpecificDateSlot.tenant_id == ctx.tenant.id,
                 SpecificDateSlot.date >= today,
+                SpecificDateSlot.date <= horizon,
                 SpecificDateSlot.is_active.is_(True),
             )
             .order_by(SpecificDateSlot.date, SpecificDateSlot.start_time)
         )
-        rows = result.scalars().all()
-        items = []
-        for s in rows:
-            services = []
-            if s.service_config:
-                for cfg in s.service_config:
-                    appt = await ctx.db.execute(
-                        select(AppointmentType).where(
-                            AppointmentType.id == cfg.get("appointment_type_id")
-                        )
+        one_off_slots = list(one_off_q.scalars().all())
+
+        # 2. Recurring rules — one entry each for the NEXT occurrence
+        rules_q = await ctx.db.execute(
+            select(AvailabilityRule)
+            .where(
+                AvailabilityRule.tenant_id == ctx.tenant.id,
+                AvailabilityRule.is_active.is_(True),
+            )
+        )
+        rules = list(rules_q.scalars().all())
+
+        # 3. Resolve service names ONCE for all service_config entries
+        all_service_ids: set[str] = set()
+        for s in one_off_slots:
+            for cfg in (s.service_config or []):
+                sid = cfg.get("appointment_type_id")
+                if sid:
+                    all_service_ids.add(str(sid))
+        for r in rules:
+            for cfg in (r.service_config or []):
+                sid = cfg.get("appointment_type_id")
+                if sid:
+                    all_service_ids.add(str(sid))
+        service_names: dict[str, str] = {}
+        if all_service_ids:
+            n_q = await ctx.db.execute(
+                select(AppointmentType.id, AppointmentType.name).where(
+                    AppointmentType.id.in_(list(all_service_ids))
+                )
+            )
+            service_names = {str(sid): name for sid, name in n_q.all()}
+
+        # Helper: compute volunteer summary for a (date, service_config) pair.
+        # Counts active bookings (SCHEDULED + RESCHEDULED) for the
+        # services in service_config on that specific date.
+        async def _summary_for(
+            event_date: date, service_config: list[dict] | None
+        ) -> dict:
+            services: list[dict] = []
+            total_needed = 0
+            total_signed = 0
+            if not service_config:
+                return {
+                    "services": "All services (min 1, max 1)",
+                    "total_needed": 0,
+                    "total_signed_up": 0,
+                    "more_required": 0,
+                }
+            service_ids: list[str] = []
+            for cfg in service_config:
+                sid = cfg.get("appointment_type_id")
+                if sid:
+                    service_ids.append(str(sid))
+            # Bulk-count signups per service for this date
+            signups: dict[str, int] = {}
+            if service_ids:
+                from sqlalchemy import func as _func
+                signup_q = await ctx.db.execute(
+                    select(
+                        Booking.appointment_type_id, _func.count(Booking.id)
                     )
-                    at = appt.scalar_one_or_none()
-                    services.append({
-                        "service": at.name if at else "Unknown",
-                        "min_required": cfg.get("min_required", 1),
-                        "max_allowed": cfg.get("max_allowed", 1),
-                    })
+                    .where(
+                        Booking.tenant_id == ctx.tenant.id,
+                        Booking.appointment_type_id.in_(service_ids),
+                        _func.date(Booking.scheduled_at) == event_date,
+                        Booking.status.in_(
+                            [BookingStatus.SCHEDULED, BookingStatus.RESCHEDULED]
+                        ),
+                    )
+                    .group_by(Booking.appointment_type_id)
+                )
+                for sid, cnt in signup_q.all():
+                    signups[str(sid)] = int(cnt)
+            for cfg in service_config:
+                sid = cfg.get("appointment_type_id")
+                sid_str = str(sid) if sid else None
+                min_required = int(cfg.get("min_required", 1) or 0)
+                max_allowed = cfg.get("max_allowed")
+                signed = signups.get(sid_str, 0) if sid_str else 0
+                gap = max(0, min_required - signed)
+                services.append({
+                    "service": service_names.get(sid_str, "Unknown") if sid_str else "Unknown",
+                    "min_required": min_required,
+                    "max_allowed": max_allowed,
+                    "signed_up": signed,
+                    "more_required": gap,
+                })
+                total_needed += min_required
+                total_signed += signed
+            return {
+                "services": services,
+                "total_needed": total_needed,
+                "total_signed_up": total_signed,
+                "more_required": max(0, total_needed - total_signed),
+            }
+
+        items: list[dict] = []
+
+        # One-off entries
+        for s in one_off_slots:
+            summary = await _summary_for(s.date, s.service_config)
             items.append({
                 "id": str(s.id),
+                "kind": "one_off",
                 "date": s.date.isoformat(),
                 "label": s.label or "",
                 "location": s.location or "",
-                "start": str(s.start_time)[:5],
-                "end": str(s.end_time)[:5],
+                "start": str(s.start_time)[:5] if s.start_time else "",
+                "end": str(s.end_time)[:5] if s.end_time else "",
                 "buffer_minutes": s.buffer_minutes,
-                "services": services if services else "All services (min 1, max 1)",
+                **summary,
             })
+
+        # Recurring entries — compute next occurrence per rule
+        for r in rules:
+            days_ahead = (r.day_of_week - today.weekday()) % 7
+            next_date = today + _timedelta(days=days_ahead)
+            if next_date > horizon:
+                continue
+            summary = await _summary_for(next_date, r.service_config)
+            items.append({
+                "id": str(r.id),
+                "kind": "recurring",
+                "date": next_date.isoformat(),
+                "label": r.label or "",
+                "location": r.location or "",
+                "start": str(r.start_time)[:5] if r.start_time else "",
+                "end": str(r.end_time)[:5] if r.end_time else "",
+                "buffer_minutes": r.buffer_minutes,
+                "recurrence": (
+                    "weekly on " + ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][r.day_of_week]
+                    if r.day_of_week is not None else "weekly"
+                ),
+                **summary,
+            })
+
+        # Sort all entries by next-occurrence date
+        items.sort(key=lambda it: (it.get("date", ""), it.get("start", "")))
+
         if not items:
             return json.dumps({"message": "No upcoming events configured."})
-        return json.dumps({"events": items})
+
+        # next_action_hint nudges the LLM to follow up rather than
+        # leaving the admin staring at a wall of text. Backstops the
+        # admin system prompt rule (see prompt_admin_system).
+        return json.dumps({
+            "events": items,
+            "horizon_days": 28,
+            "summary": {
+                "total_events": len(items),
+                "one_off_count": sum(1 for it in items if it.get("kind") == "one_off"),
+                "recurring_count": sum(1 for it in items if it.get("kind") == "recurring"),
+            },
+            "next_action_hint": (
+                "Show the events to the admin grouped or listed by date. "
+                "For EACH event include: label, date, time, location, and a "
+                "one-line volunteer summary like '4 needed / 1 signed up / 3 more required'. "
+                "After showing the list, ask if they want more details about "
+                "any specific event (you can use get_schedule with the event "
+                "date for the deeper view, or recruitment_status for an "
+                "active campaign's progress)."
+            ),
+        })
 
     if action == "add":
         date_str = tool_input.get("date", "")
@@ -2133,6 +2473,7 @@ async def handle_manage_specific_date_slot(ctx: ToolContext, tool_input: dict) -
 
 from app.agents.recruiter.chat_tools import (
     handle_approve_recruitment_campaign,
+    handle_delete_recruitment_campaign,
     handle_recruitment_status,
     handle_start_recruitment_campaign,
 )
@@ -2159,4 +2500,5 @@ TOOL_HANDLERS = {
     "start_recruitment_campaign": handle_start_recruitment_campaign,
     "approve_recruitment_campaign": handle_approve_recruitment_campaign,
     "recruitment_status": handle_recruitment_status,
+    "delete_recruitment_campaign": handle_delete_recruitment_campaign,
 }

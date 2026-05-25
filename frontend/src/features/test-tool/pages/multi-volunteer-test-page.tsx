@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Bot, Send, ShieldCheck, User, X } from "lucide-react";
+import { ArrowUp, ShieldCheck, User, X } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,7 +20,7 @@ const HISTORY_DAYS = 7;
 // UI-only cap. The full message_history is preserved in state (and sent to
 // the AI for context) but the transcript only ever shows the most recent
 // DISPLAY_MESSAGE_LIMIT items so the panel doesn't fill up.
-const DISPLAY_MESSAGE_LIMIT = 5;
+const DISPLAY_MESSAGE_LIMIT = 10;
 // The test_conversation endpoint stores admin-mode chats under this
 // fallback phone when the admin user has no real phone configured. Used
 // to seed the admin panel's history on page load.
@@ -58,8 +58,28 @@ const EMPTY_CHAT: ChatState = {
 
 export function MultiVolunteerTestPage() {
   const [search, setSearch] = useState("");
+  // Debounce the search text before passing it to the API so each keystroke
+  // doesn't fire a request. 200ms matches the typing-feels-instant threshold.
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  useEffect(() => {
+    const id = setTimeout(() => setDebouncedSearch(search.trim()), 200);
+    return () => clearTimeout(id);
+  }, [search]);
+  // Two queries:
+  //  - baseCustomers: the rolling "first 100 by name" list used to backfill
+  //    saved panels with names + to render the empty state.
+  //  - searchCustomers: fires only when there's text in the box, asks the
+  //    server to filter so we can find customers OUTSIDE the first 100.
+  //    Without this, searching for "Zoe" in a tenant with 300 volunteers
+  //    just returns nothing — the previous behavior the user hit.
   const { data: customersData } = useCustomers({ page: 1, page_size: 100 });
   const customers = customersData?.items ?? [];
+  const { data: searchData, isFetching: searchFetching } = useCustomers({
+    page: 1,
+    page_size: 20,
+    search: debouncedSearch || undefined,
+  });
+  const searchHits = debouncedSearch ? (searchData?.items ?? []) : [];
 
   const [admin, setAdmin] = useState<ChatState>({ ...EMPTY_CHAT });
   const [panels, setPanels] = useState<Record<string, VolunteerChatState>>({});
@@ -124,8 +144,21 @@ export function MultiVolunteerTestPage() {
               return { ...prev, [phone]: { ...panel, name: c.name } };
             });
           })
-          .catch(() => {
-            // 404 or transient — keep panel as phone-only.
+          .catch((err) => {
+            // 404 = the saved phone doesn't belong to the active tenant
+            // (common after a tenant switch). Drop the panel so the user
+            // isn't stuck looking at a permanently-Unnamed chat with no
+            // way to recover short of clearing localStorage by hand.
+            // Other errors stay non-fatal — the title falls back to the
+            // phone number, the user can still see which thread is which.
+            if (err?.response?.status === 404) {
+              setPanels((prev) => {
+                if (!(phone in prev)) return prev;
+                const next = { ...prev };
+                delete next[phone];
+                return next;
+              });
+            }
           });
       });
     }
@@ -173,17 +206,20 @@ export function MultiVolunteerTestPage() {
 
   // Backfill names as the customer list resolves — rehydrated panels start
   // with name=null and pick up the real name on the next render where the
-  // matching CustomerResponse is available.
+  // matching CustomerResponse is available. Considers BOTH the first-100
+  // cache and any current search hits so customers beyond page 1 still get
+  // their names filled when the user types to find them.
   useEffect(() => {
     if (!hydrated) return;
-    if (customers.length === 0) return;
+    const allKnown = [...customers, ...searchHits];
+    if (allKnown.length === 0) return;
     setPanels((prev) => {
       let changed = false;
       const next = { ...prev };
       for (const phone of Object.keys(next)) {
         const panel = next[phone];
         if (panel.name) continue;
-        const match = customers.find((c) => c.phone === phone);
+        const match = allKnown.find((c) => c.phone === phone);
         if (match && match.name && match.name !== panel.name) {
           next[phone] = { ...panel, name: match.name };
           changed = true;
@@ -191,7 +227,53 @@ export function MultiVolunteerTestPage() {
       }
       return changed ? next : prev;
     });
-  }, [customers, hydrated]);
+  }, [customers, searchHits, hydrated]);
+
+  // Catch-all: any panel still without a name after both list-based
+  // backfills get a targeted lookup. Covers panels added in-session via
+  // addVolunteer (where the click-time customer record had name=null) and
+  // any rehydrated panel whose first getCustomer call raced.
+  //
+  // attemptedNameLookups guards against infinite loops: if getCustomer
+  // succeeds but returns null name (or 404s), the panel stays without a
+  // name AND would otherwise re-trigger this effect forever. The Set
+  // records every phone we've already asked about; cleared only when the
+  // panel is removed, so a later remove+re-add will re-try.
+  const attemptedNameLookups = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!hydrated) return;
+    const presentPhones = new Set(Object.keys(panels));
+    // Prune the attempt tracker so removed-then-re-added panels can retry.
+    for (const phone of attemptedNameLookups.current) {
+      if (!presentPhones.has(phone)) {
+        attemptedNameLookups.current.delete(phone);
+      }
+    }
+    const missing = Object.values(panels).filter(
+      (p) =>
+        !p.name &&
+        !p.loadingHistory &&
+        !attemptedNameLookups.current.has(p.phone)
+    );
+    if (missing.length === 0) return;
+    missing.forEach((p) => {
+      attemptedNameLookups.current.add(p.phone);
+      getCustomer(p.phone)
+        .then((c) => {
+          if (!c.name) return;
+          setPanels((prev) => {
+            const panel = prev[p.phone];
+            if (!panel || panel.name) return prev;
+            return { ...prev, [p.phone]: { ...panel, name: c.name } };
+          });
+        })
+        .catch(() => {
+          // 404 = stale localStorage from another tenant; the rehydration
+          // path's 404 handler already evicts those. Other errors stay
+          // silent — title falls back to the phone.
+        });
+    });
+  }, [panels, hydrated]);
 
   // Poll the admin's sender_type='admin' conversation for backend
   // appends — recruitment planner summaries, daily reports, escalation
@@ -244,16 +326,13 @@ export function MultiVolunteerTestPage() {
     };
   }, [hydrated]);
 
+  // When the user is searching, prefer the server-side hits (which can
+  // reach customers outside the first 100). When the box is empty, use
+  // the local cache. Either way, exclude phones already showing as panels.
   const filteredCustomers = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return customers.filter((c) => {
-      if (panels[c.phone]) return false;
-      if (!q) return true;
-      return (
-        (c.name && c.name.toLowerCase().includes(q)) || c.phone.includes(q)
-      );
-    });
-  }, [customers, search, panels]);
+    const source = debouncedSearch ? searchHits : customers;
+    return source.filter((c) => !panels[c.phone]);
+  }, [customers, searchHits, debouncedSearch, panels]);
 
   async function loadHistoryForPhone(phone: string) {
     try {
@@ -665,19 +744,34 @@ export function MultiVolunteerTestPage() {
               className="h-9 max-w-md"
             />
           </div>
-          {search.trim() && filteredCustomers.length > 0 && (
+          {search.trim() && (
             <div className="max-h-48 overflow-y-auto rounded-md border">
-              {filteredCustomers.slice(0, 10).map((c) => (
-                <button
-                  key={c.phone}
-                  type="button"
-                  className="flex w-full flex-col items-start px-3 py-2 text-left text-sm hover:bg-accent"
-                  onClick={() => addVolunteer(c)}
-                >
-                  <span className="font-medium">{c.name || "Unnamed"}</span>
-                  <span className="text-xs text-muted-foreground">{c.phone}</span>
-                </button>
-              ))}
+              {searchFetching && filteredCustomers.length === 0 ? (
+                <p className="px-3 py-2 text-xs text-muted-foreground">
+                  Searching…
+                </p>
+              ) : filteredCustomers.length === 0 ? (
+                <p className="px-3 py-2 text-xs text-muted-foreground">
+                  No volunteers match "{search.trim()}". Check the spelling
+                  or the active tenant in the top-bar filter.
+                </p>
+              ) : (
+                filteredCustomers.slice(0, 10).map((c) => (
+                  <button
+                    key={c.phone}
+                    type="button"
+                    className="flex w-full flex-col items-start px-3 py-2 text-left text-sm hover:bg-accent"
+                    onClick={() => addVolunteer(c)}
+                  >
+                    <span className="font-medium">
+                      {(c.name && c.name.trim()) || c.phone}
+                    </span>
+                    {c.name && c.name.trim() && (
+                      <span className="text-xs text-muted-foreground">{c.phone}</span>
+                    )}
+                  </button>
+                ))
+              )}
             </div>
           )}
         </CardContent>
@@ -703,8 +797,12 @@ export function MultiVolunteerTestPage() {
           return (
             <ChatPanel
               key={phone}
-              title={p.name || "Unnamed"}
-              subtitle={p.phone}
+              // Fall back to the phone number rather than "Unnamed" — at
+              // least the panel is identifiable. The empty-string check
+              // handles contacts whose name field is an empty string in
+              // the DB (otherwise `"" || ...` still picks the fallback).
+              title={(p.name && p.name.trim()) || p.phone}
+              subtitle={(p.name && p.name.trim()) ? p.phone : ""}
               icon={<User className="h-3.5 w-3.5" />}
               accent="default"
               input={p.input}
@@ -789,46 +887,43 @@ function ChatPanel({
     onSend();
   }
   return (
-    <Card
-      className={cn(
-        "flex h-[28rem] flex-col",
-        accent === "emerald" &&
-          "border-emerald-300 dark:border-emerald-900"
-      )}
-    >
-      <CardHeader
-        className={cn(
-          "flex flex-row items-center justify-between border-b py-2",
-          accent === "emerald" && "bg-emerald-50/60 dark:bg-emerald-950/30"
-        )}
-      >
+    <div className="flex h-[28rem] flex-col overflow-hidden rounded-2xl border border-[#9CADC2] bg-[#D2DBE8] shadow-sm">
+      {/* iOS-style contact strip */}
+      <div className="flex items-center justify-between gap-2 border-b border-[#9CADC2] bg-[#BCC9DA]/95 px-3 py-2 backdrop-blur">
         <div className="flex min-w-0 items-center gap-2">
           <span
             className={cn(
-              "flex h-7 w-7 shrink-0 items-center justify-center rounded-full",
+              "flex h-9 w-9 shrink-0 items-center justify-center rounded-full",
               accent === "emerald"
                 ? "bg-emerald-200 text-emerald-900 dark:bg-emerald-900 dark:text-emerald-200"
-                : "bg-primary/10 text-primary"
+                : "bg-zinc-200 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-200"
             )}
           >
             {icon}
           </span>
           <div className="min-w-0">
-            <CardTitle className="truncate text-sm font-medium">
-              {title}
-            </CardTitle>
+            <p className="truncate text-sm font-semibold leading-tight text-black">{title}</p>
             {subtitle && (
-              <p className="truncate text-xs text-muted-foreground">{subtitle}</p>
+              <p className="truncate text-[11px] leading-tight text-black">
+                {subtitle}
+              </p>
             )}
           </div>
         </div>
         {onRemove && (
-          <Button size="icon" variant="ghost" className="h-7 w-7" onClick={onRemove}>
-            <X className="h-3.5 w-3.5" />
-          </Button>
+          <button
+            type="button"
+            onClick={onRemove}
+            aria-label="Close conversation"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[#3f4a5c] hover:bg-[#9CADC2]"
+          >
+            <X className="h-4 w-4" />
+          </button>
         )}
-      </CardHeader>
-      <CardContent className="flex-1 space-y-2 overflow-y-auto p-3">
+      </div>
+
+      {/* Messages */}
+      <div className="flex-1 space-y-1.5 overflow-y-auto bg-[#D2DBE8] px-3 py-3">
         {loadingHistory && transcript.length === 0 ? (
           <p className="py-8 text-center text-xs text-muted-foreground">
             Loading the last 7 days of messages…
@@ -847,80 +942,80 @@ function ChatPanel({
             Showing last {DISPLAY_MESSAGE_LIMIT} of {transcript.length} messages
           </p>
         )}
-        {pending && (
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Bot className="h-3.5 w-3.5" />
-            <span className="inline-flex gap-0.5">
-              <span className="animate-bounce" style={{ animationDelay: "0ms" }}>
-                .
-              </span>
-              <span className="animate-bounce" style={{ animationDelay: "150ms" }}>
-                .
-              </span>
-              <span className="animate-bounce" style={{ animationDelay: "300ms" }}>
-                .
-              </span>
-            </span>
-          </div>
-        )}
+        {pending && <TypingBubble />}
         <div ref={bottomRef} />
-      </CardContent>
-      <div className="border-t p-2">
-        <div className="flex gap-2">
-          <Input
-            ref={inputRef}
-            value={input}
-            onChange={(e) => onInputChange(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                triggerSend();
-              }
-            }}
-            placeholder={placeholder}
-            className="h-8 text-sm"
-            disabled={pending}
-          />
-          <Button
-            size="sm"
-            onClick={triggerSend}
-            disabled={!input.trim() || pending}
-          >
-            <Send className="h-3.5 w-3.5" />
-          </Button>
-        </div>
       </div>
-    </Card>
+
+      {/* iMessage compose bar */}
+      <div className="flex items-center gap-2 border-t border-[#9CADC2] bg-[#BCC9DA]/95 px-2 py-2 backdrop-blur">
+        <input
+          ref={inputRef}
+          value={input}
+          onChange={(e) => onInputChange(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              triggerSend();
+            }
+          }}
+          placeholder={placeholder || "iMessage"}
+          disabled={pending}
+          className="h-8 flex-1 rounded-full border border-[#9CADC2] bg-[#FBF6EE] px-3 text-sm text-[#1c1c1e] placeholder:text-[#7e8a9c] outline-none focus:border-[#6b7e96] disabled:opacity-50"
+        />
+        <button
+          type="button"
+          onClick={triggerSend}
+          disabled={!input.trim() || pending}
+          aria-label="Send"
+          className={cn(
+            "flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-colors",
+            input.trim() && !pending
+              ? "bg-[#007AFF] text-white hover:bg-[#0066d6]"
+              : "bg-[#9CADC2] text-white"
+          )}
+        >
+          <ArrowUp className="h-4 w-4" strokeWidth={3} />
+        </button>
+      </div>
+    </div>
   );
 }
 
 function TranscriptRow({ item }: { item: TranscriptItem }) {
   const isUser = item.kind === "user";
   return (
-    <div
-      className={cn(
-        "flex items-start gap-2 text-xs",
-        isUser ? "justify-end" : "justify-start"
-      )}
-    >
-      {!isUser && (
-        <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/10">
-          <Bot className="h-3 w-3 text-primary" />
-        </div>
-      )}
+    <div className={cn("flex w-full", isUser ? "justify-end" : "justify-start")}>
       <div
         className={cn(
-          "max-w-[85%] whitespace-pre-wrap rounded-md px-2.5 py-1.5",
-          isUser ? "bg-primary text-primary-foreground" : "bg-muted"
+          "max-w-[78%] whitespace-pre-wrap border border-[#9CADC2] px-3 py-1.5 text-sm leading-snug text-[#1c1c1e]",
+          isUser
+            ? "rounded-[18px] rounded-br-[4px] bg-[#FBF6EE]"
+            : "rounded-[18px] rounded-bl-[4px] bg-[#FBF6EE]"
         )}
       >
         {item.content}
       </div>
-      {isUser && (
-        <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary">
-          <User className="h-3 w-3 text-primary-foreground" />
-        </div>
-      )}
+    </div>
+  );
+}
+
+function TypingBubble() {
+  return (
+    <div className="flex justify-start">
+      <div className="flex items-end gap-1 rounded-[18px] rounded-bl-[4px] border border-[#9CADC2] bg-[#FBF6EE] px-3 py-2">
+        <span
+          className="h-1.5 w-1.5 animate-bounce rounded-full bg-zinc-500 dark:bg-zinc-400"
+          style={{ animationDelay: "0ms" }}
+        />
+        <span
+          className="h-1.5 w-1.5 animate-bounce rounded-full bg-zinc-500 dark:bg-zinc-400"
+          style={{ animationDelay: "150ms" }}
+        />
+        <span
+          className="h-1.5 w-1.5 animate-bounce rounded-full bg-zinc-500 dark:bg-zinc-400"
+          style={{ animationDelay: "300ms" }}
+        />
+      </div>
     </div>
   );
 }

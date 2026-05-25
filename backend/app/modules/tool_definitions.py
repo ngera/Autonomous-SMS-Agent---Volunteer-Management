@@ -4,7 +4,14 @@
 
 LIST_SERVICES = {
     "name": "list_services",
-    "description": "List all available appointment types with name, duration, and price.",
+    "description": (
+        "List all available appointment types (services) the volunteer can sign up for. "
+        "Each entry includes name, duration_minutes, price, description, AND an "
+        "upcoming_events list with the next few opportunities where this service is "
+        "needed — each event has date, start, end, optional label and location. When "
+        "presenting services to the volunteer, ALWAYS include the next event date/time "
+        "from upcoming_events so they know *when* they can help, not just *what* they can do."
+    ),
     "input_schema": {
         "type": "object",
         "properties": {},
@@ -49,9 +56,12 @@ BOOK_APPOINTMENT = {
     "name": "book_appointment",
     "description": (
         "Create a new appointment booking for the customer. The customer must have confirmed the service, "
-        "date, time, and price before calling this tool. Before calling, ASK the volunteer how they want "
-        "their name shown to other volunteers on the event roster (first name only by default; full name if "
-        "they prefer; hidden if they want privacy)."
+        "date, time, and price before calling this tool. Roster visibility: if the volunteer's saved default "
+        "is shown in the CURRENT VOLUNTEER STATE preamble, OMIT share_on_roster — the tool uses the saved "
+        "default automatically and DO NOT ask the volunteer again. If no default is shown, ASK the volunteer "
+        "ONCE how they want their name to appear on the volunteer roster (first name / full name / hidden), "
+        "then pass share_on_roster with their answer; the tool will save it as their default so they aren't "
+        "asked on future bookings."
     ),
     "input_schema": {
         "type": "object",
@@ -414,7 +424,13 @@ MANAGE_SPECIFIC_DATE_SLOT = {
         "vague phrase like 'plan the food drive' — do NOT call 'add'; the "
         "intent is recruitment, route to start_recruitment_campaign "
         "instead. "
-        "Use 'list' to see upcoming events (returns ids). "
+        "Use 'list' to see upcoming events over the next 4 weeks — "
+        "returns BOTH one-off events AND the next occurrence of each "
+        "recurring availability rule, each with a volunteer summary "
+        "(total_needed / total_signed_up / more_required, plus per-service "
+        "breakdown). The response includes a next_action_hint telling you "
+        "how to format the list AND to ask the admin if they want details "
+        "on any specific event. "
         "Use 'add' to create a new event. "
         "Use 'update' to modify an existing event by id (only fields you provide are changed). "
         "Use 'delete' to remove an event by id."
@@ -716,6 +732,41 @@ RECRUITMENT_STATUS = {
     },
 }
 
+DELETE_RECRUITMENT_CAMPAIGN = {
+    "name": "delete_recruitment_campaign",
+    "description": (
+        "**DESTRUCTIVE**. Delete a recruitment campaign + cascade its waves, "
+        "signups, and reports. Use ONLY when the admin EXPLICITLY says "
+        "'delete' (not 'cancel', not 'pause', not 'remove') — those have "
+        "different meanings (cancel/pause stop outreach but keep the row). "
+        "Past SMS announcement history is preserved (the wave→announcement "
+        "link is NULL'd, not the row).\n\n"
+        "Resolution: pass campaign_id directly if known; otherwise pass "
+        "event_date (YYYY-MM-DD) and/or event_label and the tool resolves "
+        "via the linked event. If multiple campaigns exist for the same "
+        "event, the tool returns needs_clarification with matches — list "
+        "them and ask the admin which campaign_id."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "campaign_id": {
+                "type": "string",
+                "description": "Direct UUID of the campaign to delete.",
+            },
+            "event_date": {
+                "type": "string",
+                "description": "Event date (YYYY-MM-DD) to look up the campaign.",
+            },
+            "event_label": {
+                "type": "string",
+                "description": "Event label fuzzy-match string to look up the campaign.",
+            },
+        },
+        "required": [],
+    },
+}
+
 # ── Tool sets ──
 
 CUSTOMER_TOOLS = [
@@ -749,4 +800,5 @@ ADMIN_TOOLS = [
     START_RECRUITMENT_CAMPAIGN,
     APPROVE_RECRUITMENT_CAMPAIGN,
     RECRUITMENT_STATUS,
+    DELETE_RECRUITMENT_CAMPAIGN,
 ]

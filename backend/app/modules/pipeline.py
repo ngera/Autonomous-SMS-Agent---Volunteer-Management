@@ -109,13 +109,19 @@ async def _process_admin_message(
     )
 
     # Server-side intent routers for recruitment intents — the LLM has
-    # consistently failed to invoke approve_recruitment_campaign and
-    # recruitment_status despite explicit prompt rules, so we
-    # short-circuit unambiguous phrases here.
+    # consistently failed to invoke approve_recruitment_campaign,
+    # recruitment_status, start_recruitment_campaign,
+    # delete_recruitment_campaign, AND manage_specific_date_slot/list
+    # despite explicit prompt rules, so we short-circuit unambiguous
+    # phrases here. See design_decisions.md #7, #20, #21.
     from app.agents.recruiter.chat_tools import (
         maybe_handle_approval_directly,
+        maybe_handle_delete_campaign_directly,
+        maybe_handle_list_events_directly,
+        maybe_handle_start_campaign_directly,
         maybe_handle_status_directly,
     )
+    from app.modules.tool_handlers import ToolContext as _ToolContext
 
     auto_reply = await maybe_handle_approval_directly(
         db, tenant, message_body, admin_user
@@ -124,6 +130,48 @@ async def _process_admin_message(
         auto_reply = await maybe_handle_status_directly(
             db, tenant, message_body
         )
+    if auto_reply is None:
+        # Start + delete + list-events routers need a ToolContext
+        # shaped like the chat tool would have built. Admin path:
+        # contact_phone is the admin's phone, contact_id is the admin's
+        # user id (same convention as the LLM tool-use loop below).
+        _admin_ctx = _ToolContext(
+            db=db,
+            tenant=tenant,
+            contact_phone=from_phone,
+            contact_id=admin_user.id,
+            is_admin=True,
+        )
+        # List-events is checked first — its patterns are unambiguous
+        # ("list/show upcoming events") and would otherwise be lost
+        # to the LLM answering from preamble memory.
+        auto_reply = await maybe_handle_list_events_directly(
+            _admin_ctx, message_body
+        )
+        if auto_reply is None:
+            # Delete BEFORE start: some delete phrasings
+            # (e.g., "delete the recruitment for X") could be
+            # mis-parsed by the start router's softer "recruit for X".
+            auto_reply = await maybe_handle_delete_campaign_directly(
+                _admin_ctx, message_body
+            )
+        if auto_reply is None:
+            auto_reply = await maybe_handle_start_campaign_directly(
+                _admin_ctx, message_body
+            )
+        if auto_reply is None:
+            # Tier 2: Haiku intent classifier. Catches novel phrasings
+            # the regex didn't recognize ("scrap the food drive plan",
+            # "we're full for Saturday — kill outreach", etc.) without
+            # letting them slip through to the full LLM where they
+            # historically caused hallucinated confirmations.
+            # See design_decisions.md #22.
+            from app.agents.orchestrator.intent_dispatch import (
+                maybe_handle_via_classifier,
+            )
+            auto_reply = await maybe_handle_via_classifier(
+                db, tenant, message_body, admin_user, _admin_ctx
+            )
     if auto_reply is not None:
         await send_sms(to=from_phone, body=auto_reply, tenant=tenant)
         now = datetime.now(timezone.utc)

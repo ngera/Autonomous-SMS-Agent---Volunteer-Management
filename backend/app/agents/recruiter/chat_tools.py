@@ -727,8 +727,21 @@ async def maybe_handle_approval_directly(
     )
     campaign = q.scalar_one_or_none()
     if not campaign:
-        # No pending campaign — let the LLM handle this naturally.
-        return None
+        # No pending campaign. We INTERCEPT instead of falling through —
+        # the LLM otherwise happily hallucinates "✅ Approved!" from
+        # nothing (cascading from any earlier turn where it pretended a
+        # plan existed). Honest "nothing to approve" stops the cascade.
+        # See design_decisions.md #7/#20 lineage.
+        logger.info(
+            "Approval intent received but no AWAITING_APPROVAL campaign "
+            "exists for tenant %s — intercepting with no-op reply",
+            tenant.id,
+        )
+        return (
+            "There's no recruitment plan waiting for your approval. "
+            "Say 'plan recruitment for <event>' to start a new one, or "
+            "'list active campaigns' to see what's currently running."
+        )
 
     slot = await db.get(SpecificDateSlot, campaign.event_slot_id)
     if not slot:
@@ -761,6 +774,725 @@ async def maybe_handle_approval_directly(
         "Outreach is starting now — first wave going out within seconds. "
         "I'll text you a daily progress update."
     )
+
+
+# ── Server-side intent router: start a recruitment campaign ──
+# Same playbook as maybe_handle_approval_directly above (decision #7):
+# the LLM was hallucinating "Planning started" confirmations without
+# actually calling start_recruitment_campaign — see design_decisions.md
+# #20. This router catches unambiguous trigger phrases ("plan for X",
+# "recruit volunteers for X", etc.), extracts the event reference, and
+# calls the existing handle_start_recruitment_campaign directly. Falls
+# through (returns None) for anything ambiguous, letting the LLM handle
+# the conversation normally.
+
+import re as _re
+
+# Regex patterns — each captures group 1 = the event-reference subject.
+# Anchored at start of message (after lowercasing + strip) to avoid
+# catching phrases embedded in longer questions ("can you tell me how
+# we plan for X" → not a planning command, the LLM should reply with
+# explanation).
+_START_CAMPAIGN_PATTERNS = [
+    # "i want to plan / can we plan / could you plan" — softer phrasings.
+    # Note `start\s+plan(?:ning)?` accepts both "start plan" and "start planning".
+    _re.compile(r"^(?:i\s+(?:want|need|would\s+like)\s+to\s+|can\s+(?:you|we)\s+|could\s+you\s+)(?:please\s+)?(?:plan|start\s+plan(?:ning)?|recruit|launch\s+(?:a\s+)?campaign|start\s+(?:a\s+)?campaign|fill|staff)\s+(?:a\s+campaign\s+)?(?:volunteers?\s+)?(?:for\s+|the\s+|a\s+)?(.+)$"),
+    _re.compile(r"^(?:let'?s\s+)?(?:please\s+)?start\s+plan(?:ning)?\s+(?:for\s+|the\s+)?(.+)$"),
+    _re.compile(r"^(?:let'?s\s+)?(?:please\s+)?plan(?:ning)?\s+(?:a\s+campaign\s+)?(?:for\s+|the\s+)?(.+)$"),
+    _re.compile(r"^(?:let'?s\s+)?(?:please\s+)?recruit\s+(?:volunteers?\s+)?(?:for\s+|the\s+)?(.+)$"),
+    _re.compile(r"^(?:let'?s\s+)?(?:please\s+)?(?:launch|start)\s+(?:a\s+)?campaign\s+(?:for\s+|the\s+)?(.+)$"),
+    _re.compile(r"^(?:let'?s\s+)?(?:please\s+)?campaign\s+(?:for\s+|the\s+)?(.+)$"),
+    _re.compile(r"^(?:let'?s\s+)?(?:please\s+)?fill\s+(?:the\s+)?(.+)$"),
+    _re.compile(r"^(?:let'?s\s+)?(?:please\s+)?staff\s+(?:the\s+)?(.+)$"),
+    _re.compile(r"^(?:let'?s\s+)?(?:please\s+)?outreach\s+(?:for\s+|the\s+)?(.+)$"),
+    _re.compile(r"^(?:i\s+)?need\s+volunteers?\s+(?:for\s+|the\s+)?(.+)$"),
+]
+
+# BARE planning intent — no event reference. Match these explicitly so
+# the LLM never gets a chance to hallucinate "planning started" for an
+# unspecified event. When matched, the router asks which event (or
+# auto-picks if exactly one upcoming exists). See design_decisions.md #20.
+# Accepts both "plan" and "planning" everywhere via plan(?:ning)?.
+_BARE_START_CAMPAIGN_PATTERNS = [
+    _re.compile(r"^(?:let'?s\s+)?(?:please\s+)?start\s+plan(?:ning)?\.?$"),
+    _re.compile(r"^(?:let'?s\s+)?(?:please\s+)?plan(?:ning)?\.?$"),
+    _re.compile(r"^(?:let'?s\s+)?(?:please\s+)?(?:launch|start)\s+(?:a\s+)?campaign\.?$"),
+    _re.compile(r"^(?:let'?s\s+)?(?:please\s+)?recruit(?:\s+volunteers?)?\.?$"),
+    _re.compile(r"^(?:i\s+(?:want|need|would\s+like)\s+to\s+|can\s+(?:you|we)\s+|could\s+you\s+)(?:please\s+)?(?:plan|start\s+plan(?:ning)?|recruit|launch\s+(?:a\s+)?campaign|start\s+(?:a\s+)?campaign)\.?$"),
+]
+
+# Inline date extractor — handles the common natural-language forms
+# admins actually type. Returns (date_iso_string, leftover_label) or
+# (None, original_string) if no date found.
+_MONTHS = {
+    "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
+    "apr": 4, "april": 4, "may": 5, "jun": 6, "june": 6, "jul": 7, "july": 7,
+    "aug": 8, "august": 8, "sep": 9, "sept": 9, "september": 9, "oct": 10,
+    "october": 10, "nov": 11, "november": 11, "dec": 12, "december": 12,
+}
+# "june 15", "jun 15th", "june 15, 2026", "15 june", "15 jun 2026"
+_MONTH_NAME_DATE_RE = _re.compile(
+    r"\b(?:(\d{1,2})(?:st|nd|rd|th)?\s+)?"
+    r"(jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|"
+    r"aug|august|sep|sept|september|oct|october|nov|november|dec|december)"
+    r"(?:\s+(\d{1,2})(?:st|nd|rd|th)?)?"
+    r"(?:[,\s]+(\d{4}))?\b",
+    _re.IGNORECASE,
+)
+# "6/15", "06/15/2026", "2026-06-15"
+_NUMERIC_DATE_RE = _re.compile(
+    r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b|"
+    r"\b(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?\b"
+)
+
+
+def _extract_date_from_text(text: str) -> tuple[str | None, str]:
+    """Pull the first recognizable date out of `text`. Returns (iso_date
+    or None, text with the matched date span removed)."""
+    from datetime import date as _date
+
+    today = _date.today()
+
+    # Try ISO / numeric first (less likely to false-match)
+    m = _NUMERIC_DATE_RE.search(text)
+    if m:
+        if m.group(1):  # ISO YYYY-MM-DD
+            year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        else:
+            month, day = int(m.group(4)), int(m.group(5))
+            year_raw = m.group(6)
+            if year_raw:
+                year = int(year_raw) if len(year_raw) == 4 else 2000 + int(year_raw)
+            else:
+                # No year → pick next upcoming occurrence
+                year = today.year
+                try:
+                    candidate = _date(year, month, day)
+                except ValueError:
+                    return None, text
+                if candidate < today:
+                    year += 1
+        try:
+            iso = _date(year, month, day).isoformat()
+            leftover = (text[: m.start()] + text[m.end():]).strip()
+            return iso, leftover
+        except ValueError:
+            pass  # invalid date — fall through
+
+    # Month-name format
+    m = _MONTH_NAME_DATE_RE.search(text)
+    if m:
+        # Day might be in group 1 (before month) or group 3 (after month)
+        day_str = m.group(1) or m.group(3)
+        month_str = m.group(2).lower()
+        year_str = m.group(4)
+        if day_str and month_str in _MONTHS:
+            day = int(day_str)
+            month = _MONTHS[month_str]
+            year = int(year_str) if year_str else today.year
+            try:
+                candidate = _date(year, month, day)
+            except ValueError:
+                return None, text
+            if not year_str and candidate < today:
+                # No year provided + date is past → assume next year
+                candidate = _date(year + 1, month, day)
+            leftover = (text[: m.start()] + text[m.end():]).strip()
+            return candidate.isoformat(), leftover
+
+    return None, text
+
+
+_LABEL_NOISE_WORDS = {
+    "recruitment", "recruit", "outreach", "event", "events", "campaign",
+    "the", "a", "an", "for", "on", "at", "to", "in", "of", "by",
+    "please", "lets", "let's", "i", "we", "want", "need",
+}
+
+
+def _clean_label(text: str) -> str:
+    """Strip filler words from a label string so noisy phrasings like
+    'recruitment event for food drive on' resolve cleanly to a slot
+    labeled 'Food Drive'.
+
+    Removes _LABEL_NOISE_WORDS from anywhere in the text, not just the
+    edges. Returns the joined remainder. If nothing's left, returns ''
+    (router will fall back to date-only resolution).
+    """
+    text = text.strip().strip("?.!,;").strip()
+    if not text:
+        return ""
+    tokens = text.split()
+    cleaned = [t for t in tokens if t.lower() not in _LABEL_NOISE_WORDS]
+    return " ".join(cleaned).strip()
+
+
+async def maybe_handle_start_campaign_directly(
+    ctx: ToolContext,
+    message: str,
+) -> str | None:
+    """Server-side router for unambiguous campaign-start phrases.
+
+    Bypasses the LLM when the admin's message clearly says "plan for X" /
+    "recruit for X" / "fill X" / etc. Extracts the event reference and
+    calls the existing handle_start_recruitment_campaign with whatever
+    parameters are recoverable from the message text. Returns the
+    handler's user-facing message string on success, or None to fall
+    through to the LLM.
+
+    Necessary because the LLM kept hallucinating "Planning started"
+    confirmations without invoking start_recruitment_campaign — same
+    pattern as decision #7's approve/status routers. See design_decisions.md
+    #20.
+    """
+    if not ctx.is_admin or not message:
+        return None
+    text = message.strip().lower()
+    while text and text[-1] in ".!?,;:":
+        text = text[:-1]
+    text = text.strip()
+    if not text:
+        return None
+
+    # Check BARE patterns first ("start planning" with no event ref).
+    # If matched, we never fall through to the LLM — bare planning
+    # intent without an event reference is exactly where the LLM
+    # cascades into hallucination. Intercept and clarify.
+    if any(p.match(text) for p in _BARE_START_CAMPAIGN_PATTERNS):
+        logger.info(
+            "Bare start-planning intent detected (message=%r) — "
+            "looking up upcoming events for disambiguation",
+            message,
+        )
+        from datetime import date as _date, timedelta as _td
+        today = _date.today()
+        horizon = today + _td(days=60)
+        # Look at upcoming one-off events. If exactly one, target it.
+        # If 0, tell admin to create one first. If multiple, ask which.
+        slots_q = await ctx.db.execute(
+            select(SpecificDateSlot)
+            .where(
+                SpecificDateSlot.tenant_id == ctx.tenant.id,
+                SpecificDateSlot.is_active.is_(True),
+                SpecificDateSlot.date >= today,
+                SpecificDateSlot.date <= horizon,
+            )
+            .order_by(SpecificDateSlot.date.asc())
+            .limit(8)
+        )
+        slots = list(slots_q.scalars().all())
+        if not slots:
+            return (
+                "There are no upcoming events to plan recruitment for. "
+                "Create an event first (tell me 'create event for <date> "
+                "<label>'), then ask me to plan recruitment."
+            )
+        if len(slots) == 1:
+            slot = slots[0]
+            logger.info(
+                "Single upcoming event found — auto-targeting %s (%s)",
+                slot.label, slot.date,
+            )
+            raw = await handle_start_recruitment_campaign(
+                ctx,
+                {"event_date": slot.date.isoformat(), "event_label": slot.label},
+            )
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    if parsed.get("ok") and "message" in parsed:
+                        return parsed["message"]
+                    if "error" in parsed:
+                        return f"Couldn't start planning: {parsed['error']}"
+                    if parsed.get("needs_clarification"):
+                        return (
+                            f"I'd plan for {slot.label} on {slot.date.isoformat()}, "
+                            "but the tool needs more info. Try 'plan recruitment "
+                            f"for {slot.label} on {slot.date.isoformat()}'."
+                        )
+            except json.JSONDecodeError:
+                pass
+            return raw
+        # Multiple — ask which
+        lines = "\n".join(
+            f"  • {s.label or 'event'} on {s.date.isoformat()}"
+            for s in slots[:5]
+        )
+        return (
+            "Which event do you want to plan recruitment for?\n"
+            f"{lines}\n"
+            "Reply with 'plan recruitment for <name>' or 'plan recruitment "
+            "for <YYYY-MM-DD>'."
+        )
+
+    subject: str | None = None
+    for pattern in _START_CAMPAIGN_PATTERNS:
+        m = pattern.match(text)
+        if m:
+            subject = m.group(1).strip()
+            break
+
+    if subject is None:
+        return None
+
+    # Extract a date from the subject if present; remainder is the label
+    iso_date, leftover = _extract_date_from_text(subject)
+    label = _clean_label(leftover) if leftover else ""
+    # Treat very short cleaned labels as "no usable label" — single
+    # words like "the" or "of" that survived can poison the ILIKE match.
+    if len(label) < 3:
+        label = ""
+
+    # If we extracted nothing useful (no date AND no label), fall through.
+    # The LLM might handle "plan for it" or similar context-dependent input
+    # better than we can.
+    if not iso_date and not label:
+        return None
+
+    # Two-pass dispatch: first try with whatever args we've got. If that
+    # returns needs_clarification AND we have a date, retry with the
+    # date alone — that's almost always uniquely resolvable.
+    async def _dispatch(tool_input: dict) -> str:
+        logger.info(
+            "Auto-routing start_recruitment_campaign via intent router "
+            "(message=%r, extracted=%s)",
+            message, tool_input,
+        )
+        return await handle_start_recruitment_campaign(ctx, tool_input)
+
+    first_input: dict = {}
+    if iso_date:
+        first_input["event_date"] = iso_date
+    if label:
+        first_input["event_label"] = label
+
+    raw_response = await _dispatch(first_input)
+
+    def _parse(raw: str) -> dict | None:
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    parsed = _parse(raw_response)
+    if parsed is None:
+        return raw_response
+
+    # Date-only fallback when label is the culprit
+    if (
+        parsed.get("needs_clarification")
+        and iso_date
+        and label
+    ):
+        logger.info(
+            "First-pass extraction returned needs_clarification; "
+            "retrying with date-only (label %r was likely too noisy)",
+            label,
+        )
+        raw_response = await _dispatch({"event_date": iso_date})
+        parsed = _parse(raw_response) or parsed
+
+    if parsed.get("ok") and "message" in parsed:
+        return parsed["message"]
+    if "error" in parsed:
+        return f"Couldn't start planning: {parsed['error']}"
+    if parsed.get("needs_clarification"):
+        # Build a useful clarification reply from the handler's data
+        # rather than fall through (which lets the LLM hallucinate).
+        # Note: payloads use `event_date`; older callers / tests may
+        # use `date`. Read both.
+        matches = parsed.get("matches") or []
+        upcoming = parsed.get("upcoming_events") or []
+        if matches and len(matches) > 1:
+            lines = "\n".join(
+                f"  • {m.get('label', 'event')} on "
+                f"{m.get('event_date') or m.get('date') or '?'}"
+                for m in matches[:5]
+            )
+            return (
+                "Which event did you mean? I found multiple matches:\n"
+                f"{lines}\n"
+                "Reply with the date (YYYY-MM-DD) or a more specific name."
+            )
+        if upcoming:
+            lines = "\n".join(
+                f"  • {u.get('label', 'event')} on "
+                f"{u.get('event_date') or u.get('date') or '?'}"
+                for u in upcoming[:5]
+            )
+            return (
+                "I couldn't find a match. Here are the upcoming events:\n"
+                f"{lines}\n"
+                "Reply with the date or label of the one you meant."
+            )
+        return (
+            "I couldn't identify which event you meant. Could you say "
+            "the event date (YYYY-MM-DD) or label?"
+        )
+    return None
+
+
+# ── Server-side intent router: delete a recruitment campaign ──
+# Same playbook as maybe_handle_start_campaign_directly above
+# (decision #21, sibling to #20). DELETE is destructive — we ONLY
+# match the explicit verb "delete" (not "cancel" or "remove" which
+# admins might mean for events, not campaigns).
+
+# Each pattern captures group 1 = the campaign reference subject.
+# All require the explicit "delete" verb at the start.
+_DELETE_CAMPAIGN_PATTERNS = [
+    # Bare-pronoun forms: "delete it", "delete this", "delete that",
+    # "delete this campaign", "delete that one", "delete the campaign".
+    # Subject is empty/pronoun → router falls back to unique-active lookup.
+    _re.compile(r"^(?:please\s+)?delete\s+(?:it|this|that|the\s+one|that\s+one)$"),
+    _re.compile(r"^(?:please\s+)?delete\s+(?:this|that|the)\s+(?:recruitment\s+)?campaign\.?$"),
+    _re.compile(r"^(?:please\s+)?delete\s+(?:this|that|the)\s+(?:recruitment|planning|plan)\.?$"),
+    # "delete (the) X campaign", "delete (the) campaign for X"
+    _re.compile(r"^(?:please\s+)?delete\s+(?:the\s+)?(?:recruitment\s+)?campaign\s+(?:for\s+|on\s+|to\s+)?(.+)$"),
+    _re.compile(r"^(?:please\s+)?delete\s+(?:the\s+)?(.+?)\s+(?:recruitment\s+)?campaign\b.*$"),
+    # "delete planning for X" / "delete the plan for X"
+    _re.compile(r"^(?:please\s+)?delete\s+(?:the\s+)?planning\s+(?:for\s+)?(.+)$"),
+    _re.compile(r"^(?:please\s+)?delete\s+(?:the\s+)?plan\s+(?:for\s+)?(.+)$"),
+    # "delete the recruitment for X"
+    _re.compile(r"^(?:please\s+)?delete\s+(?:the\s+)?recruitment\s+(?:for\s+)?(.+)$"),
+]
+
+# Subjects that mean "the unique active campaign in this tenant" — used
+# by the pronoun fallback. Lowercased, no punctuation.
+_DELETE_PRONOUN_SUBJECTS = {
+    "", "this", "that", "it", "the one", "that one",
+    "this campaign", "that campaign", "the campaign",
+    "this recruitment", "that recruitment", "the recruitment",
+    "this planning", "that planning", "the planning",
+    "this plan", "that plan", "the plan",
+}
+
+
+async def maybe_handle_delete_campaign_directly(
+    ctx: ToolContext,
+    message: str,
+) -> str | None:
+    """Server-side router for unambiguous campaign-delete phrases.
+
+    Bypasses the LLM when the admin's message starts with "delete (the)
+    X campaign" / "delete planning for X" / etc. Extracts the event
+    reference + dispatches to handle_delete_recruitment_campaign.
+    Returns None to fall through to the LLM when:
+      - no trigger phrase matches (admin meant something else)
+      - extraction produces no usable date AND no usable label
+      - handler returns needs_clarification with multiple matches —
+        list them in a clarification reply (not None) so the LLM
+        doesn't get a chance to hallucinate "✓ deleted"
+
+    Trusts the explicit "delete" verb as consent. Confirmation isn't
+    a separate turn — the explicit verb IS the confirmation. If admins
+    accidentally hit this, we can add a two-turn dance later; for now,
+    match the file-deletion pattern (admin types `rm X` = X is gone).
+    """
+    if not ctx.is_admin or not message:
+        return None
+    text = message.strip().lower()
+    while text and text[-1] in ".!?,;:":
+        text = text[:-1]
+    text = text.strip()
+    if not text:
+        return None
+
+    subject: str | None = None
+    for pattern in _DELETE_CAMPAIGN_PATTERNS:
+        m = pattern.match(text)
+        if m:
+            # Bare-pronoun patterns have no capture group (group() with
+            # index 1 raises). Treat those as empty subject so the
+            # pronoun fallback below kicks in.
+            try:
+                subject = m.group(1).strip()
+            except IndexError:
+                subject = ""
+            break
+
+    if subject is None:
+        return None
+
+    # Pronoun fallback: when the admin says "delete it" / "delete this
+    # campaign" / etc. with no specific event reference, look up the
+    # unique non-terminal campaign for this tenant. If exactly one
+    # exists, target it directly. If zero or multiple, ask.
+    if subject in _DELETE_PRONOUN_SUBJECTS:
+        active_q = await ctx.db.execute(
+            select(RecruitmentCampaign)
+            .where(
+                RecruitmentCampaign.tenant_id == ctx.tenant.id,
+                RecruitmentCampaign.status.in_(
+                    [
+                        CampaignStatus.DRAFT,
+                        CampaignStatus.AWAITING_APPROVAL,
+                        CampaignStatus.ACTIVE,
+                        CampaignStatus.PAUSED,
+                    ]
+                ),
+            )
+            .order_by(desc(RecruitmentCampaign.updated_at))
+        )
+        active = list(active_q.scalars().all())
+        if not active:
+            return (
+                "There are no active campaigns to delete. "
+                "Use 'list active campaigns' to see what exists."
+            )
+        if len(active) > 1:
+            lines = []
+            for c in active[:5]:
+                slot = await ctx.db.get(SpecificDateSlot, c.event_slot_id)
+                slot_label = (
+                    slot.label if slot and slot.label else "event"
+                )
+                slot_date = (
+                    slot.date.isoformat() if slot and slot.date else "?"
+                )
+                lines.append(
+                    f"  • {slot_label} on {slot_date} ({c.status.value})"
+                )
+            return (
+                "Multiple active campaigns. Which one?\n"
+                + "\n".join(lines)
+                + "\nReply with the date (YYYY-MM-DD) or the event name."
+            )
+        # Exactly one — dispatch with the explicit campaign_id
+        target = active[0]
+        logger.info(
+            "Auto-routing delete_recruitment_campaign via pronoun "
+            "fallback (message=%r, campaign=%s)",
+            message, target.id,
+        )
+        raw_response = await handle_delete_recruitment_campaign(
+            ctx, {"campaign_id": str(target.id)}
+        )
+        try:
+            parsed = json.loads(raw_response)
+        except json.JSONDecodeError:
+            return raw_response
+        if isinstance(parsed, dict):
+            if parsed.get("ok") and "message" in parsed:
+                return parsed["message"]
+            if "error" in parsed:
+                return f"Couldn't delete: {parsed['error']}"
+        return None
+
+    # Extract a date + label using the same helpers as the start router.
+    iso_date, leftover = _extract_date_from_text(subject)
+    label = _clean_label(leftover) if leftover else ""
+    if len(label) < 3:
+        label = ""
+
+    if not iso_date and not label:
+        return None
+
+    logger.info(
+        "Auto-routing delete_recruitment_campaign via intent router "
+        "(message=%r, date=%s, label=%r)",
+        message, iso_date, label,
+    )
+
+    async def _dispatch(tool_input: dict) -> str:
+        return await handle_delete_recruitment_campaign(ctx, tool_input)
+
+    first_input: dict = {}
+    if iso_date:
+        first_input["event_date"] = iso_date
+    if label:
+        first_input["event_label"] = label
+
+    raw_response = await _dispatch(first_input)
+
+    def _parse(raw: str) -> dict | None:
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    parsed = _parse(raw_response)
+    if parsed is None:
+        return raw_response
+
+    # Date-only retry when label is noisy
+    if (
+        parsed.get("needs_clarification")
+        and iso_date
+        and label
+    ):
+        logger.info(
+            "Delete first-pass returned needs_clarification; retrying "
+            "with date-only (label %r was likely too noisy)",
+            label,
+        )
+        raw_response = await _dispatch({"event_date": iso_date})
+        parsed = _parse(raw_response) or parsed
+
+    if parsed.get("ok") and "message" in parsed:
+        return parsed["message"]
+    if "error" in parsed:
+        return f"Couldn't delete: {parsed['error']}"
+    if parsed.get("needs_clarification"):
+        # Two flavors of clarification:
+        # 1) Multiple campaigns for one slot — show their UUIDs + status
+        # 2) Multiple slot matches — show date + label
+        # Note: the upcoming/matches payloads from _resolve_event_slot
+        # and _list_upcoming_events_payload use `event_date`, not `date`.
+        matches = parsed.get("matches") or []
+        upcoming = parsed.get("upcoming_events") or []
+        if matches and isinstance(matches[0], dict) and "campaign_id" in matches[0]:
+            lines = "\n".join(
+                f"  • {m['campaign_id'][:8]} ({m.get('status', '?')}, created {(m.get('created_at') or '?')[:10]})"
+                for m in matches[:5]
+            )
+            return (
+                "Multiple campaigns match. Which one?\n"
+                f"{lines}\n"
+                "Reply with the first 8 chars of the campaign id (or the full id)."
+            )
+        if matches:
+            lines = "\n".join(
+                f"  • {m.get('label', 'event')} on "
+                f"{m.get('event_date') or m.get('date') or '?'}"
+                for m in matches[:5]
+            )
+            return (
+                "Which event's campaign did you mean? I found multiple matches:\n"
+                f"{lines}\n"
+                "Reply with the date (YYYY-MM-DD) or a more specific name."
+            )
+        if upcoming:
+            lines = "\n".join(
+                f"  • {u.get('label', 'event')} on "
+                f"{u.get('event_date') or u.get('date') or '?'}"
+                for u in upcoming[:5]
+            )
+            return (
+                "I couldn't find a campaign for that event. Upcoming events:\n"
+                f"{lines}\n"
+                "Reply with the date or label of the event whose campaign you want deleted."
+            )
+        return (
+            "I couldn't identify which campaign you meant. Could you say "
+            "the event date (YYYY-MM-DD) or label?"
+        )
+    return None
+
+
+# ── Server-side intent router: list upcoming events ──
+# Backstop for the LLM ignoring the "call manage_specific_date_slot
+# action='list' for event-list queries" rule in the admin preamble.
+# The preamble already shows event labels + dates so the LLM keeps
+# answering from memory instead of fetching volunteer counts. This
+# router fires the tool deterministically when the admin asks for
+# upcoming events.
+
+_LIST_EVENTS_PATTERNS = [
+    _re.compile(r"^(?:please\s+)?(?:list|show|what(?:'s|\s+are)?|tell\s+me\s+about|see)\s+(?:the\s+)?(?:my\s+|all\s+)?upcoming\s+events\.?$"),
+    _re.compile(r"^(?:please\s+)?(?:list|show)\s+(?:the\s+)?(?:my\s+|all\s+)?events\.?$"),
+    _re.compile(r"^(?:what(?:'s|\s+is)|what\s+are)\s+coming\s+up\??\.?$"),
+    _re.compile(r"^(?:what(?:'s|\s+is)?)\s+(?:on\s+)?(?:my\s+|the\s+)?(?:upcoming\s+)?calendar\??\.?$"),
+    _re.compile(r"^(?:what(?:'s|\s+is)?)\s+(?:on\s+)?(?:the\s+)?(?:upcoming\s+)?schedule\??\.?$"),
+    _re.compile(r"^upcoming\s+events\??\.?$"),
+    _re.compile(r"^events\s+coming\s+up\??\.?$"),
+]
+
+
+async def maybe_handle_list_events_directly(
+    ctx: ToolContext,
+    message: str,
+) -> str | None:
+    """Server-side router for unambiguous 'list upcoming events' phrases.
+
+    Bypasses the LLM and calls handle_manage_specific_date_slot
+    action='list' directly, then renders the response into a friendly
+    multi-line text reply. Returns None (fall through to LLM) when no
+    trigger matches.
+
+    Necessary because the admin state preamble (decision #8) lists
+    event labels + dates inline, so the LLM kept answering 'list
+    events' from memory and skipping the full-detail tool — losing
+    recurring events and all volunteer-count data.
+    """
+    if not ctx.is_admin or not message:
+        return None
+    text = message.strip().lower()
+    while text and text[-1] in ".!?,;:":
+        text = text[:-1]
+    text = text.strip()
+    if not text:
+        return None
+
+    matched = any(p.match(text) for p in _LIST_EVENTS_PATTERNS)
+    if not matched:
+        return None
+
+    logger.info(
+        "Auto-routing manage_specific_date_slot action=list via "
+        "intent router (message=%r)",
+        message,
+    )
+
+    # Defer the import to avoid the top-level cycle that already exists
+    # between chat_tools and tool_handlers.
+    from app.modules.tool_handlers import handle_manage_specific_date_slot
+
+    raw = await handle_manage_specific_date_slot(ctx, {"action": "list"})
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
+
+    if isinstance(parsed, dict) and parsed.get("message"):
+        # The "no events configured" message
+        return parsed["message"]
+
+    events = (parsed.get("events") if isinstance(parsed, dict) else None) or []
+    if not events:
+        return "No upcoming events in the next 4 weeks."
+
+    summary = parsed.get("summary", {})
+    horizon = parsed.get("horizon_days", 28)
+
+    # Render — concise, scannable, SMS-friendly. Group implicitly by
+    # date (already sorted by the handler).
+    lines = [
+        f"Upcoming events (next {horizon} days, "
+        f"{summary.get('one_off_count', 0)} one-off + "
+        f"{summary.get('recurring_count', 0)} recurring):",
+        "",
+    ]
+    for ev in events:
+        date_str = ev.get("date", "?")
+        label = ev.get("label") or ("recurring program" if ev.get("kind") == "recurring" else "event")
+        start = ev.get("start", "")
+        end = ev.get("end", "")
+        time_str = f" {start}-{end}" if start and end else (f" {start}" if start else "")
+        loc = ev.get("location") or ""
+        recur = ev.get("recurrence") or ""
+        recur_tag = f" [{recur}]" if recur else ""
+        needed = ev.get("total_needed", 0)
+        signed = ev.get("total_signed_up", 0)
+        more = ev.get("more_required", 0)
+
+        line = f"• {label} — {date_str}{time_str}{recur_tag}"
+        if loc:
+            line += f" @ {loc}"
+        lines.append(line)
+        if needed > 0:
+            lines.append(
+                f"  {signed}/{needed} signed up — {more} more required"
+            )
+
+    lines.append("")
+    lines.append(
+        "Want details on any of these? Tell me the event name or date "
+        "and I'll pull the roster or campaign status."
+    )
+    return "\n".join(lines)
 
 
 # Substring patterns that indicate an unambiguous "what campaigns are
@@ -980,7 +1712,14 @@ async def build_admin_state_preamble(
     )
     pending_n = int(pending_q.scalar() or 0)
 
-    # 3. Upcoming events in next 60 days (id + label + date)
+    # 3. Upcoming events — INCLUDES recurring rules (next occurrence)
+    #    so the LLM doesn't answer "list events" from memory and skip
+    #    the weekly programs. One-off events: 60-day horizon. Recurring:
+    #    one entry per active rule, showing next occurrence date. Both
+    #    are HINTS — for full volunteer counts the LLM should call
+    #    manage_specific_date_slot action='list' (which returns much
+    #    richer per-event detail).
+    from app.models.availability import AvailabilityRule
     cutoff = today + timedelta(days=60)
     ev_q = await db.execute(
         select(SpecificDateSlot)
@@ -993,13 +1732,36 @@ async def build_admin_state_preamble(
         .order_by(SpecificDateSlot.date.asc())
         .limit(8)
     )
-    events = list(ev_q.scalars().all())
-    if events:
-        ev_str = "; ".join(
-            f"{s.label or 'event'} ({s.date.isoformat()})" for s in events
+    one_off_events = list(ev_q.scalars().all())
+
+    rules_q = await db.execute(
+        select(AvailabilityRule).where(
+            AvailabilityRule.tenant_id == tenant.id,
+            AvailabilityRule.is_active.is_(True),
         )
-    else:
-        ev_str = "none"
+    )
+    rules = list(rules_q.scalars().all())
+
+    parts: list[str] = []
+    for s in one_off_events:
+        parts.append(f"{s.label or 'event'} ({s.date.isoformat()})")
+    _day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    for r in rules:
+        days_ahead = (r.day_of_week - today.weekday()) % 7
+        next_date = (today + timedelta(days=days_ahead)).isoformat()
+        recur_str = (
+            f"weekly {_day_names[r.day_of_week]}"
+            if r.day_of_week is not None and 0 <= r.day_of_week < 7
+            else "weekly"
+        )
+        parts.append(
+            f"{r.label or 'recurring program'} (next {next_date}, {recur_str})"
+        )
+    ev_str = "; ".join(parts) if parts else "none"
+    counts_str = (
+        f"{len(one_off_events)} one-off, {len(rules)} recurring"
+        if (one_off_events or rules) else "none"
+    )
 
     return (
         "=== CURRENT SYSTEM STATE — AUTHORITATIVE, OVERRIDES ANY "
@@ -1009,12 +1771,22 @@ async def build_admin_state_preamble(
         f"{phone_line}\n"
         f"- Active recruitment campaigns: {active_n}\n"
         f"- Campaigns awaiting your approval: {pending_n}\n"
-        f"- Upcoming events (next 60 days): {ev_str}\n"
+        f"- Upcoming events ({counts_str}): {ev_str}\n"
         "=== END CURRENT STATE ===\n"
         "If the conversation history says something that contradicts "
         "the above (e.g., \"your account has no SMS configured\" when "
         "the state above says CONFIGURED), the state above wins. Trust "
         "the current state, not the history.\n"
+        "\n"
+        "EVENT-LIST QUERIES: The state above shows event LABELS + DATES "
+        "only. When the admin asks to list events / see what's coming up / "
+        "show upcoming events, you MUST call manage_specific_date_slot "
+        "with action='list' to get the FULL data: per-event volunteer "
+        "summary (total_needed / total_signed_up / more_required), "
+        "per-service breakdown, location, time, recurrence label, etc. "
+        "Do NOT answer event-list questions from the state block above — "
+        "it lacks signups and service detail and the admin specifically "
+        "needs those numbers.\n"
     )
 
 
@@ -1131,6 +1903,67 @@ def _humanize_hours_ago(sent_iso: str) -> str:
     return f"{days} day{'s' if days != 1 else ''} ago"
 
 
+async def _roster_visibility_block(
+    db,
+    contact_id: uuid.UUID | None,
+    tenant_id: uuid.UUID | None = None,
+) -> str | None:
+    """Render the volunteer's saved roster-visibility default — or, when no
+    default is saved, instruct the LLM to ASK ONCE and let book_appointment
+    persist the answer. Returns None when contact_id is None (admin sender).
+
+    The actual prompt bodies (saved + unset variants) live in
+    app/prompts/conversation.py and are UI-editable via the AI Prompts
+    page so admins can adjust wording / interpretation rules per-tenant.
+    This helper just resolves the dynamic substitutions (name, choice
+    labels) and picks which prompt to inject.
+    """
+    if contact_id is None:
+        return None
+    from app.models.contact import Contact as _Contact
+    from app.prompts.conversation import (
+        get_customer_roster_saved_prompt,
+        get_customer_roster_unset_prompt,
+    )
+
+    row = (
+        await db.execute(
+            select(_Contact.default_roster_visibility, _Contact.name).where(
+                _Contact.id == contact_id
+            )
+        )
+    ).first()
+    if row is None:
+        return None
+    saved_visibility, name = row
+    full_name = (name or "").strip() or None
+    first_name = full_name.split()[0] if full_name else None
+    label_map = {
+        "first_name": (
+            f"first name only ({first_name})"
+            if first_name else "first name only"
+        ),
+        "full_name": (
+            f"full name ({full_name})"
+            if full_name else "full name"
+        ),
+        "hidden": "hidden (not shown to other volunteers)",
+    }
+    if saved_visibility in label_map:
+        template = await get_customer_roster_saved_prompt(db, tenant_id)
+        return template.replace("{saved_display}", label_map[saved_visibility])
+
+    # No saved default — instruct the LLM to ask once.
+    template = await get_customer_roster_unset_prompt(db, tenant_id)
+    first_name_choice = f"({first_name})" if first_name else "(default)"
+    full_name_choice = f"({full_name})" if full_name else ""
+    return (
+        template
+        .replace("{first_name_choice}", first_name_choice)
+        .replace("{full_name_choice}", full_name_choice)
+    )
+
+
 async def _pending_reconfirm_block(
     db, tenant: Tenant, contact_id: uuid.UUID
 ) -> str | None:
@@ -1194,6 +2027,15 @@ async def build_customer_state_preamble(
         if reconfirm_block:
             blocks.append(reconfirm_block)
 
+    # Roster-visibility default: surface the volunteer's saved preference (if
+    # any) so the booking-flow rules know whether to ASK or to proceed
+    # silently. Without this block the LLM either re-asks on every booking
+    # (annoying) or auto-defaults to first_name (silent — what this whole
+    # thread is trying to avoid).
+    roster_block = await _roster_visibility_block(db, contact_id, tenant.id)
+    if roster_block:
+        blocks.append(roster_block)
+
     pending = await get_pending_solicitation(db, tenant.id, contact_id)
     if pending is not None:
         sent_ago = _humanize_hours_ago(pending.get("sent_at", ""))
@@ -1219,21 +2061,218 @@ async def build_customer_state_preamble(
             "Rules:\n"
             "1. If the volunteer replies with a YES-style confirmation "
             "(\"yes\", \"sure\", \"ok\", \"sign me up\", \"i'll do it\", "
-            "\"count me in\", etc.) WITHOUT naming a different service, call "
-            f"create_booking with appointment_type_name=\"{svc}\", "
-            f"date=\"{when}\", time=\"{start}\".\n"
+            "\"count me in\", etc.) WITHOUT naming a different service, "
+            "follow the ROSTER VISIBILITY block above: if they already "
+            "have a saved default, send ONE short confirmation reply "
+            f"(\"Great! That's for {svc} at {label} on {when} — booking "
+            "now.\") and call book_appointment WITHOUT share_on_roster "
+            f"(args: appointment_type_name=\"{svc}\", date=\"{when}\", "
+            f"time=\"{start}\"). If they have no saved default, send "
+            "ONE short reply that (a) confirms the service explicitly "
+            "AND (b) asks how they want to appear on the roster, then "
+            "wait for their answer and call book_appointment with the "
+            "chosen share_on_roster. Never book silently and never "
+            "re-ask the roster question when a saved default exists.\n"
             "2. The service name above is authoritative. The outbound SMS "
             "may have referred to the event by its label (which can collide "
             "with a same-named service elsewhere) — IGNORE that ambiguity "
             "and book the service named above.\n"
             "3. If the volunteer explicitly names a DIFFERENT service, "
-            "follow what they said.\n"
+            "follow what they said (still ask about roster visibility "
+            "before booking).\n"
             "4. If the volunteer declines, asks a question, or reports a "
             "scheduling conflict, handle normally — do not force-book.\n"
             "=== END PENDING SOLICITATION ===\n"
         )
 
     return "\n".join(blocks) if blocks else None
+
+
+async def handle_delete_recruitment_campaign(
+    ctx: ToolContext, tool_input: dict
+) -> str:
+    """Delete a recruitment campaign + cascade its waves/signups/reports.
+
+    Destructive. Mirrors api/recruitment.py::delete_campaign:
+      - PLANNED waves get cancelled before delete so the tick loop won't
+        try to re-fire mid-delete
+      - Announcements linked to this campaign's waves get their
+        recruitment_wave_id NULL'd (the FK was created without ON DELETE
+        SET NULL, so cascading would fail otherwise; past SMS audit is
+        preserved this way)
+      - Campaign row hard-deleted; recruitment_signups + recruitment_reports
+        cascade-delete via their own FK ON DELETE CASCADE
+
+    Resolution input shape:
+      - campaign_id (UUID string) — if present, use directly
+      - event_date (YYYY-MM-DD) and/or event_label — to look up the
+        campaign(s) attached to that event slot
+
+    Returns needs_clarification when multiple campaigns match, so the
+    admin (or LLM) can pick.
+    """
+    if not ctx.is_admin:
+        return json.dumps({"error": "Recruitment is an admin-only feature."})
+
+    from app.models.announcement import Announcement
+    from sqlalchemy import update
+
+    # Resolve target campaign(s)
+    target_campaign_id_raw = tool_input.get("campaign_id")
+    target_campaign: RecruitmentCampaign | None = None
+
+    if target_campaign_id_raw:
+        try:
+            cid = uuid.UUID(str(target_campaign_id_raw))
+        except (ValueError, TypeError):
+            return json.dumps({"error": "Invalid campaign_id format."})
+        target_campaign = await ctx.db.get(RecruitmentCampaign, cid)
+        if (
+            target_campaign is None
+            or target_campaign.tenant_id != ctx.tenant.id
+        ):
+            return json.dumps({"error": "Campaign not found."})
+    else:
+        # Resolve via event slot — same _resolve_event_slot helper the
+        # start handler uses, then filter campaigns attached to it.
+        slot, clarification = await _resolve_event_slot(
+            ctx,
+            event_date_str=tool_input.get("event_date"),
+            event_label=tool_input.get("event_label"),
+        )
+        if clarification is not None:
+            return json.dumps(clarification)
+        assert slot is not None
+
+        # All campaigns (any status) for this slot. If multiple exist
+        # for the same slot — unusual but possible if an old completed
+        # campaign coexists with a new active one — ask which.
+        q = await ctx.db.execute(
+            select(RecruitmentCampaign)
+            .where(
+                RecruitmentCampaign.tenant_id == ctx.tenant.id,
+                RecruitmentCampaign.event_slot_id == slot.id,
+            )
+            .order_by(desc(RecruitmentCampaign.updated_at))
+        )
+        campaigns = list(q.scalars().all())
+        if not campaigns:
+            return json.dumps(
+                {
+                    "error": (
+                        f"No recruitment campaign exists for "
+                        f"{slot.label or 'this event'} on "
+                        f"{slot.date.isoformat()}."
+                    )
+                }
+            )
+        if len(campaigns) > 1:
+            return json.dumps(
+                {
+                    "needs_clarification": True,
+                    "matches": [
+                        {
+                            "campaign_id": str(c.id),
+                            "status": c.status.value,
+                            "created_at": c.created_at.isoformat()
+                            if c.created_at else None,
+                        }
+                        for c in campaigns
+                    ],
+                    "message": (
+                        f"Multiple campaigns exist for {slot.label or 'this event'} on "
+                        f"{slot.date.isoformat()}. Reply with the campaign_id "
+                        "of the one you want to delete."
+                    ),
+                }
+            )
+        target_campaign = campaigns[0]
+
+    assert target_campaign is not None
+    campaign = target_campaign
+
+    # Resolve slot label/date for the confirmation message
+    slot = await ctx.db.get(SpecificDateSlot, campaign.event_slot_id)
+    label = (slot.label if slot and slot.label else "the event")
+    date_str = slot.date.isoformat() if slot and slot.date else "?"
+
+    # Step 1: Cancel PLANNED waves so the tick loop won't fire mid-delete
+    if campaign.status in (
+        CampaignStatus.DRAFT,
+        CampaignStatus.AWAITING_APPROVAL,
+        CampaignStatus.ACTIVE,
+        CampaignStatus.PAUSED,
+    ):
+        cancel_res = await ctx.db.execute(
+            RecruitmentWave.__table__.update()
+            .where(
+                RecruitmentWave.campaign_id == campaign.id,
+                RecruitmentWave.status == WaveStatus.PLANNED,
+            )
+            .values(status=WaveStatus.CANCELLED)
+        )
+        cancelled_count = cancel_res.rowcount or 0
+        await ctx.db.flush()
+    else:
+        cancelled_count = 0
+
+    # Step 2: Detach announcements from this campaign's waves
+    wave_ids_q = await ctx.db.execute(
+        select(RecruitmentWave.id).where(
+            RecruitmentWave.campaign_id == campaign.id
+        )
+    )
+    wave_ids = list(wave_ids_q.scalars().all())
+    if wave_ids:
+        await ctx.db.execute(
+            update(Announcement)
+            .where(Announcement.recruitment_wave_id.in_(wave_ids))
+            .values(recruitment_wave_id=None)
+        )
+        await ctx.db.flush()
+
+    # Step 3: Delete campaign (cascades waves + signups + reports)
+    prior_status = campaign.status.value
+    campaign_id_str = str(campaign.id)
+    await ctx.db.delete(campaign)
+    await ctx.db.flush()
+    # Commit so the deletion is visible even if downstream logic
+    # raises later. Same belt-and-suspenders pattern as decision #5.
+    try:
+        await ctx.db.commit()
+    except Exception:
+        logger.exception(
+            "Failed to commit campaign deletion %s", campaign_id_str
+        )
+        return json.dumps(
+            {"error": "Could not delete campaign. Please try again."}
+        )
+
+    logger.info(
+        "Deleted recruitment campaign %s (label=%s date=%s prior_status=%s cancelled_waves=%d total_waves=%d)",
+        campaign_id_str, label, date_str, prior_status,
+        cancelled_count, len(wave_ids),
+    )
+
+    cancel_note = (
+        f" Cancelled {cancelled_count} pending wave{'s' if cancelled_count != 1 else ''}."
+        if cancelled_count else ""
+    )
+    return json.dumps(
+        {
+            "ok": True,
+            "campaign_id": campaign_id_str,
+            "deleted_label": label,
+            "deleted_date": date_str,
+            "prior_status": prior_status,
+            "cancelled_waves": cancelled_count,
+            "total_waves_removed": len(wave_ids),
+            "message": (
+                f"Deleted the {label} campaign on {date_str} "
+                f"(was {prior_status}).{cancel_note} Past SMS history is preserved."
+            ),
+        }
+    )
 
 
 async def handle_recruitment_status(

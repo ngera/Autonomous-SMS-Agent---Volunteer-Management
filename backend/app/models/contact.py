@@ -55,6 +55,15 @@ class Contact(Base):
     weekly_hours: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     unavailable_dates: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     reminder_preference_days: Mapped[int] = mapped_column(Integer, default=7)
+    # Per-contact default for how their name shows on the volunteer roster.
+    # Mirrors the values of app.models.booking.RosterVisibility (stored as a
+    # short string so we don't need a Postgres enum migration to add this).
+    # NULL means "not yet chosen" — book_appointment falls back to first_name
+    # in that case AND asks the volunteer for their preference. Once set, the
+    # answer carries forward to all future bookings so they aren't re-asked.
+    default_roster_visibility: Mapped[str | None] = mapped_column(
+        String(20), nullable=True
+    )
     preferences: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     memory_updated_at: Mapped[DateTime | None] = mapped_column(

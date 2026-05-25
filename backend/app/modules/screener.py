@@ -62,10 +62,79 @@ from app.prompts.screener import SCREENER_SYSTEM_PROMPT, get_screener_prompt
 from app.services.token_usage import record_token_usage
 
 
-def stage1_rule_based(message: str) -> ScreenerResult | None:
+# Patterns that indicate the assistant explicitly invited an open-ended
+# reply on the previous turn — used by the contextual-reply bypass. If
+# the most recent assistant turn ends with "?" OR contains one of these
+# phrases, a brief volunteer reply (even "anything", "whatever", "idk")
+# is almost certainly a contextual answer and must NOT be IRRELEVANT-struck.
+# Lowercased substring match.
+_ASSISTANT_QUESTION_PHRASES = (
+    "let me know",
+    "tell me",
+    "what are you",
+    "what would you",
+    "what's your",
+    "whats your",
+    "what kind",
+    "what time",
+    "what day",
+    "what date",
+    "what works",
+    "which ",
+    "would you like",
+    "are you interested",
+    "are you available",
+    "interested in",
+    "any preference",
+    "do you prefer",
+)
+
+# Profanity / slur indicators that override the contextual-reply bypass —
+# we never want a short profanity to slip through just because the bot
+# asked a question on the previous turn. Stage 2 still owns the nuanced
+# call; this is a narrow blocklist for the bypass path only.
+_BYPASS_BLOCKLIST = (
+    "fuck", "shit", "bitch", "asshole", "cunt", "dick", "piss off",
+    "screw you", "go to hell", "fck", "f u", "fu ",
+)
+
+
+def _assistant_invited_open_reply(history: list[dict] | None) -> bool:
+    """True if the most recent assistant message looks like an invitation
+    for the volunteer to reply with anything they want — a question, an
+    open prompt, or a phrase that solicits input. Used to safely bypass
+    Haiku for short replies that would otherwise risk a false IRRELEVANT.
+    """
+    if not history:
+        return False
+    # Walk backward to find the most recent assistant message
+    for msg in reversed(history):
+        if msg.get("role") != "assistant":
+            continue
+        content = (msg.get("content") or "").strip().lower()
+        if not content:
+            return False
+        # Strip trailing emoji/whitespace before the `?` check — assistants
+        # often append a smile after the question mark.
+        stripped = content.rstrip(" 😊🙂👍✨💪🎉.,!").rstrip()
+        if stripped.endswith("?"):
+            return True
+        return any(p in content for p in _ASSISTANT_QUESTION_PHRASES)
+    return False
+
+
+def stage1_rule_based(
+    message: str,
+    conversation_history: list[dict] | None = None,
+) -> ScreenerResult | None:
     """Stage 1: Rule-based screening (zero cost).
 
     Returns a ScreenerResult if a rule matches, None to pass to Stage 2.
+
+    ``conversation_history`` enables the contextual-reply bypass: when
+    the most recent assistant turn invited an open reply, any short
+    volunteer message (that isn't profanity or prompt-injection) is
+    classified RELEVANT here so it can't be misjudged by Haiku.
     """
     text = message.strip()
     text_lower = text.lower()
@@ -100,10 +169,31 @@ def stage1_rule_based(message: str) -> ScreenerResult | None:
                 method=ScreenerMethod.RULE_BASED,
             )
 
-    # Prompt injection patterns
+    # Prompt injection patterns — checked BEFORE the contextual bypass so
+    # a jailbreak attempt right after an assistant question still trips.
     if INJECTION_PATTERNS.search(text):
         return ScreenerResult(
             classification=Classification.ABUSIVE,
+            method=ScreenerMethod.RULE_BASED,
+        )
+
+    # Contextual-reply bypass: brief reply right after the assistant
+    # invited open input → RELEVANT without a Haiku call. Protects against
+    # the failure mode where a volunteer replies "anything"/"whatever"/
+    # "you pick" and Haiku misclassifies it as IRRELEVANT because the
+    # word in isolation doesn't look booking-related.
+    #
+    # Bounds: ≤ 30 chars (short reply), no profanity (would otherwise
+    # need ABUSIVE judgment from Stage 2), prior assistant turn solicited
+    # input. Otherwise fall through to Stage 2 as before.
+    if (
+        len(text) <= 30
+        and conversation_history
+        and _assistant_invited_open_reply(conversation_history)
+        and not any(b in text_lower for b in _BYPASS_BLOCKLIST)
+    ):
+        return ScreenerResult(
+            classification=Classification.RELEVANT,
             method=ScreenerMethod.RULE_BASED,
         )
 
@@ -216,8 +306,9 @@ async def screen_message(
     conversation_history: list[dict] | None = None,
 ) -> ScreenerResult:
     """Run the full two-stage screening pipeline."""
-    # Stage 1
-    result = stage1_rule_based(message)
+    # Stage 1 — pass history so the contextual-reply bypass can fire
+    # when the assistant just invited an open answer.
+    result = stage1_rule_based(message, conversation_history=conversation_history)
     if result is not None:
         return result
 

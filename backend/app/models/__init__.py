@@ -1,5 +1,6 @@
 # Re-export all models so Alembic can discover them via Base.metadata
 from app.models.admin_user import AdminUser
+from app.models.agent_call_log import AgentCallLog
 from app.models.announcement import Announcement
 from app.models.appointment_type import AppointmentType
 from app.models.availability import AvailabilityRule
@@ -28,6 +29,7 @@ from app.models.token_usage import TokenUsage
 
 __all__ = [
     "AdminUser",
+    "AgentCallLog",
     "Announcement",
     "AppointmentType",
     "AvailabilityRule",

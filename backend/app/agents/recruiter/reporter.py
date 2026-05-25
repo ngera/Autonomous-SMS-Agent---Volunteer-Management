@@ -51,15 +51,10 @@ from app.services.token_usage import record_token_usage
 
 logger = get_logger("recruiter.reporter")
 
-REPORTER_SYSTEM_PROMPT = """\
-You are writing a 2–3 sentence daily SMS update for an admin who is using a \
-volunteer recruitment agent to staff an event. Use ONLY the numbers in the \
-payload — do not invent. Keep the entire message under 300 characters so it \
-fits in one SMS. Lead with how the event is tracking (X% filled, services \
-short by N), mention the most recent wave activity, and finish with the \
-next action if anything is due. Be plain and concrete; do not use emojis or \
-marketing language.
-"""
+# Default reporter prompt lives in app.prompts.conversation
+# (RECRUITMENT_REPORTER_PROMPT, exposed as the editable
+# `prompt_recruitment_reporter` setting on the AI Prompts page).
+# Fetched per-tenant via get_recruitment_reporter_prompt below.
 
 
 async def _build_report_payload(
@@ -163,9 +158,17 @@ async def _build_report_payload(
 
 
 async def _generate_narrative(
-    payload: dict, tenant: Tenant, api_key: str, model: str
+    payload: dict,
+    tenant: Tenant,
+    api_key: str,
+    model: str,
+    system_prompt: str,
 ) -> tuple[str, int, int]:
-    """One short Anthropic call. Returns (text, input_tokens, output_tokens)."""
+    """One short Anthropic call. Returns (text, input_tokens, output_tokens).
+
+    ``system_prompt`` is the (per-tenant editable) reporter prompt fetched
+    by the caller — see app.prompts.conversation.get_recruitment_reporter_prompt.
+    """
     user_message = (
         "Write the SMS update for this campaign payload:\n"
         + json.dumps(payload, default=str)
@@ -173,7 +176,7 @@ async def _generate_narrative(
     body = {
         "model": model,
         "max_tokens": 200,
-        "system": REPORTER_SYSTEM_PROMPT,
+        "system": system_prompt,
         "messages": [{"role": "user", "content": user_message}],
     }
     headers = {
@@ -256,8 +259,10 @@ async def _report_one_campaign(
 
     model = await get_ai_model(db, tenant)
     api_key = tenant.anthropic_api_key or settings.anthropic_api_key
+    from app.prompts.conversation import get_recruitment_reporter_prompt
+    system_prompt = await get_recruitment_reporter_prompt(db, tenant.id)
     narrative, in_tok, out_tok = await _generate_narrative(
-        payload, tenant, api_key, model
+        payload, tenant, api_key, model, system_prompt
     )
 
     delivered = False

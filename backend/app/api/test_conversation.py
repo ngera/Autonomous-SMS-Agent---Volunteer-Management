@@ -299,13 +299,54 @@ async def test_conversation(
             detail="No Anthropic API key configured. Set it in tenant settings or environment.",
         )
 
+    # Helper closure: persist this turn (user message + reply) so the
+    # Multi-Volunteer Test panel can rehydrate the admin chat on
+    # reload. Without this, server-side intent routers return early
+    # and skip the conversation-save block at the bottom of this
+    # function — the user sees nothing on reload because nothing was
+    # persisted. The block at line ~412 does the same work for the
+    # LLM-completion path; we extract it here for the router paths.
+    async def _persist_router_turn(reply_text: str) -> None:
+        if not body.save_conversation or body.use_test_user:
+            return
+        try:
+            from app.modules.conversation import trim_message_history
+            now_router = datetime.now(timezone.utc)
+            now_router_iso = now_router.isoformat()
+            full_history = list(body.history)
+            full_history.append(
+                {"role": "user", "content": body.message, "timestamp": now_router_iso}
+            )
+            full_history.append(
+                {"role": "assistant", "content": reply_text, "timestamp": now_router_iso}
+            )
+            conv = Conversation(
+                tenant_id=tenant_id,
+                contact_id=contact_id if not is_admin else None,
+                contact_phone=contact_phone,
+                message_history=trim_message_history(full_history),
+                status=ConversationStatus.ACTIVE,
+                sender_type="admin" if is_admin else "customer",
+                last_message_at=now_router,
+            )
+            db.add(conv)
+            await db.flush()
+        except Exception as exc:
+            logger.error("Failed to save router-routed test conversation: %s", exc)
+
     # Server-side intent routers for recruitment intents. The LLM has
-    # consistently failed to call approve_recruitment_campaign and
-    # recruitment_status despite explicit prompt rules; these
-    # short-circuits unambiguous phrases and skip the LLM round-trip.
+    # consistently failed to call approve_recruitment_campaign,
+    # recruitment_status, start_recruitment_campaign,
+    # delete_recruitment_campaign, AND manage_specific_date_slot/list
+    # despite explicit prompt rules; these short-circuit unambiguous
+    # phrases and skip the LLM round-trip. See design_decisions.md
+    # #7, #20, #21.
     if is_admin:
         from app.agents.recruiter.chat_tools import (
             maybe_handle_approval_directly,
+            maybe_handle_delete_campaign_directly,
+            maybe_handle_list_events_directly,
+            maybe_handle_start_campaign_directly,
             maybe_handle_status_directly,
         )
         from app.models.admin_user import AdminUser as _AdminUser
@@ -314,6 +355,7 @@ async def test_conversation(
             db, tenant, body.message, admin_user
         )
         if approval_reply is not None:
+            await _persist_router_turn(approval_reply)
             return TestConversationResponse(
                 reply=approval_reply,
                 tool_calls=[
@@ -328,12 +370,84 @@ async def test_conversation(
             db, tenant, body.message
         )
         if status_reply is not None:
+            await _persist_router_turn(status_reply)
             return TestConversationResponse(
                 reply=status_reply,
                 tool_calls=[
                     ToolCallInfo(
                         tool="recruitment_status",
                         input={},
+                        output='{"ok": true, "auto_routed": true}',
+                    )
+                ],
+            )
+        # List-events router — fires before delete/start to catch
+        # "list/show upcoming events" phrasings that would otherwise
+        # be lost to the LLM answering from the preamble.
+        list_reply = await maybe_handle_list_events_directly(
+            ctx, body.message
+        )
+        if list_reply is not None:
+            await _persist_router_turn(list_reply)
+            return TestConversationResponse(
+                reply=list_reply,
+                tool_calls=[
+                    ToolCallInfo(
+                        tool="manage_specific_date_slot",
+                        input={"action": "list", "auto_routed": True},
+                        output='{"ok": true, "auto_routed": true}',
+                    )
+                ],
+            )
+        # Delete is checked BEFORE start because some delete phrasings
+        # (e.g., "delete the recruitment for X") could be mis-parsed by
+        # the start router's softer "recruit for X" pattern.
+        delete_reply = await maybe_handle_delete_campaign_directly(
+            ctx, body.message
+        )
+        if delete_reply is not None:
+            await _persist_router_turn(delete_reply)
+            return TestConversationResponse(
+                reply=delete_reply,
+                tool_calls=[
+                    ToolCallInfo(
+                        tool="delete_recruitment_campaign",
+                        input={"auto_routed": True},
+                        output='{"ok": true, "auto_routed": true}',
+                    )
+                ],
+            )
+        start_reply = await maybe_handle_start_campaign_directly(
+            ctx, body.message
+        )
+        if start_reply is not None:
+            await _persist_router_turn(start_reply)
+            return TestConversationResponse(
+                reply=start_reply,
+                tool_calls=[
+                    ToolCallInfo(
+                        tool="start_recruitment_campaign",
+                        input={"auto_routed": True},
+                        output='{"ok": true, "auto_routed": true}',
+                    )
+                ],
+            )
+        # Tier 2: Haiku intent classifier. Catches novel phrasings
+        # the regex didn't recognize. See design_decisions.md #22.
+        from app.agents.orchestrator.intent_dispatch import (
+            maybe_handle_via_classifier,
+        )
+        classifier_reply = await maybe_handle_via_classifier(
+            db, tenant, body.message, admin_user, ctx
+        )
+        if classifier_reply is not None:
+            await _persist_router_turn(classifier_reply)
+            return TestConversationResponse(
+                reply=classifier_reply,
+                tool_calls=[
+                    ToolCallInfo(
+                        tool="intent_classifier",
+                        input={"auto_routed": True, "tier": "haiku_classifier"},
                         output='{"ok": true, "auto_routed": true}',
                     )
                 ],

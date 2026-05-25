@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PageHeader } from "@/components/shared/page-header";
 import { Pagination } from "@/components/shared/pagination";
 import { SearchInput } from "@/components/shared/search-input";
@@ -8,6 +9,7 @@ import type { ConversationResponse } from "@/types/api";
 import { useConversations } from "../hooks/use-conversations";
 import { ConversationsList } from "../components/conversations-list";
 import { ConversationMessageViewer } from "../components/conversation-message-viewer";
+import { ConversationTraceTab } from "../components/conversation-trace-tab";
 
 export function ConversationsPage() {
   const [search, setSearch] = useState("");
@@ -37,7 +39,18 @@ export function ConversationsPage() {
           <ArrowLeft className="mr-1 h-3 w-3" />
           Back to list
         </Button>
-        <ConversationMessageViewer conversation={selected} />
+        <Tabs defaultValue="messages">
+          <TabsList>
+            <TabsTrigger value="messages">Messages</TabsTrigger>
+            <TabsTrigger value="trace">Agent trace</TabsTrigger>
+          </TabsList>
+          <TabsContent value="messages" className="mt-4">
+            <ConversationMessageViewer conversation={selected} />
+          </TabsContent>
+          <TabsContent value="trace" className="mt-4">
+            <ConversationTraceTab conversationId={selected.id} />
+          </TabsContent>
+        </Tabs>
       </div>
     );
   }

@@ -51,6 +51,36 @@ function fillSummary(fill: Record<string, FillPerService>): string {
     .join(", ");
 }
 
+// Per-campaign roll-ups across all services. max_allowed=null on a service
+// means "no ceiling" — surface that as "∞" rather than silently treating
+// it as 0 (which would mis-display campaigns that have any uncapped service
+// as having a smaller max than min).
+function campaignTotals(fill: Record<string, FillPerService>) {
+  const entries = Object.values(fill);
+  let minTotal = 0;
+  let maxTotal = 0;
+  let hasUncapped = false;
+  let signedTotal = 0;
+  for (const e of entries) {
+    const min = e.min_required ?? e.target ?? 0;
+    minTotal += min;
+    signedTotal += e.signups ?? 0;
+    if (e.max_allowed == null) hasUncapped = true;
+    else maxTotal += e.max_allowed;
+  }
+  const remainingMin = Math.max(0, minTotal - signedTotal);
+  return {
+    minTotal,
+    maxLabel: hasUncapped
+      ? entries.length === 1
+        ? "∞"
+        : `${maxTotal}+∞`
+      : maxTotal.toString(),
+    signedTotal,
+    remainingMin,
+  };
+}
+
 function AggregateStrip({
   active,
   needed,
@@ -223,12 +253,18 @@ export default function CampaignsListPage() {
                   <TableHead>Days</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Fill</TableHead>
+                  <TableHead className="text-right" title="Sum of min_required across all services in this campaign">Min</TableHead>
+                  <TableHead className="text-right" title="Sum of max_allowed across all services (∞ when any service is uncapped)">Max</TableHead>
+                  <TableHead className="text-right" title="Total volunteers signed up across all services">Signed up</TableHead>
+                  <TableHead className="text-right" title="Volunteers still needed to hit the minimum across all services">Need (min)</TableHead>
                   <TableHead>Last sent</TableHead>
                   <TableHead>Next wave</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {items.map((c: CampaignListItem) => (
+                {items.map((c: CampaignListItem) => {
+                  const totals = campaignTotals(c.fill_per_service);
+                  return (
                   <TableRow key={c.id} className="cursor-pointer">
                     <TableCell>
                       <Link
@@ -271,6 +307,23 @@ export default function CampaignsListPage() {
                         {fillSummary(c.fill_per_service)}
                       </div>
                     </TableCell>
+                    <TableCell className="text-right tabular-nums text-sm">
+                      {totals.minTotal}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums text-sm">
+                      {totals.maxLabel}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums text-sm">
+                      {totals.signedTotal}
+                    </TableCell>
+                    <TableCell
+                      className={
+                        "text-right tabular-nums text-sm " +
+                        (totals.remainingMin > 0 ? "font-medium text-amber-700 dark:text-amber-400" : "text-muted-foreground")
+                      }
+                    >
+                      {totals.remainingMin}
+                    </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
                       {c.last_wave_sent_at
                         ? format(parseISO(c.last_wave_sent_at), "MMM d HH:mm")
@@ -282,7 +335,8 @@ export default function CampaignsListPage() {
                         : "—"}
                     </TableCell>
                   </TableRow>
-                ))}
+                  );
+                })}
               </TableBody>
             </Table>
           )}

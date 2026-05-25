@@ -9,6 +9,7 @@ import { ProtectedRoute } from "@/components/guards/protected-route";
 import { RoleGate } from "@/components/guards/role-gate";
 import { AppLayout } from "@/components/layout/app-layout";
 import { LoginPage } from "@/pages/login-page";
+import { LandingPage } from "@/features/marketing/pages/landing-page";
 import { DashboardPage } from "@/features/dashboard/pages/dashboard-page";
 import { TenantDashboardPage } from "@/features/tenants/pages/tenant-dashboard-page";
 import { BookingsPage } from "@/features/bookings/pages/bookings-page";
@@ -35,21 +36,15 @@ import { TenantsPage } from "@/features/tenants/pages/tenants-page";
 import { TenantDetailPage } from "@/features/tenants/pages/tenant-detail-page";
 import { AdminRole } from "@/types/enums";
 
-function DefaultRedirect() {
-  // Dashboard is the default landing page for every role. Super-admins can
-  // still reach the tenant dashboard from the Monitoring section.
-  return <Navigate to="/dashboard" replace />;
-}
-
 export default function App() {
   return (
     <BrowserRouter>
       <Routes>
+        <Route path="/" element={<LandingPage />} />
         <Route path="/login" element={<LoginPage />} />
 
         <Route element={<ProtectedRoute />}>
           <Route element={<AppLayout />}>
-            <Route path="/" element={<DefaultRedirect />} />
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route
               path="/tenant-dashboard"
