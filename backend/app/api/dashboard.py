@@ -865,11 +865,13 @@ async def _alerts_at_risk_events(db, tenant, now) -> list[AlertItem]:
         )
         booked = int(booked_q.scalar() or 0)
         # Use _get_service_limits to get capacity for the slot's services.
-        services = (slot.service_config or {}).get("services", []) or []
+        # service_config is a list of {appointment_type_id, min_required, max_allowed}
+        # — not a dict with a "services" key. Same convention as
+        # app.services.availability._get_service_limits.
         capacity = 0
-        for svc in services:
+        for svc in (slot.service_config or []):
             try:
-                capacity += int(svc.get("max", 0) or 0)
+                capacity += int(svc.get("max_allowed", 0) or 0)
             except (TypeError, ValueError):
                 continue
         if capacity == 0:
@@ -1241,11 +1243,13 @@ async def get_planning_events(
 
     out: list[PlanningEvent] = []
     for slot in slots:
-        services = (slot.service_config or {}).get("services", []) or []
+        # service_config is a list of {appointment_type_id, min_required, max_allowed}
+        # — not a dict with a "services" key. Same convention as
+        # app.services.availability._get_service_limits.
         capacity = 0
-        for svc in services:
+        for svc in (slot.service_config or []):
             try:
-                capacity += int(svc.get("max", 0) or 0)
+                capacity += int(svc.get("max_allowed", 0) or 0)
             except (TypeError, ValueError):
                 continue
         booked = booked_by_slot.get(slot.id, 0)
@@ -1381,8 +1385,10 @@ async def get_recommendations(
             continue
         if slot.id in campaign_by_slot:
             continue
-        services = (slot.service_config or {}).get("services", []) or []
-        capacity = sum(int(s.get("max", 0) or 0) for s in services)
+        capacity = sum(
+            int(s.get("max_allowed", 0) or 0)
+            for s in (slot.service_config or [])
+        )
         if capacity == 0:
             continue
         booked = booked_by_slot.get(slot.id, 0)
@@ -1417,8 +1423,10 @@ async def get_recommendations(
             slot = next((s for s in slots if s.id == camp.event_slot_id), None)
             if slot is None:
                 continue
-            services = (slot.service_config or {}).get("services", []) or []
-            capacity = sum(int(s.get("max", 0) or 0) for s in services)
+            capacity = sum(
+                int(s.get("max_allowed", 0) or 0)
+                for s in (slot.service_config or [])
+            )
             if capacity == 0:
                 continue
             booked = booked_by_slot.get(slot.id, 0)
