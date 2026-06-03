@@ -976,14 +976,23 @@ async def list_alerts(
             if row.snoozed_until and row.snoozed_until > now:
                 suppressed.add(row.alert_id)
 
-    buckets = await asyncio.gather(
-        _alerts_service_switches(db, tenant, now),
-        _alerts_pending_reviews(db, tenant, now),
-        _alerts_unreviewed_suspensions(db, tenant, now),
-        _alerts_walkup_candidates(db, tenant, now),
-        _alerts_at_risk_events(db, tenant, now),
-    )
-    items: list[AlertItem] = [it for bucket in buckets for it in bucket]
+    # Run sequentially, NOT via asyncio.gather. SQLAlchemy AsyncSession
+    # is not concurrency-safe — running multiple await db.execute() calls
+    # concurrently on the same session corrupts the underlying asyncpg
+    # connection's transaction state, the connection goes back to the
+    # pool wedged, and every subsequent request that grabs it fails
+    # with "cannot use Connection.transaction() in a manually started
+    # transaction". Sequential is the right pattern here; the dashboard
+    # alerts already polls every 60s, not on the critical path.
+    items: list[AlertItem] = []
+    for fn in (
+        _alerts_service_switches,
+        _alerts_pending_reviews,
+        _alerts_unreviewed_suspensions,
+        _alerts_walkup_candidates,
+        _alerts_at_risk_events,
+    ):
+        items.extend(await fn(db, tenant, now))
     items.extend(_alerts_dummy_issue_reports(now))
 
     items = [a for a in items if a.id not in suppressed]
