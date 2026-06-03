@@ -126,7 +126,10 @@ async def bulk_delete_conversations(
     result = await db.execute(
         sql_delete(Conversation).where(Conversation.id.in_(target_ids))
     )
-    await db.commit()
+    # No manual commit — get_db commits at end-of-request. Manual commits
+    # leave the asyncpg connection in a state SQLAlchemy doesn't track
+    # cleanly and can trigger "cannot use Connection.transaction() in a
+    # manually started transaction" on the next request.
 
     return BulkDeleteResponse(deleted_count=result.rowcount or len(target_ids))
 

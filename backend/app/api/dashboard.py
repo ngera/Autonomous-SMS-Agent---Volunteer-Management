@@ -1100,7 +1100,9 @@ async def upsert_alert_state(
     )
     result = await db.execute(stmt)
     row = result.scalar_one()
-    await db.commit()
+    # No manual commit — the get_db dependency commits at end-of-request.
+    # Calling commit() here would leave the asyncpg connection in a state
+    # the SQLAlchemy session doesn't track cleanly.
     return AlertStateRecord(
         alert_id=row.alert_id,
         state=row.state,
@@ -1129,7 +1131,7 @@ async def clear_alert_state(
             DashboardAlertState.alert_id == alert_id,
         )
     )
-    await db.commit()
+    # No manual commit — the get_db dependency handles it.
     return {"ok": True}
 
 
