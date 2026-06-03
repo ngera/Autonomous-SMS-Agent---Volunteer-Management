@@ -809,15 +809,20 @@ async def _alerts_unreviewed_suspensions(db, tenant, now) -> list[AlertItem]:
 
 
 async def _alerts_walkup_candidates(db, tenant, now) -> list[AlertItem]:
-    from app.models.volunteer_candidate import VolunteerCandidate
+    from app.models.volunteer_candidate import (
+        CANDIDATE_STATUS_NEW,
+        VolunteerCandidate,
+    )
 
+    # "Awaiting decision" = status NEW. INVITED and DISMISSED are terminal
+    # and shouldn't surface as alerts.
     result = await db.execute(
         select(VolunteerCandidate)
         .where(
             VolunteerCandidate.tenant_id == tenant.id,
-            VolunteerCandidate.decisioned_at.is_(None),
+            VolunteerCandidate.status == CANDIDATE_STATUS_NEW,
         )
-        .order_by(VolunteerCandidate.created_at.desc())
+        .order_by(VolunteerCandidate.first_seen_at.desc())
         .limit(20)
     )
     rows = result.scalars().all()
@@ -832,10 +837,10 @@ async def _alerts_walkup_candidates(db, tenant, now) -> list[AlertItem]:
             if len(rows) == 1
             else f"{len(rows)} walk-up candidates awaiting decision"
         ),
-        body="Unknown phones that texted HERE. Promote or dismiss.",
+        body="Unknown phones that texted in. Promote or dismiss.",
         cta_label="Triage candidates",
         cta_url="/candidates",
-        age_seconds=_age(now, rows[0].created_at),
+        age_seconds=_age(now, rows[0].first_seen_at),
         icon="UserPlus",
         accent="blue",
         context={"count": len(rows)},
