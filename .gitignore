@@ -41,3 +41,12 @@ frontend/dist/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Office app lock files — auto-created when a .docx is open in Word.
+**/~$*
+
+# Unrelated sibling project that lives next to this repo locally.
+AI-Engineering-Coach/
+
+# VS Code extension packages — not part of this codebase.
+*.vsix
