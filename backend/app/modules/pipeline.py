@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.models.admin_user import AdminUser
+from app.models.admin_user import AdminRole, AdminUser
 from app.models.contact import Contact, ContactStatus
 from app.models.contact_consent import (
     ContactConsent,
@@ -245,12 +245,74 @@ async def process_inbound_message(
     if tenant_id:
         tenant = (await db.execute(select(Tenant).where(Tenant.id == tenant_id))).scalar_one()
 
-    # Step 5: Lookup or create contact
+    # ── Phase 1 routing matrix (Row 6 Edge E) ─────────────────────
+    # SUPER_ADMIN cross-tenant detection runs BEFORE the standard
+    # tenant-scoped admin lookup. SUPER_ADMINs get a rejection reply
+    # pointing them at the dashboard.
+    super_admin_result = await db.execute(
+        select(AdminUser).where(
+            AdminUser.phone == from_phone,
+            AdminUser.role == AdminRole.SUPER_ADMIN,
+            AdminUser.is_active.is_(True),
+        )
+    )
+    super_admin_user = super_admin_result.scalar_one_or_none()
+    if super_admin_user and tenant:
+        from app.agents.orchestrator.admin_dispatch import (
+            super_admin_phone_rejection,
+        )
+        # Reuse super_admin_user but with tenant context (for prompt lookup).
+        super_admin_user.tenant_id = tenant.id  # ephemeral, not persisted
+        reply = await super_admin_phone_rejection(db, admin=super_admin_user)
+        await send_sms(to=from_phone, body=reply, tenant=tenant)
+        return
+
+    # ── Phase 1 routing matrix (Row 4/5) ──────────────────────────
+    # If the phone is unknown (no Contact match) AND not a tenant admin,
+    # route to the candidate path BEFORE _get_or_create_contact would
+    # silently create a UNCONTACTED stub.
+    existing_contact = None
+    if tenant_id:
+        existing_result = await db.execute(
+            select(Contact).where(
+                Contact.tenant_id == tenant_id,
+                Contact.phone == from_phone,
+            )
+        )
+        existing_contact = existing_result.scalar_one_or_none()
+
+    existing_admin = await _check_admin_phone(db, from_phone, tenant_id)
+
+    if existing_contact is None and existing_admin is None and tenant_id:
+        from app.services.candidate_pipeline import handle_unknown_phone_inbound
+        await handle_unknown_phone_inbound(
+            db,
+            phone=from_phone,
+            message_body=message_body,
+            tenant_id=tenant_id,
+        )
+        await db.flush()
+        return
+
+    # Step 5: Lookup or create contact (now only fires for existing Contacts
+    # or the edge case where tenant_id is None).
     contact = await _get_or_create_contact(db, from_phone, tenant_id=tenant_id)
 
     # Step 5.5: Check if sender is an admin
-    admin_user = await _check_admin_phone(db, from_phone, tenant_id)
+    admin_user = existing_admin or await _check_admin_phone(db, from_phone, tenant_id)
     if admin_user and tenant:
+        # Phase 1 step 4: try admin SMS commands first; fall through
+        # to existing tool_use admin pipeline if no command matched.
+        from app.agents.orchestrator.admin_dispatch import (
+            maybe_handle_admin_command,
+        )
+        cmd_reply = await maybe_handle_admin_command(
+            db, admin=admin_user, message_body=message_body
+        )
+        if cmd_reply is not None:
+            await send_sms(to=from_phone, body=cmd_reply, tenant=tenant)
+            await db.flush()
+            return
         await _process_admin_message(db, from_phone, message_body, tenant, admin_user)
         return
 
@@ -319,6 +381,71 @@ async def process_inbound_message(
 
     # Steps 12-13: Load/create conversation
     conversation = active_conversation or await _get_or_create_conversation(db, from_phone, tenant_id=tenant_id, contact_id=contact.id)
+
+    # ── Phase 1: Engagement intent routers (Row 1 — check in / check out) ──
+    # Server-side short-circuit per design-decision #7. These check the
+    # message for HERE/DONE/SWITCH/ALSO and apply state mutations
+    # directly, bypassing the LLM. Pending-intent disambiguation
+    # (multi-booking picker, re-entry confirmation) also handled here.
+    from app.agents.engagement.intents import (
+        maybe_handle_here_check_in,
+        maybe_handle_check_out,
+        maybe_handle_reentry,
+        maybe_handle_service_switch,
+        maybe_handle_service_add,
+    )
+
+    # Re-entry handler runs first when a pending intent exists for re-entry.
+    engagement_reply = await maybe_handle_reentry(
+        db, contact=contact, conversation=conversation, message_body=message_body
+    )
+    # Phase 3 SWITCH/ALSO routed before HERE/DONE so e.g. "switch to cooking"
+    # doesn't accidentally match the "here" word inside "where".
+    if engagement_reply is None:
+        engagement_reply = await maybe_handle_service_switch(
+            db, contact=contact, conversation=conversation, message_body=message_body
+        )
+    if engagement_reply is None:
+        engagement_reply = await maybe_handle_service_add(
+            db, contact=contact, conversation=conversation, message_body=message_body
+        )
+    if engagement_reply is None:
+        engagement_reply = await maybe_handle_here_check_in(
+            db, contact=contact, conversation=conversation, message_body=message_body
+        )
+    if engagement_reply is None:
+        engagement_reply = await maybe_handle_check_out(
+            db, contact=contact, conversation=conversation, message_body=message_body
+        )
+    # Tier 2 — Haiku intent classifier catches long-tail phrasings the
+    # regex routers miss ("im finally here lol", "leaving now", "moving
+    # over to setup"). Soft-fails on API errors / low confidence and falls
+    # through to the full customer LLM. See engagement.intent_classifier.
+    if engagement_reply is None:
+        from app.agents.engagement.intent_dispatch import (
+            maybe_handle_via_classifier as maybe_handle_engagement_via_classifier,
+        )
+        engagement_reply = await maybe_handle_engagement_via_classifier(
+            db,
+            tenant=tenant,
+            contact=contact,
+            conversation=conversation,
+            message_body=message_body,
+        )
+    if engagement_reply is not None:
+        await send_sms(to=from_phone, body=engagement_reply, tenant=tenant)
+        now = datetime.now(timezone.utc)
+        updated_history = list(conversation.message_history or [])
+        updated_history.append({
+            "role": "user", "content": message_body, "timestamp": now.isoformat(),
+        })
+        updated_history.append({
+            "role": "assistant", "content": engagement_reply, "timestamp": now.isoformat(),
+        })
+        conversation.message_history = trim_message_history(updated_history)
+        conversation.last_message_at = now
+        await db.flush()
+        return
 
     # Steps 14-15: Call conversation AI with tool_use
     ai_response = await get_ai_response_with_tools(

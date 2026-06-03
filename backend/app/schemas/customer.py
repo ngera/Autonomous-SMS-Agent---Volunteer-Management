@@ -2,7 +2,7 @@ import uuid
 from datetime import date, datetime, time
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.models.contact import ContactSex, ContactStatus
 from app.models.contact_consent import ConsentStatus
@@ -31,6 +31,7 @@ class WeeklyHourBlock(BaseModel):
 
 
 class CustomerResponse(BaseModel):
+    id: uuid.UUID
     phone: str
     name: str | None
     email: str | None
@@ -52,6 +53,17 @@ class CustomerResponse(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @field_validator(
+        "availability",
+        "weekly_hours",
+        "unavailable_dates",
+        "preferred_appointment_type_ids",
+        mode="before",
+    )
+    @classmethod
+    def _none_to_empty_list(cls, v):
+        return v if v is not None else []
 
 
 class CustomerCreate(BaseModel):

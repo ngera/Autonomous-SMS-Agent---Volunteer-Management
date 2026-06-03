@@ -26,6 +26,7 @@ import { CustomerForm } from "../components/customer-form";
 import { VolunteerServicesTab } from "../components/volunteer-services-tab";
 import { VolunteerAvailabilityTab } from "../components/volunteer-availability-tab";
 import { VolunteerHoursTab } from "../components/volunteer-hours-tab";
+import { ContactRecognitionTab } from "@/features/recognition/components/contact-recognition-tab";
 import {
   useCustomer,
   useCustomerBookings,
@@ -157,6 +158,7 @@ export function CustomerDetailPage() {
               <TabsTrigger value="bookings">Bookings</TabsTrigger>
               <TabsTrigger value="conversations">Conversations</TabsTrigger>
               <TabsTrigger value="pattern">Pattern</TabsTrigger>
+              <TabsTrigger value="recognition">Recognition</TabsTrigger>
             </TabsList>
 
             <TabsContent value="services" className="mt-4">
@@ -205,6 +207,10 @@ export function CustomerDetailPage() {
                 phone={phone}
                 isLoading={patterns.isLoading}
               />
+            </TabsContent>
+
+            <TabsContent value="recognition" className="mt-4">
+              <ContactRecognitionTab contactId={c.id} />
             </TabsContent>
           </Tabs>
         </div>

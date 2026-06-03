@@ -301,6 +301,187 @@ can edit the plan in the UI before approval.
 
 # ── Setting keys ──
 
+# ──────────────────────────────────────────────────────────────────────
+# Event lifecycle plan prompts (decision #28; Phase 1 step 2a)
+# 37 new entries registered in a single migration so the AI Prompts UI
+# surfaces every template from day one. Some templates are unused
+# until later phases ship — registering bulk in Phase 1 prevents
+# tenant customization drift across phases.
+# Variable docs live in the AI Prompts UI help text per key.
+# ──────────────────────────────────────────────────────────────────────
+
+# Volunteer-side replies (17)
+PROMPT_CHECKIN_CONFIRMATION = (
+    "Got it, {name} — checked in for {event_name} at {hh_mm}.\n"
+    "Service: {service}\n"
+    "Location: {location}\n"
+    "Time: {start_time} – {end_time}\n"
+    "Have a great event!"
+)
+PROMPT_CHECKIN_ALREADY_IN = "You're already checked in at {hh_mm} ✓."
+PROMPT_CHECKIN_REENTRY_PROMPT = (
+    "You checked out at {hh_mm}. Reply HERE-AGAIN (or BACK) to come back in."
+)
+PROMPT_CHECKIN_REENTRY_CONFIRMATION = (
+    "Welcome back, {name} — re-entered at {hh_mm}. Have a great rest of the event!"
+)
+PROMPT_CHECKIN_DISAMBIGUATION = (
+    "You're signed up for {count} events right now:\n"
+    "{numbered_list}\n"
+    "Reply {valid_options}."
+)
+PROMPT_CHECKOUT_CONFIRMATION = (
+    "Thanks for showing up, {name}!\n"
+    "Checked out from {event_name} at {hh_mm}.\n"
+    "Service: {service}\n"
+    "Total hours today: {total_hours}\n"
+    "See you next time!"
+)
+PROMPT_SERVICE_SWITCH_PENDING = (
+    "Got it, {name} — requesting to switch to {service} at {event_name}.\n"
+    "Sending to admin for confirmation. We'll text you when approved."
+)
+PROMPT_SERVICE_ADD_PENDING = (
+    "Got it, {name} — requesting to also help with {service} at {event_name}.\n"
+    "Sending to admin for confirmation. We'll text you when approved."
+)
+PROMPT_SERVICE_UNRECOGNIZED = (
+    "I didn't recognize '{service_attempted}' at {event_name}. "
+    "Reply with the service name or text HELP."
+)
+PROMPT_WALKUP_OFFER = (
+    "Hi {name}, we don't have you signed up for anything right now.\n"
+    "We're running {event_name} ({start_time} – {end_time}, {location}) "
+    "and have {open_spots} open spots for {service}. Want to join?\n"
+    "Reply YES to walk in, NO to skip."
+)
+PROMPT_WALKUP_PICKER = (
+    "{prompt_lead}\n"
+    "{numbered_list}\n"
+    "Reply {valid_options}."
+)
+PROMPT_WALKUP_CONFIRMATION = (
+    "Welcome aboard, {name}! You're now signed up AND checked in for "
+    "{event_name} at {hh_mm}.\n"
+    "Service: {service}\n"
+    "Location: {location}\n"
+    "Time: {start_time} – {end_time}\n"
+    "Thanks for jumping in — have a great event!"
+)
+PROMPT_NO_EVENT_FUTURE_BOOKING = (
+    "Hi {name} — no event happening for you right now. "
+    "Your next signup is {next_booking_description}. Reply HERE then to check in."
+)
+PROMPT_NO_EVENT_NO_FUTURE_BOOKING = (
+    "Hi {name} — no event happening right now, and we don't have anything "
+    "coming up for you. Reply EVENTS to see what's available, or we'll text "
+    "you when something matches your interests."
+)
+PROMPT_NO_EVENT_CANCELLED = (
+    "Hi {name} — looks like {cancelled_event_name} was cancelled. "
+    "Sorry for the confusion! {trailing}"
+)
+PROMPT_LIST_EVENTS_RESPONSE = (
+    "Upcoming events you can join:\n{numbered_list}\n"
+    "Reply YES <number> to sign up."
+)
+PROMPT_LIST_BOOKINGS_RESPONSE = (
+    "Your upcoming bookings:\n{numbered_list}"
+)
+
+# Admin-side replies (16)
+PROMPT_ADMIN_CHECKIN_SUCCESS = (
+    "✓ Checked in {volunteer_name} for {event_name} at {hh_mm}."
+)
+PROMPT_ADMIN_CHECKOUT_SUCCESS = (
+    "✓ Checked out {volunteer_name} from {event_name} at {hh_mm}."
+)
+PROMPT_ADMIN_COMMAND_NAME_NOT_FOUND = (
+    "'{name_attempted}' not found in {event_name}. "
+    "Use the admin UI to add them first."
+)
+PROMPT_ADMIN_COMMAND_USAGE_HELP = (
+    "Usage:\n"
+    "  CHECKIN <name> — check in a volunteer\n"
+    "  CHECKIN ME — check yourself in (if you have a personal Booking)\n"
+    "  CHECKOUT <name> / CHECKOUT ME — analogous for checkout\n"
+    "  STATUS [<event>] — roster summary\n"
+    "  RESERVE [<event>] [| <service>] — reserve yourself for an event\n"
+    "  APPROVE <name> / REJECT <name> — dispose of pending service-log entries\n"
+    "  STOP STATUS / STOP STATUS ALL — silence pings\n"
+    "  CANCEL — clear active picker/disambiguation"
+)
+PROMPT_ADMIN_COMMAND_DISAMBIGUATION = (
+    "Multiple volunteers match '{name_attempted}':\n"
+    "{numbered_list}\n"
+    "Reply {valid_options}."
+)
+PROMPT_ADMIN_SUPER_ADMIN_REJECTION = (
+    "SMS admin commands require a tenant-scoped admin. Use the dashboard at {admin_panel_url}."
+)
+PROMPT_ADMIN_RESERVE_EVENT_PICKER = (
+    "Pick an event to reserve for:\n"
+    "{numbered_list}\n"
+    "Reply {valid_options}. Or send the event name."
+)
+PROMPT_ADMIN_RESERVE_SERVICE_PICKER = (
+    "Pick a service for {event_name}:\n"
+    "{numbered_list}\n"
+    "Reply {valid_options}."
+)
+PROMPT_ADMIN_RESERVE_CONFIRMATION = (
+    "Reserved you for {event_name} — {service} ({start_time}, {location}).\n"
+    "Reply CHECKIN ME when you arrive to check yourself in."
+)
+PROMPT_ADMIN_RESERVE_NO_CAPACITY = (
+    "Sorry — {event_name} is full and no other events have open capacity right now. "
+    "Try RESERVE again later when something opens up."
+)
+PROMPT_ADMIN_RESERVE_SLOT_FILLED = (
+    "Sorry — the {filled_service} spot at {event_name} just filled up while "
+    "you were deciding. Other open services for that event:\n"
+    "{numbered_list}\n"
+    "Reply {valid_options}, or text CANCEL to skip, or text RESERVE to start over."
+)
+PROMPT_ADMIN_SERVICE_APPROVAL_REQUEST = (
+    "{volunteer_name} at {event_name}: wants to switch from {from_service} to "
+    "{to_service}. Approve: {link}. Reply YES to approve, NO to reject."
+)
+PROMPT_ADMIN_SERVICE_APPROVAL_DONE = "Done."
+PROMPT_ADMIN_WALKUP_CANDIDATE_NOTIFICATION = (
+    "Unknown phone ({phone}) texted HERE during {event_name}. "
+    "Invite or dismiss? {link}"
+)
+PROMPT_ADMIN_LIVE_EVENTS_CONTEXT_BLOCK = (
+    "Currently live events at this tenant:\n"
+    "{event_list}\n"
+    "If the admin asks anything related to status, current activity, or "
+    "\"what's going on,\" offer a status summary using these."
+)
+PROMPT_ADMIN_PERSONAL_BOOKINGS_CONTEXT_BLOCK = (
+    "Your personal bookings:\n"
+    "{personal_booking_list}\n"
+    "If the admin asks about their own bookings (e.g., \"am I checked in?\", "
+    "\"what's my next shift?\"), answer using these."
+)
+
+# Scheduler / status pings (3)
+PROMPT_ROSTER_STATUS_PING = (
+    "{event_name}: {checked_in_count}/{total_count} checked in. "
+    "Missing: {missing_names_capped}. {link}"
+)
+PROMPT_ROSTER_STATUS_ALL_IN = "{event_name}: all checked in ✓"
+PROMPT_POST_EVENT_REVIEW_AVAILABLE = (
+    "{event_name} ended. {pending_review_count} reviews waiting. {link}"
+)
+
+# Recognition (1)
+PROMPT_RECOGNITION_CONGRATULATIONS = (
+    "Congrats, {volunteer_name}! You just earned the {award_label} milestone. "
+    "{award_description}"
+)
+
+
 PROMPT_KEYS = {
     "prompt_customer_system": CUSTOMER_SYSTEM_PROMPT,
     "prompt_admin_system": ADMIN_SYSTEM_PROMPT,
@@ -319,6 +500,48 @@ PROMPT_KEYS = {
     "prompt_customer_roster_saved": CUSTOMER_ROSTER_VISIBILITY_SAVED_PROMPT,
     "prompt_customer_roster_unset": CUSTOMER_ROSTER_VISIBILITY_UNSET_PROMPT,
     "prompt_customer_booking_roster_hint": CUSTOMER_BOOKING_ROSTER_HINT_PROMPT,
+    # ── Event lifecycle plan (37 new entries — Phase 1 step 2a) ──
+    # Volunteer-side replies (17)
+    "prompt_checkin_confirmation": PROMPT_CHECKIN_CONFIRMATION,
+    "prompt_checkin_already_in": PROMPT_CHECKIN_ALREADY_IN,
+    "prompt_checkin_reentry_prompt": PROMPT_CHECKIN_REENTRY_PROMPT,
+    "prompt_checkin_reentry_confirmation": PROMPT_CHECKIN_REENTRY_CONFIRMATION,
+    "prompt_checkin_disambiguation": PROMPT_CHECKIN_DISAMBIGUATION,
+    "prompt_checkout_confirmation": PROMPT_CHECKOUT_CONFIRMATION,
+    "prompt_service_switch_pending": PROMPT_SERVICE_SWITCH_PENDING,
+    "prompt_service_add_pending": PROMPT_SERVICE_ADD_PENDING,
+    "prompt_service_unrecognized": PROMPT_SERVICE_UNRECOGNIZED,
+    "prompt_walkup_offer": PROMPT_WALKUP_OFFER,
+    "prompt_walkup_picker": PROMPT_WALKUP_PICKER,
+    "prompt_walkup_confirmation": PROMPT_WALKUP_CONFIRMATION,
+    "prompt_no_event_future_booking": PROMPT_NO_EVENT_FUTURE_BOOKING,
+    "prompt_no_event_no_future_booking": PROMPT_NO_EVENT_NO_FUTURE_BOOKING,
+    "prompt_no_event_cancelled": PROMPT_NO_EVENT_CANCELLED,
+    "prompt_list_events_response": PROMPT_LIST_EVENTS_RESPONSE,
+    "prompt_list_bookings_response": PROMPT_LIST_BOOKINGS_RESPONSE,
+    # Admin-side replies (16)
+    "prompt_admin_checkin_success": PROMPT_ADMIN_CHECKIN_SUCCESS,
+    "prompt_admin_checkout_success": PROMPT_ADMIN_CHECKOUT_SUCCESS,
+    "prompt_admin_command_name_not_found": PROMPT_ADMIN_COMMAND_NAME_NOT_FOUND,
+    "prompt_admin_command_usage_help": PROMPT_ADMIN_COMMAND_USAGE_HELP,
+    "prompt_admin_command_disambiguation": PROMPT_ADMIN_COMMAND_DISAMBIGUATION,
+    "prompt_admin_super_admin_rejection": PROMPT_ADMIN_SUPER_ADMIN_REJECTION,
+    "prompt_admin_reserve_event_picker": PROMPT_ADMIN_RESERVE_EVENT_PICKER,
+    "prompt_admin_reserve_service_picker": PROMPT_ADMIN_RESERVE_SERVICE_PICKER,
+    "prompt_admin_reserve_confirmation": PROMPT_ADMIN_RESERVE_CONFIRMATION,
+    "prompt_admin_reserve_no_capacity": PROMPT_ADMIN_RESERVE_NO_CAPACITY,
+    "prompt_admin_reserve_slot_filled": PROMPT_ADMIN_RESERVE_SLOT_FILLED,
+    "prompt_admin_service_approval_request": PROMPT_ADMIN_SERVICE_APPROVAL_REQUEST,
+    "prompt_admin_service_approval_done": PROMPT_ADMIN_SERVICE_APPROVAL_DONE,
+    "prompt_admin_walkup_candidate_notification": PROMPT_ADMIN_WALKUP_CANDIDATE_NOTIFICATION,
+    "prompt_admin_live_events_context_block": PROMPT_ADMIN_LIVE_EVENTS_CONTEXT_BLOCK,
+    "prompt_admin_personal_bookings_context_block": PROMPT_ADMIN_PERSONAL_BOOKINGS_CONTEXT_BLOCK,
+    # Scheduler / status pings (3)
+    "prompt_roster_status_ping": PROMPT_ROSTER_STATUS_PING,
+    "prompt_roster_status_all_in": PROMPT_ROSTER_STATUS_ALL_IN,
+    "prompt_post_event_review_available": PROMPT_POST_EVENT_REVIEW_AVAILABLE,
+    # Recognition (1)
+    "prompt_recognition_congratulations": PROMPT_RECOGNITION_CONGRATULATIONS,
 }
 
 

@@ -309,6 +309,10 @@ async def _opted_in_active_contacts(
             Contact.id.in_(candidate_ids),
             Contact.status == ContactStatus.ACTIVE,
             Contact.is_archived.is_(False),
+            # Decision #30 — admin-linked Contacts (and anyone who's
+            # opted out via the toggle) get filtered out of wave
+            # targeting. Strikes still own hard exclusion separately.
+            Contact.exclude_from_recruiting.is_(False),
             ContactConsent.status == ConsentStatus.OPTED_IN,
         )
     )
@@ -424,12 +428,19 @@ async def _score_candidates(
     )
     ns_map: dict[uuid.UUID, int] = {row[0]: int(row[1]) for row in ns_q.all()}
 
+    # Phase 4 — pre-fetch per-tenant quality-weight SystemSettings (decision #24).
+    # Read once per scoring call (rare) so per-contact lookups stay O(1).
+    weights = await _resolve_quality_weights(db, tenant_id)
+
     scored: list[ScoredContact] = []
     for c in contacts:
         this_count, recent_ts = this_map.get(c.id, (0, None))
         cat_count = same_cat_map.get(c.id, 0)
         ns_count = ns_map.get(c.id, 0)
-        score = (10.0 * this_count) + (2.0 * cat_count) - (5.0 * ns_count)
+        raw_score = (10.0 * this_count) + (2.0 * cat_count) - (5.0 * ns_count)
+        # Apply quality multiplier (decision #24). Cold-start contacts
+        # (None score or 0 approved reviews) get the neutral weight.
+        score = raw_score * _quality_weight(c, weights)
         scored.append(
             ScoredContact(
                 contact_id=c.id,
@@ -443,6 +454,63 @@ async def _score_candidates(
             )
         )
     return scored
+
+
+async def _resolve_quality_weights(
+    db: AsyncSession, tenant_id: uuid.UUID
+) -> dict:
+    """Read tenant SystemSettings for the quality-weight multipliers
+    (decision #24). Returns a dict with `high`, `neutral`, `low` keys."""
+    from app.models.system_setting import SystemSetting
+
+    keys = ("quality_weight_high", "quality_weight_neutral", "quality_weight_low")
+    rows = (
+        await db.execute(
+            select(SystemSetting).where(
+                SystemSetting.tenant_id == tenant_id,
+                SystemSetting.key.in_(keys),
+            )
+        )
+    ).scalars().all()
+    by_key = {r.key: r.value for r in rows}
+
+    def _as_float(key: str, default: float) -> float:
+        try:
+            return float(by_key.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    return {
+        "high": _as_float("quality_weight_high", 1.25),
+        "neutral": _as_float("quality_weight_neutral", 1.0),
+        "low": _as_float("quality_weight_low", 0.7),
+    }
+
+
+def _quality_weight(contact: Contact, weights: dict) -> float:
+    """Map historical_quality_score to a soft ranking weight.
+
+    Decision #24:
+      Cold-start (None or 0 approved reviews) → neutral.
+      Score >= 4 → high.
+      Score 2.5–4 → neutral.
+      Score < 2.5 → low (deprioritize, never exclude).
+
+    `exclude_from_recruiting=True` contacts (admin-linked per decision #30)
+    are filtered out upstream in the eligibility WHERE clause.
+    """
+    score = getattr(contact, "historical_quality_score", None)
+    if score is None:
+        return weights["neutral"]
+    try:
+        score_f = float(score)
+    except (TypeError, ValueError):
+        return weights["neutral"]
+    if score_f >= 4.0:
+        return weights["high"]
+    if score_f < 2.5:
+        return weights["low"]
+    return weights["neutral"]
 
 
 def _rank(scored: list[ScoredContact]) -> list[ScoredContact]:

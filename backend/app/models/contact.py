@@ -1,7 +1,7 @@
 import enum
 import uuid
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -51,9 +51,15 @@ class Contact(Base):
     is_archived: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false", nullable=False, index=True
     )
-    availability: Mapped[list | None] = mapped_column(JSONB, nullable=True)
-    weekly_hours: Mapped[list | None] = mapped_column(JSONB, nullable=True)
-    unavailable_dates: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    availability: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default="[]"
+    )
+    weekly_hours: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default="[]"
+    )
+    unavailable_dates: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default="[]"
+    )
     reminder_preference_days: Mapped[int] = mapped_column(Integer, default=7)
     # Per-contact default for how their name shows on the volunteer roster.
     # Mirrors the values of app.models.booking.RosterVisibility (stored as a
@@ -63,6 +69,36 @@ class Contact(Base):
     # answer carries forward to all future bookings so they aren't re-asked.
     default_roster_visibility: Mapped[str | None] = mapped_column(
         String(20), nullable=True
+    )
+    # Admin auto-link (decision #22). When an admin_users row is created
+    # we upsert a Contact and link via this FK. The unique partial index
+    # `ux_contacts_admin_user_id` enforces at-most-one Contact per admin.
+    admin_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("admin_users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # Recruiter wave opt-out (decision #30). Defaults FALSE for ordinary
+    # volunteers; TRUE for admin-linked Contacts so admins don't silently
+    # start receiving recruitment invites the moment they're added.
+    exclude_from_recruiting: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default="false",
+        nullable=False,
+    )
+    # Phase 4 — historical quality cache (decision #24).
+    # Decay-weighted average grade over last N approved reviews;
+    # used as a soft weight in the recruiter targeting layer.
+    # Cold-start (None or approved_reviews_count == 0) → neutral weight.
+    historical_quality_score: Mapped[float | None] = mapped_column(
+        Numeric(3, 2), nullable=True
+    )
+    historical_quality_updated_at: Mapped[DateTime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    approved_reviews_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
     )
     preferences: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)

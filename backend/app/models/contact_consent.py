@@ -20,6 +20,9 @@ class OptInMethod(str, enum.Enum):
     SMS_REPLY = "sms_reply"
     ADMIN_MANUAL = "admin_manual"
     IMPORTED = "imported"
+    # Decision #22: auto-OPTED_IN when an admin_users row gets a linked
+    # Contact (either at admin creation or via the backfill in a034).
+    ADMIN_AUTOLINK = "admin_autolink"
 
 
 class OptOutMethod(str, enum.Enum):
@@ -51,7 +54,12 @@ class ContactConsent(Base):
         DateTime(timezone=True), nullable=True
     )
     opt_in_method: Mapped[OptInMethod | None] = mapped_column(
-        Enum(OptInMethod, name="opt_in_method"), nullable=True
+        Enum(
+            OptInMethod,
+            name="opt_in_method",
+            values_callable=lambda obj: [e.value for e in obj],
+        ),
+        nullable=True,
     )
     opt_out_method: Mapped[OptOutMethod | None] = mapped_column(
         Enum(OptOutMethod, name="opt_out_method"), nullable=True

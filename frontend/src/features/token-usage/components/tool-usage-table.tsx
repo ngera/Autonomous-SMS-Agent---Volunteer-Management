@@ -64,10 +64,20 @@ export function ToolUsageTable({ data, isLoading }: Props) {
                   Number(value),
                   name === "call_count" ? "Calls" : "Requests",
                 ]}
+                contentStyle={{
+                  backgroundColor: "var(--popover)",
+                  border: "1px solid var(--border)",
+                  borderRadius: 6,
+                  color: "var(--popover-foreground)",
+                }}
+                labelStyle={{ color: "var(--popover-foreground)" }}
+                itemStyle={{ color: "var(--popover-foreground)" }}
+                cursor={{ fill: "var(--muted)", fillOpacity: 0.3 }}
               />
               <Bar
                 dataKey="call_count"
-                fill="hsl(var(--primary))"
+                fill="var(--chart-1)"
+                fillOpacity={0.85}
                 radius={[0, 4, 4, 0]}
                 name="Calls"
               />

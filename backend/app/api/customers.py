@@ -192,6 +192,7 @@ def _build_customer_response(
     contact, consent_status, preferred_type_ids=None, total_minutes: int = 0
 ):
     return CustomerResponse(
+        id=contact.id,
         phone=contact.phone,
         name=contact.name,
         email=contact.email,

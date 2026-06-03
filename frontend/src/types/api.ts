@@ -215,6 +215,7 @@ export interface WeeklyHourBlock {
 }
 
 export interface CustomerResponse {
+  id: string;
   phone: string;
   name: string | null;
   email: string | null;
@@ -928,3 +929,180 @@ export interface CampaignListResponse {
   total: number;
 }
 
+
+
+// ────────────────────────────────────────────────────────────────────
+// Event lifecycle plan — Phase 1 types
+// ────────────────────────────────────────────────────────────────────
+
+// Live Events dashboard panel (decision #21)
+export interface LiveEventRow {
+  slot_id: string;
+  event_name: string;
+  location: string | null;
+  start_time: string;
+  end_time: string;
+  total_count: number;
+  checked_in_count: number;
+  missing_count: number;
+  first_missing_names: string[];
+  pending_switches: number;
+  status_dot: "red" | "amber" | "green";
+}
+
+// Volunteer candidate (Row 4/5 walk-up capture)
+export type CandidateStatus = "new" | "invited" | "dismissed";
+
+export interface VolunteerCandidate {
+  id: string;
+  phone: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  occurrence_count: number;
+  last_signal_slot_id: string | null;
+  last_message_body: string | null;
+  status: CandidateStatus;
+  invited_at: string | null;
+  dismissed_at: string | null;
+  promoted_contact_id: string | null;
+}
+
+// Observability metric (decision #33)
+export interface ObservabilityMetric {
+  label: string;
+  value: number;
+  numerator: number;
+  denominator: number;
+  extra: Record<string, unknown> | null;
+}
+
+
+// Run-sheet (admin live during-event view)
+export interface RunSheetVolunteer {
+  booking_id: string;
+  contact_id: string;
+  name: string | null;
+  phone: string;
+  service_name: string | null;
+  checked_in_at: string | null;
+  checked_out_at: string | null;
+  checked_in_source: string | null;
+  late_minutes: number | null;
+}
+
+export interface RunSheetResponse {
+  slot_id: string;
+  event_name: string;
+  location: string | null;
+  start_time: string;
+  end_time: string;
+  total_count: number;
+  checked_in_count: number;
+  volunteers: RunSheetVolunteer[];
+}
+
+
+// Phase 3 — service log + mid-event switch
+export interface PendingServiceEntry {
+  id: string;
+  booking_id: string;
+  contact_name: string | null;
+  contact_phone: string;
+  target_service: string;
+  created_at: string;
+  version: number;
+}
+
+export interface ServiceEntryStatusResponse {
+  id: string;
+  status: "pending" | "approved" | "rejected" | "superseded";
+  version: number;
+  approved_at: string | null;
+}
+
+
+// Phase 4 — post-event review + grading
+export type ReviewStatus = "pending" | "approved" | "no_show" | "skipped";
+
+export interface ReviewSegment {
+  in: string | null;
+  out: string | null;
+  source_in: string | null;
+  source_out: string | null;
+}
+
+export interface BookingReviewRow {
+  id: string;
+  booking_id: string;
+  contact_id: string;
+  contact_name: string | null;
+  status: ReviewStatus;
+  grade: number | null;
+  grade_notes: string | null;
+  total_hours: number | null;
+  segments: ReviewSegment[] | null;
+  final_check_in_at: string | null;
+  final_check_out_at: string | null;
+  reviewed_at: string | null;
+  unlocked_at: string | null;
+  unlock_count: number;
+}
+
+
+// Phase 5 — recognition (milestones, badges, awards)
+export type AwardKind = "milestone" | "badge" | "award";
+export type AwardScope = "lifetime" | "per_event" | "per_period";
+export type PeriodUnit = "month" | "quarter" | "year";
+
+export interface AwardDefinitionRow {
+  id: string;
+  kind: AwardKind;
+  key: string;
+  label: string;
+  description: string | null;
+  icon_key: string | null;
+  auto_criteria: Record<string, unknown> | null;
+  uniqueness_scope: AwardScope;
+  period_unit: PeriodUnit | null;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface DefinitionCreatePayload {
+  kind: AwardKind;
+  key: string;
+  label: string;
+  description?: string | null;
+  icon_key?: string | null;
+  auto_criteria?: Record<string, unknown> | null;
+  uniqueness_scope: AwardScope;
+  period_unit?: PeriodUnit | null;
+}
+
+export interface DefinitionUpdatePayload {
+  label?: string;
+  description?: string | null;
+  icon_key?: string | null;
+  auto_criteria?: Record<string, unknown> | null;
+  is_active?: boolean;
+}
+
+export interface RecognitionRow {
+  id: string;
+  definition_id: string;
+  definition_label: string;
+  definition_kind: AwardKind;
+  definition_icon_key: string | null;
+  earned_at: string;
+  period_key: string | null;
+  earned_via_slot_id: string | null;
+  granted_by_admin_id: string | null;
+  notes: string | null;
+}
+
+export interface ManualGrantPayload {
+  contact_id: string;
+  definition_id: string;
+  earned_via_slot_id?: string | null;
+  notes?: string | null;
+}

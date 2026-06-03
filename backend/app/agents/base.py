@@ -25,6 +25,12 @@ EVENT_PAUSE = "pause"            # Orchestrator paused agent action
 EVENT_ESCALATE = "escalate"      # Crisis detector escalated to human
 EVENT_AGENT_HANDLE = "agent_handle"  # BaseAgent.handle_inbound entered
 
+# ── Event lifecycle plan additions (decision #31) ──
+EVENT_VOLUNTEER_CHECK_IN = "volunteer_check_in"    # decision #10, Row 1 (segments)
+EVENT_VOLUNTEER_CHECK_OUT = "volunteer_check_out"  # decision #10, Row 1 (segments)
+EVENT_ADMIN_OVERRIDE = "admin_override"            # decision #3 (admin edits booking/service_log)
+EVENT_REVIEW_UNLOCKED = "review_unlocked"          # decision #16 (OWNER unlock of approved review)
+
 
 # Canonical agent names. Use these as string literals (not enums) so
 # external agents declaring their `name` don't need to import our code.

@@ -12,7 +12,13 @@ from app.api.appointment_types import router as appointment_types_router
 from app.api.auth import router as auth_router
 from app.api.availability import router as availability_router
 from app.api.bookings import router as bookings_router
+from app.api.bookings_checkin import router as bookings_checkin_router
 from app.api.calendar_ics import router as calendar_ics_router
+from app.api.candidates import router as candidates_router
+from app.api.observability import router as observability_router
+from app.api.recognition import router as recognition_router
+from app.api.reviews import router as reviews_router
+from app.api.service_log import router as service_log_router
 from app.api.conversations import router as conversations_router
 from app.api.customers import router as customers_router
 from app.api.dashboard import router as dashboard_router
@@ -30,8 +36,13 @@ from app.middleware.auth import AuthLoggingMiddleware
 from app.middleware.ratelimit import setup_rate_limiting
 from app.scheduler.jobs import (
     announcement_dispatch,
+    auto_close_forgotten_checkouts_tick,
     conversation_expiry,
+    event_status_ping_tick,
     follow_up_dispatch,
+    no_show_review_tick,
+    pending_review_tick,
+    prune_stale_candidates_tick,
     recruitment_daily_report,
     recruitment_tick,
     reminder_dispatch,
@@ -89,6 +100,39 @@ async def lifespan(app: FastAPI):
         id="recruitment_daily_report",
         replace_existing=True,
     )
+    # Event-lifecycle jobs (Phase 1 steps 5c + 8)
+    scheduler.add_job(
+        auto_close_forgotten_checkouts_tick,
+        CronTrigger(minute="*/15"),
+        id="auto_close_forgotten_checkouts_tick",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        prune_stale_candidates_tick,
+        CronTrigger(hour=3, minute=0),  # nightly at 3am
+        id="prune_stale_candidates_tick",
+        replace_existing=True,
+    )
+    # Phase 2 — Roster status auto-pings (decision #9)
+    scheduler.add_job(
+        event_status_ping_tick,
+        CronTrigger(minute="*"),  # every minute
+        id="event_status_ping_tick",
+        replace_existing=True,
+    )
+    # Phase 4 — post-event review auto-creation (decisions #5 + #14)
+    scheduler.add_job(
+        no_show_review_tick,
+        CronTrigger(minute="*/5"),  # every 5 minutes
+        id="no_show_review_tick",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        pending_review_tick,
+        CronTrigger(minute="*/15"),  # every 15 minutes
+        id="pending_review_tick",
+        replace_existing=True,
+    )
     scheduler.start()
     logger.info("Scheduler started with %d jobs", len(scheduler.get_jobs()))
 
@@ -108,9 +152,27 @@ app = FastAPI(
 )
 
 # Middleware (order matters — outermost first)
+#
+# In development we accept the configured admin URL plus the common
+# localhost variants (127.0.0.1 / both vite default ports). A mismatch
+# between the browser's Origin (e.g. http://127.0.0.1:5173) and the single
+# allowed origin shows up in the frontend as a generic axios "Network
+# Error" — because the browser strips the response before axios can read
+# the status — so the dev list intentionally covers both spellings.
+_dev_origins = {
+    settings.admin_panel_url,
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:4173",
+    "http://127.0.0.1:4173",
+}
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.admin_panel_url],
+    allow_origins=(
+        sorted(_dev_origins)
+        if settings.environment == "development"
+        else [settings.admin_panel_url]
+    ),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -124,6 +186,7 @@ setup_rate_limiting(app)
 app.include_router(auth_router)
 app.include_router(dashboard_router)
 app.include_router(bookings_router)
+app.include_router(bookings_checkin_router)
 app.include_router(customers_router)
 app.include_router(appointment_types_router)
 app.include_router(availability_router)
@@ -140,6 +203,11 @@ app.include_router(announcements_router)
 app.include_router(test_conversation_router)
 app.include_router(token_usage_router)
 app.include_router(recruitment_router)
+app.include_router(candidates_router)
+app.include_router(observability_router)
+app.include_router(service_log_router)
+app.include_router(reviews_router)
+app.include_router(recognition_router)
 
 
 @app.get("/health")

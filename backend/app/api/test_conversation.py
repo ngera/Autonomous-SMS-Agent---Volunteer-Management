@@ -255,6 +255,109 @@ async def test_conversation(
                     "Reconfirmation intent router failed in test mode"
                 )
 
+            # Engagement Agent intents (Phase 1-3 event lifecycle):
+            # HERE-AGAIN/BACK, SWITCH, ALSO, HERE, DONE — same routing
+            # order as pipeline.py. These dispatchers write real DB state
+            # (checked_in_at, booking_service_log) but don't send SMS,
+            # so test_mode doesn't need a special branch.
+            try:
+                from app.agents.engagement.intents import (
+                    maybe_handle_check_out,
+                    maybe_handle_here_check_in,
+                    maybe_handle_reentry,
+                    maybe_handle_service_add,
+                    maybe_handle_service_switch,
+                )
+
+                # Find or create an ACTIVE Conversation for this contact so
+                # pending_intent (multi-event picker, re-entry confirmation)
+                # survives across turns.
+                conv_result = await db.execute(
+                    select(Conversation)
+                    .where(
+                        Conversation.tenant_id == tenant_id,
+                        Conversation.contact_id == contact_for_name.id,
+                        Conversation.status == ConversationStatus.ACTIVE,
+                    )
+                    .order_by(Conversation.last_message_at.desc())
+                    .limit(1)
+                )
+                engagement_conv = conv_result.scalar_one_or_none()
+                if engagement_conv is None:
+                    engagement_conv = Conversation(
+                        tenant_id=tenant_id,
+                        contact_id=contact_for_name.id,
+                        contact_phone=contact_for_name.phone,
+                        message_history=[],
+                        status=ConversationStatus.ACTIVE,
+                        sender_type="customer",
+                        last_message_at=datetime.now(timezone.utc),
+                    )
+                    db.add(engagement_conv)
+                    await db.flush()
+
+                engagement_reply: str | None = None
+                fired_intent: str | None = None
+                for intent_name, handler in (
+                    ("engagement.reentry", maybe_handle_reentry),
+                    ("engagement.switch", maybe_handle_service_switch),
+                    ("engagement.also", maybe_handle_service_add),
+                    ("engagement.here", maybe_handle_here_check_in),
+                    ("engagement.done", maybe_handle_check_out),
+                ):
+                    engagement_reply = await handler(
+                        db,
+                        contact=contact_for_name,
+                        conversation=engagement_conv,
+                        message_body=body.message,
+                    )
+                    if engagement_reply is not None:
+                        fired_intent = intent_name
+                        break
+
+                if engagement_reply is not None:
+                    await _persist_router_turn(engagement_reply)
+                    return TestConversationResponse(
+                        reply=engagement_reply,
+                        tool_calls=[
+                            ToolCallInfo(
+                                tool=fired_intent or "engagement.unknown",
+                                input={},
+                                output='{"ok": true, "auto_routed": true}',
+                            )
+                        ],
+                    )
+
+                # Tier 2 — Haiku engagement classifier (mirrors
+                # pipeline.py). Catches long-tail phrasings the regex
+                # routers miss; soft-fails on low confidence / API errors.
+                from app.agents.engagement.intent_dispatch import (
+                    maybe_handle_via_classifier as maybe_handle_engagement_via_classifier,
+                )
+                classifier_reply = await maybe_handle_engagement_via_classifier(
+                    db,
+                    tenant=tenant,
+                    contact=contact_for_name,
+                    conversation=engagement_conv,
+                    message_body=body.message,
+                )
+                if classifier_reply is not None:
+                    await _persist_router_turn(classifier_reply)
+                    return TestConversationResponse(
+                        reply=classifier_reply,
+                        tool_calls=[
+                            ToolCallInfo(
+                                tool="engagement.classifier",
+                                input={"auto_routed": True, "tier": "haiku_classifier"},
+                                output='{"ok": true, "auto_routed": true}',
+                            )
+                        ],
+                    )
+            except Exception:
+                logger.exception(
+                    "Engagement intent router failed in test mode"
+                )
+
     # Select tools
     tools = ADMIN_TOOLS if is_admin else CUSTOMER_TOOLS
 
@@ -351,6 +454,35 @@ async def test_conversation(
         )
         from app.models.admin_user import AdminUser as _AdminUser
         admin_user = await db.get(_AdminUser, current_user.id)
+
+        # Engagement + Recruiter+Scheduler admin commands — runs first to
+        # match the production webhook dispatch order. Handles
+        # CHECKIN/CHECKOUT/STATUS/STOP STATUS/APPROVE/REJECT (engagement)
+        # and RESERVE/CANCEL (scheduler).
+        try:
+            from app.agents.orchestrator.admin_dispatch import (
+                maybe_handle_admin_command,
+            )
+            admin_cmd_reply = await maybe_handle_admin_command(
+                db, admin=admin_user, message_body=body.message
+            )
+            if admin_cmd_reply is not None:
+                await _persist_router_turn(admin_cmd_reply)
+                return TestConversationResponse(
+                    reply=admin_cmd_reply,
+                    tool_calls=[
+                        ToolCallInfo(
+                            tool="admin_dispatch",
+                            input={"auto_routed": True},
+                            output='{"ok": true, "auto_routed": true}',
+                        )
+                    ],
+                )
+        except Exception:
+            logger.exception(
+                "Admin engagement/scheduler dispatch failed in test mode"
+            )
+
         approval_reply = await maybe_handle_approval_directly(
             db, tenant, body.message, admin_user
         )

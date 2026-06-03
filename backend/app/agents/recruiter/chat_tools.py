@@ -1562,13 +1562,19 @@ async def maybe_handle_status_directly(
     The LLM has repeatedly fabricated campaign lists rather than calling
     ``recruitment_status``. Intercepting clean status queries here gives
     the admin a reliable answer based on real DB state.
+
+    When the admin names a specific event ("status of food drive"), the
+    response is filtered to that one campaign. When they don't, every
+    non-terminal campaign is rendered (same shape per block). Each block
+    leads with totals, then per-service breakdown, then wave history +
+    next scheduled wave — matches what an admin asking "where are we?"
+    actually wants to see.
     """
     if not _looks_like_status_query(message):
         return None
 
     from app.models.availability import SpecificDateSlot
     from app.models.appointment_type import AppointmentType
-    from app.agents.recruiter.executor import current_signups_per_service
 
     # Pull all non-terminal campaigns + their slots
     q = await db.execute(
@@ -1597,6 +1603,17 @@ async def maybe_handle_status_directly(
             "Say 'plan recruitment for <event>' to start one."
         )
 
+    # Optional event filter: extract date / label from the admin's text
+    # using the same helpers the start + delete routers use. When we can
+    # narrow to one or two campaigns the output reads naturally; if the
+    # filter would zero everything out we fall through and show all (the
+    # admin's hint just didn't match — better to over-show than to lie).
+    filter_date, filter_label = _extract_status_filter(message)
+    if filter_date or filter_label:
+        filtered = _filter_campaigns_by_event(rows, filter_date, filter_label)
+        if filtered:
+            rows = filtered
+
     # Service-name lookup
     type_ids = {
         uuid.UUID(g["appointment_type_id"])
@@ -1613,46 +1630,209 @@ async def maybe_handle_status_directly(
         )
         type_names = {str(tid): name for tid, name in nq.all()}
 
-    lines = [f"{len(rows)} campaign(s):"]
+    blocks: list[str] = []
     for c, slot in rows:
-        service_ids = [
-            uuid.UUID(g["appointment_type_id"])
-            for g in c.goals or []
-            if g.get("appointment_type_id")
-        ]
-        signups = await current_signups_per_service(db, slot, service_ids)
-        total_signed = sum(int(signups.get(sid, 0)) for sid in signups)
-        total_min = sum(
-            int(
-                g.get("min_required")
-                if g.get("min_required") is not None
-                else g.get("target", 0)
-                or 0
-            )
-            for g in c.goals or []
+        block = await _render_campaign_status_block(
+            db, c, slot, type_names
         )
-        per_service = []
-        for g in c.goals or []:
+        blocks.append(block)
+
+    # Single campaign → no count prefix. Multiple → small header so the
+    # admin knows N blocks are coming.
+    if len(blocks) == 1:
+        return blocks[0]
+    return f"{len(blocks)} campaign(s):\n\n" + "\n\n".join(blocks)
+
+
+def _extract_status_filter(message: str) -> tuple[str | None, str | None]:
+    """Pull a date and/or label out of a status query. Returns ``(None, None)``
+    when no useful hint is found — caller then shows all campaigns.
+
+    Strips status-trigger words ("status", "campaign", etc.) before label
+    cleanup so phrases like "status of food drive campaign" don't leave
+    "status" stuck on the label.
+    """
+    text = (message or "").strip().lower()
+    if not text:
+        return (None, None)
+    # Trim trailing punctuation
+    while text and text[-1] in ".!?,;:":
+        text = text[:-1]
+    text = text.strip()
+
+    iso_date, leftover = _extract_date_from_text(text)
+    label_src = leftover if leftover else text
+    # Strip status verbs from the label candidate; what's left is the
+    # event reference (if any).
+    status_noise = {
+        "status", "of", "for", "the", "on", "campaign", "campaigns",
+        "recruitment", "what", "is", "are", "how", "many", "any",
+        "list", "show", "tell", "me", "about", "active", "running",
+        "in", "progress", "happening", "ongoing", "current", "which",
+        "where", "we", "stand", "doing",
+    }
+    tokens = [t for t in label_src.split() if t not in status_noise]
+    cleaned = _clean_label(" ".join(tokens)) if tokens else ""
+    if len(cleaned) < 3:
+        cleaned = ""
+    return (iso_date, cleaned or None)
+
+
+def _filter_campaigns_by_event(
+    rows: list,
+    iso_date: str | None,
+    label: str | None,
+) -> list:
+    """Narrow a (campaign, slot) row list to ones matching date + label.
+
+    Date match is exact (campaign event_date == iso_date). Label match
+    is case-insensitive substring on slot.label. When both are given we
+    AND them. When neither produces a match we return [] and the caller
+    falls back to "show all" (over-showing beats hiding what they want).
+    """
+    out = []
+    for c, slot in rows:
+        if iso_date:
+            if not slot.date or slot.date.isoformat() != iso_date:
+                continue
+        if label:
+            slot_label = (slot.label or "").lower()
+            if label.lower() not in slot_label:
+                continue
+        out.append((c, slot))
+    return out
+
+
+def _fmt_short_date(dt) -> str:
+    """Return 'Jun 1' / 'May 25' — portable across Windows (%-d isn't)."""
+    if not dt:
+        return "?"
+    return f"{dt.strftime('%b')} {dt.day}"
+
+
+async def _render_campaign_status_block(
+    db,
+    campaign: RecruitmentCampaign,
+    slot,
+    type_names: dict[str, str],
+) -> str:
+    """Render one campaign as a multi-line status block:
+
+      **<event>** — <date> [<status>]
+      Total: X of Y signed up (Z more needed)
+
+      By service:
+        • <service> — X/Y (Z more needed)
+
+      Waves:
+        • Wave N sent <date> — <sent_count> contacted, <signups_attributed> signups
+        • Next: Wave M scheduled for <date>
+    """
+    from app.agents.recruiter.executor import current_signups_per_service
+    from datetime import datetime, timezone
+
+    service_ids = [
+        uuid.UUID(g["appointment_type_id"])
+        for g in campaign.goals or []
+        if g.get("appointment_type_id")
+    ]
+    signups = await current_signups_per_service(db, slot, service_ids)
+
+    def _min_of(g: dict) -> int:
+        if g.get("min_required") is not None:
+            return int(g.get("min_required") or 0)
+        return int(g.get("target") or 0)
+
+    total_signed = sum(int(signups.get(sid, 0)) for sid in signups)
+    total_min = sum(_min_of(g) for g in campaign.goals or [])
+    needed = max(0, total_min - total_signed)
+
+    label = slot.label or "event"
+    event_date = slot.date.isoformat() if slot.date else "?"
+    needed_part = (
+        f" ({needed} more needed)" if needed > 0
+        else " (target hit)"
+    )
+    lines = [
+        f"**{label}** — {event_date} [{campaign.status.value}]",
+        f"Total: {total_signed} of {total_min} signed up{needed_part}",
+        "",
+        "By service:",
+    ]
+
+    if not campaign.goals:
+        lines.append("  • (no services configured)")
+    else:
+        for g in campaign.goals:
             sid = g.get("appointment_type_id")
             if not sid:
                 continue
             name = type_names.get(sid, "service")
             sg = int(signups.get(sid, 0))
-            mn = int(
-                g.get("min_required")
-                if g.get("min_required") is not None
-                else g.get("target", 0)
-                or 0
+            mn = _min_of(g)
+            svc_needed = max(0, mn - sg)
+            svc_needed_part = (
+                f" ({svc_needed} more needed)" if svc_needed > 0
+                else " (target hit)"
             )
-            per_service.append(f"{name} {sg}/{mn}")
-        per_service_str = (
-            "; ".join(per_service) if per_service else "no services"
-        )
-        label = slot.label or "event"
-        lines.append(
-            f"- {label} ({slot.date.isoformat()}) "
-            f"[{c.status.value}]: {total_signed}/{total_min} — {per_service_str}"
-        )
+            lines.append(f"  • {name} — {sg}/{mn}{svc_needed_part}")
+
+    # Wave history + next scheduled wave.
+    # Waves are stored per (wave_number, appointment_type_id) — i.e. one row
+    # per service inside each wave. The admin thinks in terms of waves, not
+    # per-service shards, so group by wave_number and roll up sent_count +
+    # signups_attributed across the services. Use the earliest scheduled_at
+    # in the group as the wave's "sent" date (all per-service shards of a
+    # wave are scheduled together; they may differ by milliseconds).
+    waves_q = await db.execute(
+        select(RecruitmentWave)
+        .where(RecruitmentWave.campaign_id == campaign.id)
+        .order_by(RecruitmentWave.wave_number.asc())
+    )
+    waves = list(waves_q.scalars().all())
+    if waves:
+        lines.append("")
+        lines.append("Waves:")
+        now = datetime.now(timezone.utc)
+        # Group by wave_number → roll up SENT shards.
+        from collections import defaultdict
+        sent_groups: dict[int, list] = defaultdict(list)
+        planned_groups: dict[int, list] = defaultdict(list)
+        for w in waves:
+            if w.status == WaveStatus.SENT:
+                sent_groups[w.wave_number].append(w)
+            elif (
+                w.status == WaveStatus.PLANNED
+                and w.scheduled_at and w.scheduled_at > now
+            ):
+                planned_groups[w.wave_number].append(w)
+
+        for wave_num in sorted(sent_groups.keys()):
+            shards = sent_groups[wave_num]
+            sent_dates = [w.scheduled_at for w in shards if w.scheduled_at]
+            when = _fmt_short_date(min(sent_dates)) if sent_dates else "?"
+            total_contacted = sum(w.sent_count or 0 for w in shards)
+            total_signups = sum(w.signups_attributed or 0 for w in shards)
+            attributed = (
+                f", {total_signups} signups" if total_signups else ""
+            )
+            lines.append(
+                f"  • Wave {wave_num} sent {when} — "
+                f"{total_contacted} contacted{attributed}"
+            )
+
+        if planned_groups:
+            next_num = min(planned_groups.keys())
+            shards = planned_groups[next_num]
+            when_dates = [w.scheduled_at for w in shards if w.scheduled_at]
+            when = _fmt_short_date(min(when_dates)) if when_dates else "?"
+            lines.append(
+                f"  • Next: Wave {next_num} scheduled for {when}"
+            )
+        elif not sent_groups:
+            # No sent + no upcoming — likely awaiting approval.
+            lines.append("  • No waves sent yet")
+
     return "\n".join(lines)
 
 

@@ -22,6 +22,28 @@ class RosterVisibility(str, enum.Enum):
     FULL_NAME = "full_name"
 
 
+# CheckInSource/CheckOutSource/CreationSource intentionally kept as
+# plain string literals rather than DB enums — the canonical schema
+# uses TEXT + CHECK constraint (event_lifecycle_plan.md decision #2,
+# review-pass #6). Python-side constants for ergonomic call sites:
+
+CHECKIN_SOURCE_VOLUNTEER_SMS = "volunteer_sms"
+CHECKIN_SOURCE_VOLUNTEER_SMS_EARLY = "volunteer_sms_early"
+CHECKIN_SOURCE_VOLUNTEER_SMS_WALKUP = "volunteer_sms_walkup"
+CHECKIN_SOURCE_ADMIN_OVERRIDE = "admin_override"
+CHECKIN_SOURCE_ADMIN_INITIAL = "admin_initial"
+# NOTE: 'auto_close' is intentionally absent from check-in (review-pass R6).
+
+CHECKOUT_SOURCE_VOLUNTEER_SMS = "volunteer_sms"
+CHECKOUT_SOURCE_ADMIN_OVERRIDE = "admin_override"
+CHECKOUT_SOURCE_AUTO_CLOSE = "auto_close"
+
+CREATION_SOURCE_RECRUITER_WAVE = "recruiter_wave"
+CREATION_SOURCE_SELF_SIGNUP = "self_signup"
+CREATION_SOURCE_ADMIN_MANUAL = "admin_manual"
+CREATION_SOURCE_WALK_UP = "walk_up"
+
+
 class Booking(Base):
     __tablename__ = "bookings"
 
@@ -80,6 +102,33 @@ class Booking(Base):
     ics_update_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     conversation_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("conversations.id"), nullable=True
+    )
+    # Check-in / check-out audit (decision #2). Columns are TEXT with
+    # CHECK constraints in PostgreSQL — value spaces are enforced at
+    # the DB layer, not via Python enums (so adding a value is one
+    # migration, no model-class redeploy).
+    checked_in_at: Mapped[DateTime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    checked_in_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("admin_users.id"), nullable=True
+    )
+    checked_in_source: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    checked_out_at: Mapped[DateTime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    checked_out_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("admin_users.id"), nullable=True
+    )
+    checked_out_source: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # How was this booking created? Powers Phase 5 observability rollups
+    # (walk-up rate, self-signup rate, etc.) and disambiguates walk-ups
+    # from on-the-books arrivals (decision #2 + Row 2 schema additions).
+    creation_source: Mapped[str] = mapped_column(
+        String(40),
+        nullable=False,
+        default=CREATION_SOURCE_ADMIN_MANUAL,
+        server_default=CREATION_SOURCE_ADMIN_MANUAL,
     )
     created_at: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

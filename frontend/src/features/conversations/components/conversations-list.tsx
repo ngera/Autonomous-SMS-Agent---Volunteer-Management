@@ -7,6 +7,9 @@ interface ConversationsListProps {
   conversations: ConversationResponse[];
   isLoading: boolean;
   onSelect: (conversation: ConversationResponse) => void;
+  selectedIds?: Set<string>;
+  onToggleRow?: (id: string) => void;
+  onToggleAll?: (checked: boolean, allIds: string[]) => void;
 }
 
 const columns: Column<ConversationResponse>[] = [
@@ -37,7 +40,20 @@ export function ConversationsList({
   conversations,
   isLoading,
   onSelect,
+  selectedIds,
+  onToggleRow,
+  onToggleAll,
 }: ConversationsListProps) {
+  const selection =
+    selectedIds && onToggleRow && onToggleAll
+      ? {
+          getRowId: (c: ConversationResponse) => c.id,
+          selectedIds,
+          onToggleRow: (id: string) => onToggleRow(id),
+          onToggleAll,
+        }
+      : undefined;
+
   return (
     <DataTable
       columns={columns}
@@ -45,6 +61,7 @@ export function ConversationsList({
       isLoading={isLoading}
       emptyMessage="No conversations found."
       onRowClick={onSelect}
+      selection={selection}
     />
   );
 }

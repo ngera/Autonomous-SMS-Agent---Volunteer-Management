@@ -19,6 +19,12 @@ class NotificationType(str, enum.Enum):
     RECRUITMENT_PLAN_READY = "recruitment_plan_ready"
     RECRUITMENT_PLAN_FAILED = "recruitment_plan_failed"
     EVENT_RESCHEDULED = "event_rescheduled"
+    # Row 4 unknown-phone walk-up signals (event_lifecycle_plan).
+    WALKUP_CANDIDATE = "walkup_candidate"
+    # Phase 2 roster status pings (in-app channel).
+    ROSTER_STATUS_PING = "roster_status_ping"
+    # Phase 3 mid-event SWITCH/ALSO approval requests.
+    SERVICE_APPROVAL_REQUEST = "service_approval_request"
 
 
 class AdminNotification(Base):

@@ -40,3 +40,12 @@ class AdminUser(Base):
         DateTime(timezone=True), nullable=True
     )
     phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Phase 2 — STOP STATUS ALL global opt-out for roster auto-pings.
+    # Set when admin texts `STOP STATUS ALL`; SUPER_ADMIN can re-enable
+    # via the admin user UI.
+    status_pings_opted_out: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default="false",
+        nullable=False,
+    )

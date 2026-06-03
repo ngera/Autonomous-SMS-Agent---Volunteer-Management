@@ -152,19 +152,30 @@ export function RecentUsageTable({ data, isLoading }: Props) {
                     Number(value).toLocaleString(),
                     name === "input_tokens" ? "Input Tokens" : "Output Tokens",
                   ]}
+                  contentStyle={{
+                    backgroundColor: "var(--popover)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 6,
+                    color: "var(--popover-foreground)",
+                  }}
+                  labelStyle={{ color: "var(--popover-foreground)" }}
+                  itemStyle={{ color: "var(--popover-foreground)" }}
+                  cursor={{ fill: "var(--muted)", fillOpacity: 0.3 }}
                 />
                 <Legend />
                 <Bar
                   dataKey="input_tokens"
                   stackId="1"
-                  fill="hsl(var(--primary))"
+                  fill="var(--chart-1)"
+                  fillOpacity={0.85}
                   name="Input Tokens"
                   radius={[0, 0, 0, 0]}
                 />
                 <Bar
                   dataKey="output_tokens"
                   stackId="1"
-                  fill="hsl(var(--chart-2, 220 70% 50%))"
+                  fill="var(--chart-2)"
+                  fillOpacity={0.85}
                   name="Output Tokens"
                   radius={[4, 4, 0, 0]}
                 />

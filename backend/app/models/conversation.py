@@ -36,6 +36,16 @@ class Conversation(Base):
     consent_verified_at: Mapped[DateTime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Multi-stage SMS state (decision A14 / Phase 1 step 0a). JSONB shape
+    # is a discriminated union by `intent_type`; see event_lifecycle_plan.md
+    # canonical schema section.
+    # Read-side expiry is in-memory only — DO NOT commit the clear on read
+    # (review-pass #12). Stale rows are harmless; next pending_intent write
+    # is an atomic replace.
+    pending_intent: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    pending_intent_expires_at: Mapped[DateTime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

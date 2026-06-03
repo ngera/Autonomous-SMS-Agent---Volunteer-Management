@@ -72,14 +72,42 @@ export function MultiVolunteerTestPage() {
   //    server to filter so we can find customers OUTSIDE the first 100.
   //    Without this, searching for "Zoe" in a tenant with 300 volunteers
   //    just returns nothing — the previous behavior the user hit.
-  const { data: customersData } = useCustomers({ page: 1, page_size: 100 });
+  const { data: customersData, error: customersError } = useCustomers({
+    page: 1,
+    page_size: 100,
+  });
   const customers = customersData?.items ?? [];
-  const { data: searchData, isFetching: searchFetching } = useCustomers({
+  const {
+    data: searchData,
+    isFetching: searchFetching,
+    error: searchError,
+  } = useCustomers({
     page: 1,
     page_size: 20,
     search: debouncedSearch || undefined,
   });
-  const searchHits = debouncedSearch ? (searchData?.items ?? []) : [];
+  // Server-side hits when the search succeeded.
+  const serverHits = debouncedSearch ? (searchData?.items ?? []) : [];
+  // Client-side fallback: filter the base 100 by name/phone/email. Always
+  // available as a backstop so a transient server error doesn't kill the UX.
+  const clientHits = useMemo(() => {
+    if (!debouncedSearch) return [];
+    const needle = debouncedSearch.toLowerCase();
+    return customers.filter((c) => {
+      const haystack = [c.name, c.phone, c.email]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(needle);
+    });
+  }, [customers, debouncedSearch]);
+  // Union the two by phone — server results first (broader coverage), then
+  // any client-side matches not already represented.
+  const searchHits = useMemo(() => {
+    if (!debouncedSearch) return [];
+    const seen = new Set(serverHits.map((c) => c.phone));
+    return [...serverHits, ...clientHits.filter((c) => !seen.has(c.phone))];
+  }, [debouncedSearch, serverHits, clientHits]);
 
   const [admin, setAdmin] = useState<ChatState>({ ...EMPTY_CHAT });
   const [panels, setPanels] = useState<Record<string, VolunteerChatState>>({});
@@ -744,6 +772,19 @@ export function MultiVolunteerTestPage() {
               className="h-9 max-w-md"
             />
           </div>
+          {(customersError || searchError) && (
+            <div className="rounded-md border border-destructive bg-destructive/10 px-3 py-2 text-xs text-destructive">
+              <p className="font-medium">Search API error</p>
+              <p className="font-mono">
+                {(searchError ?? customersError)?.message ??
+                  "Unknown error — open browser DevTools → Network tab for the failing request."}
+              </p>
+              <p className="mt-1 text-muted-foreground">
+                Falling back to client-side filter over the first {customers.length}{" "}
+                volunteers loaded.
+              </p>
+            </div>
+          )}
           {search.trim() && (
             <div className="max-h-48 overflow-y-auto rounded-md border">
               {searchFetching && filteredCustomers.length === 0 ? (

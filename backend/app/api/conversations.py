@@ -1,12 +1,17 @@
 import uuid
+from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import func, select
+from pydantic import BaseModel
+from sqlalchemy import delete as sql_delete, func, select, update
 
-from app.core.dependencies import CurrentTenant, CurrentUser, DbSession
+from app.core.dependencies import CurrentTenant, CurrentUser, DbSession, ManagerUser
 from app.models.agent_call_log import AgentCallLog
+from app.models.booking import Booking
 from app.models.contact import Contact
 from app.models.conversation import Conversation
+from app.models.suspension import ContactSuspension
+from app.models.token_usage import TokenUsage
 from app.schemas.conversation import ConversationListResponse, ConversationResponse
 
 router = APIRouter(prefix="/api/v1/conversations", tags=["conversations"])
@@ -42,6 +47,88 @@ async def list_conversations(
     items = result.scalars().all()
 
     return ConversationListResponse(items=items, total=total)
+
+
+class BulkDeleteRequest(BaseModel):
+    """Filter criteria for bulk-deleting conversations.
+
+    At least one of `older_than`, `contact_phone`, or `ids` must be set.
+    When multiple are provided, they're AND-ed together.
+    """
+    older_than: datetime | None = None
+    contact_phone: str | None = None
+    ids: list[uuid.UUID] | None = None
+
+
+class BulkDeleteResponse(BaseModel):
+    deleted_count: int
+
+
+@router.delete("", response_model=BulkDeleteResponse)
+async def bulk_delete_conversations(
+    body: BulkDeleteRequest,
+    db: DbSession,
+    current_user: ManagerUser,
+    tenant: CurrentTenant,
+):
+    """Bulk-delete conversations matching the given filters.
+
+    FK-referenced rows on bookings, suspensions, and token_usage are
+    preserved — their `conversation_id` is nulled out so the audit trail
+    survives. `agent_call_log` rows for deleted conversations are removed
+    (they're trace data, not history).
+
+    Requires MANAGER+ role. Tenant-scoped — only the caller's tenant's
+    conversations are considered regardless of the IDs sent.
+    """
+    if not (body.older_than or body.contact_phone or body.ids):
+        raise HTTPException(
+            status_code=400,
+            detail="At least one of older_than, contact_phone, or ids must be provided.",
+        )
+
+    # Resolve target conversation IDs under the tenant scope first, so the
+    # downstream FK nulls / deletes operate on a known set.
+    target_query = select(Conversation.id).where(
+        Conversation.tenant_id == tenant.id
+    )
+    if body.older_than is not None:
+        target_query = target_query.where(
+            Conversation.last_message_at < body.older_than
+        )
+    if body.contact_phone:
+        target_query = target_query.where(
+            Conversation.contact_phone == body.contact_phone
+        )
+    if body.ids:
+        target_query = target_query.where(Conversation.id.in_(body.ids))
+
+    target_ids = [row for row in (await db.execute(target_query)).scalars().all()]
+    if not target_ids:
+        return BulkDeleteResponse(deleted_count=0)
+
+    # NULL out FK refs on rows we want to preserve (audit trail).
+    for model_cls in (Booking, ContactSuspension, TokenUsage):
+        await db.execute(
+            update(model_cls)
+            .where(model_cls.conversation_id.in_(target_ids))
+            .values(conversation_id=None)
+        )
+
+    # Drop trace events — they're tied to the conversation, not history.
+    await db.execute(
+        sql_delete(AgentCallLog).where(
+            AgentCallLog.conversation_id.in_(target_ids)
+        )
+    )
+
+    # Finally delete the conversations.
+    result = await db.execute(
+        sql_delete(Conversation).where(Conversation.id.in_(target_ids))
+    )
+    await db.commit()
+
+    return BulkDeleteResponse(deleted_count=result.rowcount or len(target_ids))
 
 
 @router.get("/{conversation_id}/trace")

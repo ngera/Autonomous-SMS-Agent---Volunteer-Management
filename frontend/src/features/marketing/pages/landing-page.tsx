@@ -95,14 +95,14 @@ function Hero() {
         <div>
           <Wordmark className="h-32 w-auto" />
           <h1 className="mt-8 text-7xl font-extrabold leading-[1.02] tracking-tight">
-            Your nonprofit&apos;s growth team.{" "}
-            <em className="text-[#1c2d4a]">By text.</em>
+            Your outreach team,{" "}
+            <em className="text-[#1c2d4a]">on autopilot.</em>
           </h1>
           <p className="mt-5 max-w-xl text-lg leading-relaxed text-zinc-600">
-            <span className="font-semibold text-zinc-900">mustr</span> recruits
-            volunteers, fills shifts, sends reminders, and runs donation
-            campaigns &mdash; all over plain SMS. No app for your volunteers. No
-            spreadsheet for you.
+            <span className="font-semibold text-zinc-900">mustr</span> reaches
+            out to volunteers, fills shifts, sends reminders/annoucements, and
+            runs donation campaigns &mdash; all over plain SMS. No app for your
+            volunteers. No spreadsheet for you.
           </p>
           <div className="mt-8 flex flex-wrap gap-3">
             <a

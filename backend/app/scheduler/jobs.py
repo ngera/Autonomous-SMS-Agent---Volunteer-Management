@@ -33,6 +33,276 @@ from app.services.sms import send_sms
 logger = get_logger("scheduler")
 
 
+# ── Event-lifecycle scheduler jobs (Phase 1 steps 5c + 8) ──────────
+
+
+async def prune_stale_candidates_tick() -> None:
+    """Daily job — two-pass DELETE on volunteer_candidate (decision #29c + #32).
+
+    Pass 1 — stale 'new' rows: status='new' AND last_seen_at < NOW() - 30d
+      AND invited_at IS NULL AND dismissed_at IS NULL.
+      The trailing predicates are race-safe per decision #29(c).
+
+    Pass 2 — terminal-state retention cap (1 year by default per #32):
+      status='dismissed' AND dismissed_at < NOW() - 365d, OR
+      status='invited' AND invited_at < NOW() - 365d.
+    """
+    from app.models.system_setting import SystemSetting
+
+    async with async_session_factory() as db:
+        try:
+            # Resolve per-tenant overrides (default 30 / 365).
+            # For simplicity we run with global defaults — tenants can
+            # override via system_settings rows that the next iteration
+            # of this job will read.
+            prune_days = 30
+            terminal_days = 365
+
+            sql_pass1 = """
+                DELETE FROM volunteer_candidate
+                WHERE status = 'new'
+                  AND last_seen_at < NOW() - (:prune_days || ' days')::INTERVAL
+                  AND invited_at IS NULL
+                  AND dismissed_at IS NULL;
+            """
+            sql_pass2 = """
+                DELETE FROM volunteer_candidate
+                WHERE (status = 'dismissed' AND dismissed_at < NOW() - (:terminal_days || ' days')::INTERVAL)
+                   OR (status = 'invited'   AND invited_at   < NOW() - (:terminal_days || ' days')::INTERVAL);
+            """
+            from sqlalchemy import text
+            r1 = await db.execute(text(sql_pass1), {"prune_days": prune_days})
+            r2 = await db.execute(text(sql_pass2), {"terminal_days": terminal_days})
+            await db.commit()
+            logger.info(
+                "candidate prune: pass1 deleted=%d pass2 deleted=%d",
+                r1.rowcount or 0, r2.rowcount or 0,
+            )
+        except Exception:
+            await db.rollback()
+            logger.exception("prune_stale_candidates_tick failed")
+
+
+async def event_status_ping_tick() -> None:
+    """Phase 2 — Roster status auto-pings dispatcher (decision #9).
+
+    Runs every minute. Walks active tenants → slots in live window →
+    checks each of the 7 scheduled offsets (T-30/-15/0/+15/+30/+45/+60)
+    against the current minute. Dispatches via SMS + in-app to all
+    eligible admins. Idempotent against double-fire via UNIQUE
+    constraint on (slot, admin, scheduled_for, channel).
+    """
+    from app.services.event_status_ping import (
+        event_status_ping_tick as _tick,
+    )
+    async with async_session_factory() as db:
+        try:
+            count = await _tick(db)
+            if count:
+                logger.info("event_status_ping_tick dispatched %d pings", count)
+        except Exception:
+            await db.rollback()
+            logger.exception("event_status_ping_tick failed")
+
+
+async def no_show_review_tick() -> None:
+    """Phase 4 — at T+start+30min, auto-create no_show reviews for any
+    booking whose slot started ≥30 min ago and has no check-in.
+
+    Idempotent via the UNIQUE(booking_id) constraint on booking_review.
+    Runs every 5 minutes; that's fine-grained enough that the 'T+30min'
+    boundary lands within a few ticks for any given slot.
+    """
+    from app.models.availability import SpecificDateSlot
+    from app.models.booking import Booking, BookingStatus
+    from app.services.booking_review import (
+        create_no_show_review_for_booking,
+    )
+
+    try:
+        from zoneinfo import ZoneInfo
+    except ImportError:  # pragma: no cover
+        from backports.zoneinfo import ZoneInfo  # type: ignore[no-redef]
+
+    eastern = ZoneInfo("America/New_York")
+    now_utc = datetime.now(timezone.utc)
+
+    async with async_session_factory() as db:
+        try:
+            from sqlalchemy import select
+
+            today = now_utc.date()
+            slot_result = await db.execute(
+                select(Booking, SpecificDateSlot)
+                .join(SpecificDateSlot, Booking.event_slot_id == SpecificDateSlot.id)
+                .where(
+                    Booking.status != BookingStatus.CANCELLED,
+                    Booking.checked_in_at.is_(None),
+                    SpecificDateSlot.date.between(
+                        today - timedelta(days=2), today + timedelta(days=1)
+                    ),
+                )
+            )
+            created = 0
+            for booking, slot in slot_result.all():
+                start_at = datetime.combine(slot.date, slot.start_time).replace(
+                    tzinfo=eastern
+                )
+                if (now_utc - start_at) < timedelta(minutes=30):
+                    continue
+                review = await create_no_show_review_for_booking(
+                    db, booking=booking
+                )
+                if review is not None:
+                    created += 1
+            await db.commit()
+            if created:
+                logger.info(
+                    "no_show_review_tick: created %d no_show reviews", created
+                )
+        except Exception:
+            await db.rollback()
+            logger.exception("no_show_review_tick failed")
+
+
+async def pending_review_tick() -> None:
+    """Phase 4 — at T+end + review_grace_minutes (tenant SystemSetting,
+    default 120), create pending reviews for any booking that has a
+    check-in but no review yet.
+
+    Runs every 15 minutes. Per-tenant grace window is read inside.
+    """
+    from sqlalchemy import select
+    from app.models.availability import SpecificDateSlot
+    from app.models.booking import Booking, BookingStatus
+    from app.models.system_setting import SystemSetting
+    from app.models.tenant import Tenant
+    from app.services.booking_review import (
+        DEFAULT_REVIEW_GRACE_MINUTES,
+        create_pending_review_for_booking,
+    )
+
+    try:
+        from zoneinfo import ZoneInfo
+    except ImportError:  # pragma: no cover
+        from backports.zoneinfo import ZoneInfo  # type: ignore[no-redef]
+
+    eastern = ZoneInfo("America/New_York")
+    now_utc = datetime.now(timezone.utc)
+
+    async with async_session_factory() as db:
+        try:
+            today = now_utc.date()
+            slot_result = await db.execute(
+                select(Booking, SpecificDateSlot, Tenant)
+                .join(SpecificDateSlot, Booking.event_slot_id == SpecificDateSlot.id)
+                .join(Tenant, Booking.tenant_id == Tenant.id)
+                .where(
+                    Booking.status != BookingStatus.CANCELLED,
+                    Booking.checked_in_at.is_not(None),
+                    SpecificDateSlot.date.between(
+                        today - timedelta(days=3), today + timedelta(days=1)
+                    ),
+                )
+            )
+
+            # Per-tenant grace cache (avoids one SystemSetting lookup per booking)
+            tenant_grace_cache: dict = {}
+
+            async def _grace_for(tenant_id) -> int:
+                if tenant_id in tenant_grace_cache:
+                    return tenant_grace_cache[tenant_id]
+                row = (
+                    await db.execute(
+                        select(SystemSetting).where(
+                            SystemSetting.tenant_id == tenant_id,
+                            SystemSetting.key == "review_grace_minutes",
+                        )
+                    )
+                ).scalar_one_or_none()
+                try:
+                    value = (
+                        int(row.value) if row is not None else DEFAULT_REVIEW_GRACE_MINUTES
+                    )
+                except (TypeError, ValueError):
+                    value = DEFAULT_REVIEW_GRACE_MINUTES
+                tenant_grace_cache[tenant_id] = value
+                return value
+
+            created = 0
+            for booking, slot, _tenant in slot_result.all():
+                grace_min = await _grace_for(booking.tenant_id)
+                end_at = datetime.combine(slot.date, slot.end_time).replace(
+                    tzinfo=eastern
+                )
+                if (now_utc - end_at) < timedelta(minutes=grace_min):
+                    continue
+                review = await create_pending_review_for_booking(
+                    db, booking=booking, slot=slot
+                )
+                if review is not None:
+                    created += 1
+            await db.commit()
+            if created:
+                logger.info(
+                    "pending_review_tick: created %d pending reviews", created
+                )
+        except Exception:
+            await db.rollback()
+            logger.exception("pending_review_tick failed")
+
+
+async def auto_close_forgotten_checkouts_tick() -> None:
+    """Run every 15 minutes — finds bookings checked in but not out
+    where T+end+1h has passed; sets checked_out_at=end_at,
+    checked_out_source='auto_close' (decision #13).
+
+    Implementation: join bookings → specific_date_slots, compute
+    slot end_at + 1h in tenant's Eastern timezone, compare to NOW().
+    """
+    from app.models.availability import SpecificDateSlot
+    from app.models.booking import Booking, BookingStatus, CHECKOUT_SOURCE_AUTO_CLOSE
+
+    try:
+        from zoneinfo import ZoneInfo
+    except ImportError:  # pragma: no cover
+        from backports.zoneinfo import ZoneInfo  # type: ignore[no-redef]
+
+    eastern = ZoneInfo("America/New_York")
+    now_utc = datetime.now(timezone.utc)
+
+    async with async_session_factory() as db:
+        try:
+            # Get candidate bookings: checked in, not checked out, slot
+            # ended ≥ 1h ago. Coarse date filter at SQL; refine in Python.
+            from sqlalchemy import select
+            cutoff_date = (now_utc - timedelta(days=1)).date()
+            result = await db.execute(
+                select(Booking, SpecificDateSlot)
+                .join(SpecificDateSlot, Booking.event_slot_id == SpecificDateSlot.id)
+                .where(
+                    Booking.checked_in_at.is_not(None),
+                    Booking.checked_out_at.is_(None),
+                    Booking.status != BookingStatus.CANCELLED,
+                    SpecificDateSlot.date >= cutoff_date,
+                )
+            )
+            count = 0
+            for booking, slot in result.all():
+                end_at = datetime.combine(slot.date, slot.end_time).replace(tzinfo=eastern)
+                if (now_utc - end_at) < timedelta(hours=1):
+                    continue
+                booking.checked_out_at = end_at
+                booking.checked_out_source = CHECKOUT_SOURCE_AUTO_CLOSE
+                count += 1
+            await db.commit()
+            if count:
+                logger.info("auto_close_forgotten_checkouts: closed %d bookings", count)
+        except Exception:
+            await db.rollback()
+            logger.exception("auto_close_forgotten_checkouts_tick failed")
+
+
 async def reminder_dispatch() -> None:
     """Daily — evaluate customers per tenant and send qualifying reminders.
 

@@ -34,6 +34,11 @@ import { TestToolPage } from "@/features/test-tool/pages/test-tool-page";
 import { MultiVolunteerTestPage } from "@/features/test-tool/pages/multi-volunteer-test-page";
 import { TenantsPage } from "@/features/tenants/pages/tenants-page";
 import { TenantDetailPage } from "@/features/tenants/pages/tenant-detail-page";
+import { CandidatesListPage } from "@/features/candidates/pages/candidates-list-page";
+import { ObservabilityPage } from "@/features/observability/pages/observability-page";
+import { RunSheetPage } from "@/features/event-ops/pages/run-sheet-page";
+import { EventReviewPage } from "@/features/reviews/pages/event-review-page";
+import { RecognitionDefinitionsPage } from "@/features/recognition/pages/definitions-page";
 import { AdminRole } from "@/types/enums";
 
 export default function App() {
@@ -67,6 +72,47 @@ export default function App() {
             <Route path="/conversations" element={<ConversationsPage />} />
             <Route path="/suspensions" element={<SuspensionsPage />} />
             <Route path="/analytics" element={<AnalyticsPage />} />
+            {/* Phase 1 — event lifecycle plan */}
+            <Route
+              path="/candidates"
+              element={
+                <RoleGate minimum={AdminRole.MANAGER}>
+                  <CandidatesListPage />
+                </RoleGate>
+              }
+            />
+            <Route
+              path="/observability"
+              element={
+                <RoleGate minimum={AdminRole.MANAGER}>
+                  <ObservabilityPage />
+                </RoleGate>
+              }
+            />
+            <Route
+              path="/run-sheet/:slotId"
+              element={
+                <RoleGate minimum={AdminRole.MANAGER}>
+                  <RunSheetPage />
+                </RoleGate>
+              }
+            />
+            <Route
+              path="/event-review/:slotId"
+              element={
+                <RoleGate minimum={AdminRole.MANAGER}>
+                  <EventReviewPage />
+                </RoleGate>
+              }
+            />
+            <Route
+              path="/recognition"
+              element={
+                <RoleGate minimum={AdminRole.OWNER}>
+                  <RecognitionDefinitionsPage />
+                </RoleGate>
+              }
+            />
             <Route
               path="/token-usage"
               element={

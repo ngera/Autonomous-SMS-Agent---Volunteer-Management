@@ -16,6 +16,23 @@ export async function searchConversations(
   return data;
 }
 
+export interface BulkDeleteConversationsPayload {
+  /** ISO datetime — delete conversations whose last_message_at is older than this. */
+  older_than?: string | null;
+  contact_phone?: string | null;
+  ids?: string[] | null;
+}
+
+export async function bulkDeleteConversations(
+  payload: BulkDeleteConversationsPayload
+): Promise<{ deleted_count: number }> {
+  const { data } = await api.delete<{ deleted_count: number }>(
+    "/conversations",
+    { data: payload }
+  );
+  return data;
+}
+
 // Path A graph-shaped audit trace for one conversation. Rendered by
 // the Trace tab on the conversation detail view.
 export interface AgentCallLogEvent {
