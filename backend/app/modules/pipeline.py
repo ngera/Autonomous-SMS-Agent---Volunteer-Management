@@ -59,6 +59,16 @@ STRIKE_MESSAGES = {
     3: "This is your final warning. Further off-topic messages will suspend your access.",
 }
 
+# Polite first-warning for ABUSIVE classification. Tenant-overridable
+# via `suspension_abusive_warning_message`. The default
+# `max_abusive_strikes=2` means: send this on the 1st abuse, suspend on
+# the 2nd.
+ABUSIVE_WARNING_MESSAGE = (
+    "We can't accept messages with that language. "
+    "Please keep your messages respectful — another message like this "
+    "will suspend your access."
+)
+
 SUSPENSION_MESSAGE = (
     "Your access has been temporarily suspended. "
     "Contact us directly if you believe this is an error."
@@ -674,7 +684,13 @@ async def _get_suspension_settings(db: AsyncSession, tenant_id: uuid.UUID | None
         "max_strikes": 4,
         "strike_decay_days": 30,
         "auto_suspend_abusive": True,
+        # Threshold for ABUSIVE classification specifically. 2 = warn on
+        # the 1st abusive message, suspend on the 2nd. Only applies when
+        # auto_suspend_abusive=True; otherwise abusive strikes count
+        # against the IRRELEVANT max_strikes threshold.
+        "max_abusive_strikes": 2,
         "suspension_message": SUSPENSION_MESSAGE,
+        "abusive_warning_message": ABUSIVE_WARNING_MESSAGE,
         "strike_message_1": STRIKE_MESSAGES.get(1, ""),
         "strike_message_2": STRIKE_MESSAGES.get(2, ""),
         "strike_message_3": STRIKE_MESSAGES.get(3, ""),
@@ -691,7 +707,7 @@ async def _get_suspension_settings(db: AsyncSession, tenant_id: uuid.UUID | None
     )
     for setting in result.scalars().all():
         short_key = setting.key.replace("suspension_", "", 1)
-        if short_key in ("max_strikes", "strike_decay_days"):
+        if short_key in ("max_strikes", "strike_decay_days", "max_abusive_strikes"):
             try:
                 defaults[short_key] = int(setting.value)
             except ValueError:
@@ -719,7 +735,9 @@ async def _handle_strike(
     max_strikes = cfg["max_strikes"]
     decay_days = cfg["strike_decay_days"]
     auto_suspend_abusive = cfg["auto_suspend_abusive"]
+    max_abusive_strikes = cfg["max_abusive_strikes"]
     suspension_msg = cfg["suspension_message"]
+    abusive_warning_msg = cfg["abusive_warning_message"]
     strike_messages = {
         i: cfg[f"strike_message_{i}"]
         for i in (1, 2, 3)
@@ -729,7 +747,7 @@ async def _handle_strike(
     now = datetime.now(timezone.utc)
     decay_cutoff = now - timedelta(days=decay_days)
 
-    # Count active (non-decayed) strikes
+    # Count active (non-decayed) strikes (any classification)
     strike_query = select(func.count()).where(
         ContactStrike.contact_phone == contact.phone,
         ContactStrike.decayed_at.is_(None),
@@ -759,14 +777,56 @@ async def _handle_strike(
     db.add(strike)
     await db.flush()
 
-    # Immediate suspension for ABUSIVE
+    # ── ABUSIVE branch ──
+    # Default behavior: warn on the 1st abusive message, suspend on the
+    # 2nd (max_abusive_strikes=2). Tenant can flip auto_suspend_abusive
+    # off to make abusive count toward the IRRELEVANT max_strikes threshold
+    # instead.
     if classification == Classification.ABUSIVE and auto_suspend_abusive:
-        await _suspend_contact(db, contact, strike, "Abusive message detected", tenant=tenant, tenant_id=tenant_id, triggering_message=message)
-        if not test_mode:
-            await send_sms(to=contact.phone, body=suspension_msg, tenant=tenant)
+        abusive_query = select(func.count()).where(
+            ContactStrike.contact_phone == contact.phone,
+            ContactStrike.classification == StrikeClassification.ABUSIVE,
+            ContactStrike.decayed_at.is_(None),
+            ContactStrike.created_at >= decay_cutoff,
+        )
+        if tenant_id:
+            abusive_query = abusive_query.where(
+                ContactStrike.tenant_id == tenant_id
+            )
+        active_abusive_count = (
+            await db.execute(abusive_query)
+        ).scalar() or 0
+
+        if active_abusive_count >= max_abusive_strikes:
+            await _suspend_contact(
+                db, contact, strike,
+                f"Abusive language (strike {active_abusive_count}/{max_abusive_strikes})",
+                tenant=tenant, tenant_id=tenant_id,
+                triggering_message=message,
+            )
+            if not test_mode:
+                await send_sms(to=contact.phone, body=suspension_msg, tenant=tenant)
+        else:
+            # First abusive strike → polite warning, no suspension.
+            if not test_mode:
+                await send_sms(
+                    to=contact.phone, body=abusive_warning_msg, tenant=tenant,
+                )
+            # Admin notification so the team knows abuse is brewing.
+            await create_notification(
+                db=db,
+                notification_type=NotificationType.STRIKE_WARNING,
+                title=f"Abusive message warning: {contact.phone}",
+                body=(
+                    f"Warning sent — next abusive message will suspend the "
+                    f"account (threshold: {max_abusive_strikes})."
+                ),
+                tenant_id=tenant_id,
+            )
+        await db.flush()
         return
 
-    # Strike escalation for IRRELEVANT
+    # ── IRRELEVANT branch (or ABUSIVE when auto_suspend_abusive is off) ──
     if new_strike_number >= max_strikes:
         await _suspend_contact(db, contact, strike, f"Strike {new_strike_number}: repeated irrelevant messages", tenant=tenant, tenant_id=tenant_id, triggering_message=message)
         if not test_mode:

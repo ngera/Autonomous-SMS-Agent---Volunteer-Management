@@ -14,7 +14,12 @@ from app.models.conversation import Conversation, ConversationStatus
 from app.models.system_setting import SystemSetting
 from app.modules.conversation import get_ai_model
 from app.modules.screener import Classification, screen_message
-from app.modules.pipeline import _handle_strike, STRIKE_MESSAGES, SUSPENSION_MESSAGE
+from app.modules.pipeline import (
+    ABUSIVE_WARNING_MESSAGE,
+    STRIKE_MESSAGES,
+    SUSPENSION_MESSAGE,
+    _handle_strike,
+)
 from app.modules.tool_definitions import ADMIN_TOOLS, CUSTOMER_TOOLS
 from app.models.token_usage import TokenUsageSource
 from app.modules.tool_executor import run_tool_conversation
@@ -151,6 +156,10 @@ async def test_conversation(
 
                 if contact.status == ContactStatus.SUSPENDED:
                     reply = f"[SCREENED — {screener_result.classification.value}] {SUSPENSION_MESSAGE}"
+                elif screener_result.classification == Classification.ABUSIVE:
+                    # First abusive strike → polite warning (the production
+                    # _handle_strike just sent this via SMS).
+                    reply = f"[SCREENED — {screener_result.classification.value}] {ABUSIVE_WARNING_MESSAGE}"
                 elif strike_count in STRIKE_MESSAGES:
                     reply = f"[SCREENED — {screener_result.classification.value}] {STRIKE_MESSAGES[strike_count]}"
                 else:
