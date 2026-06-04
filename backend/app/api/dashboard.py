@@ -1145,8 +1145,78 @@ async def clear_alert_state(
             DashboardAlertState.alert_id == alert_id,
         )
     )
-    # No manual commit — the get_db dependency handles it.
     return {"ok": True}
+
+
+# ── Start Campaign (dashboard event card → recruiter agent) ──
+
+class StartCampaignRequest(BaseModel):
+    slot_id: uuid.UUID
+
+
+class StartCampaignResponse(BaseModel):
+    ok: bool
+    agent_reply: str | None
+    synthetic_message: str
+    fell_through_to_llm: bool
+
+
+@router.post("/start-campaign", response_model=StartCampaignResponse)
+async def start_campaign_from_dashboard(
+    body: StartCampaignRequest,
+    db: DbSession,
+    current_user: ManagerUser,
+    tenant: CurrentTenant,
+):
+    """Fire a synthetic admin SMS into the recruiter agent's start-campaign
+    router. Same code path as if the admin had texted "start campaign for X" —
+    no new business logic, no duplicated state handling. Returns the agent's
+    user-facing reply so the dashboard can show it as a toast / chat bubble.
+
+    The agent itself decides what to do: route to its planner, ask for
+    clarification, surface no-eligible-volunteers, etc. The dashboard button
+    is just the trigger.
+    """
+    slot = (await db.execute(
+        select(SpecificDateSlot).where(
+            SpecificDateSlot.id == body.slot_id,
+            SpecificDateSlot.tenant_id == tenant.id,
+        )
+    )).scalar_one_or_none()
+    if slot is None:
+        raise HTTPException(status_code=404, detail="Event slot not found")
+
+    label = slot.label or "the event"
+    # Format date naturally: "Sat, Jul 4". Falls back gracefully on Windows
+    # where %-d isn't supported.
+    try:
+        date_str = slot.date.strftime("%a, %b %-d")
+    except (ValueError, OSError):
+        date_str = slot.date.strftime("%a, %b %d").replace(" 0", " ")
+
+    synthetic = f"start campaign for {label} on {date_str}"
+
+    from app.agents.recruiter.chat_tools import (
+        maybe_handle_start_campaign_directly,
+    )
+    from app.modules.tool_handlers import ToolContext
+
+    ctx = ToolContext(
+        db=db,
+        tenant=tenant,
+        contact_phone="",  # admin-initiated, no SMS thread
+        contact_id=current_user.id,
+        is_admin=True,
+        test_mode=False,
+    )
+
+    reply = await maybe_handle_start_campaign_directly(ctx, synthetic)
+    return StartCampaignResponse(
+        ok=reply is not None,
+        agent_reply=reply,
+        synthetic_message=synthetic,
+        fell_through_to_llm=reply is None,
+    )
 
 
 # ── Planning view (T+8 → T+60) ──
@@ -1159,17 +1229,26 @@ class PlanningCampaignSummary(BaseModel):
 
 
 class PlanningEvent(BaseModel):
+    """One event occurrence in the planning horizon. Backed either by a
+    real SpecificDateSlot row (kind='specific') or by a materialized
+    recurring AvailabilityRule instance (kind='recurring'). The frontend
+    uses `kind` to decide whether the row supports Start Campaign + which
+    detail page to navigate to."""
     slot_id: uuid.UUID
+    kind: str = "specific"  # 'specific' | 'recurring'
     label: str
     location: str | None
     date: date
     days_until: int
-    bucket: str  # 'week_2' | 'weeks_3_4' | 'month_2'
+    bucket: str  # 'week_2' | 'weeks_3_4' | 'month_2' | 'this_week'
     booked: int
-    capacity: int
+    capacity: int                 # sum of max_allowed across services
+    min_required_total: int = 0   # sum of min_required across services
     fill_pct: float
     campaign: PlanningCampaignSummary | None = None
     health: str  # 'filled' | 'filling' | 'needs_campaign' | 'not_started'
+    # Display-formatted time range when available (e.g. "10am–2pm").
+    time_range: str | None = None
 
 
 @router.get("/planning", response_model=list[PlanningEvent])
@@ -1177,8 +1256,11 @@ async def get_planning_events(
     db: DbSession,
     current_user: CurrentUser,
     tenant: CurrentTenant,
+    start_offset: int = 8,
+    end_offset: int = 60,
 ):
-    """Events in the T+8 → T+60 window, grouped by horizon bucket.
+    """Events in the T+start_offset → T+end_offset window, grouped by
+    horizon bucket. Defaults match the Planning tab (T+8 → T+60).
 
     Each event carries its campaign status (if any) and a derived health
     label the UI uses to color-code the row:
@@ -1195,8 +1277,8 @@ async def get_planning_events(
     )
 
     today = date.today()
-    start = today + timedelta(days=8)
-    end = today + timedelta(days=60)
+    start = today + timedelta(days=max(0, start_offset))
+    end = today + timedelta(days=end_offset)
 
     slots = (await db.execute(
         select(SpecificDateSlot).where(
@@ -1206,36 +1288,40 @@ async def get_planning_events(
         ).order_by(SpecificDateSlot.date.asc())
     )).scalars().all()
 
-    if not slots:
-        return []
+    # Don't early-return on empty `slots` — recurring events may still
+    # produce planning rows even if no specific date slots fall in the
+    # window. We bail out only after BOTH sources are exhausted.
 
     slot_ids = [s.id for s in slots]
 
-    # Booked counts per slot
-    booked_rows = (await db.execute(
-        select(Booking.event_slot_id, func.count())
-        .where(
-            Booking.tenant_id == tenant.id,
-            Booking.event_slot_id.in_(slot_ids),
-            Booking.status != BookingStatus.CANCELLED,
-        )
-        .group_by(Booking.event_slot_id)
-    )).all()
-    booked_by_slot = {sid: int(n) for sid, n in booked_rows}
+    # Booked counts per slot — only run when there are specific slots.
+    booked_by_slot: dict[uuid.UUID, int] = {}
+    if slot_ids:
+        booked_rows = (await db.execute(
+            select(Booking.event_slot_id, func.count())
+            .where(
+                Booking.tenant_id == tenant.id,
+                Booking.event_slot_id.in_(slot_ids),
+                Booking.status != BookingStatus.CANCELLED,
+            )
+            .group_by(Booking.event_slot_id)
+        )).all()
+        booked_by_slot = {sid: int(n) for sid, n in booked_rows}
 
     # Most-recent campaign per slot
-    campaign_rows = (await db.execute(
-        select(RecruitmentCampaign)
-        .where(
-            RecruitmentCampaign.tenant_id == tenant.id,
-            RecruitmentCampaign.event_slot_id.in_(slot_ids),
-        )
-        .order_by(RecruitmentCampaign.created_at.desc())
-    )).scalars().all()
     campaign_by_slot: dict[uuid.UUID, RecruitmentCampaign] = {}
-    for c in campaign_rows:
-        # Keep the first (most recent) per slot
-        campaign_by_slot.setdefault(c.event_slot_id, c)
+    if slot_ids:
+        campaign_rows = (await db.execute(
+            select(RecruitmentCampaign)
+            .where(
+                RecruitmentCampaign.tenant_id == tenant.id,
+                RecruitmentCampaign.event_slot_id.in_(slot_ids),
+            )
+            .order_by(RecruitmentCampaign.created_at.desc())
+        )).scalars().all()
+        for c in campaign_rows:
+            # Keep the first (most recent) per slot
+            campaign_by_slot.setdefault(c.event_slot_id, c)
 
     # Wave counts for the campaigns we picked
     relevant_campaign_ids = [c.id for c in campaign_by_slot.values()]
@@ -1263,21 +1349,35 @@ async def get_planning_events(
         # — not a dict with a "services" key. Same convention as
         # app.services.availability._get_service_limits.
         capacity = 0
+        min_required_total = 0
         for svc in (slot.service_config or []):
             try:
                 capacity += int(svc.get("max_allowed", 0) or 0)
+                min_required_total += int(svc.get("min_required", 0) or 0)
             except (TypeError, ValueError):
                 continue
         booked = booked_by_slot.get(slot.id, 0)
         fill_pct = (booked / capacity) if capacity > 0 else 0.0
         days_until = (slot.date - today).days
 
-        if days_until <= 14:
+        if days_until <= 7:
+            bucket = "this_week"
+        elif days_until <= 14:
             bucket = "week_2"
         elif days_until <= 28:
             bucket = "weeks_3_4"
         else:
             bucket = "month_2"
+
+        # Display-friendly time range, e.g. "10am–2pm".
+        try:
+            time_range = (
+                slot.start_time.strftime("%-I:%M%p").lstrip("0").lower()
+                + "–"
+                + slot.end_time.strftime("%-I:%M%p").lstrip("0").lower()
+            )
+        except (ValueError, OSError, AttributeError):
+            time_range = None
 
         camp = campaign_by_slot.get(slot.id)
         campaign_summary: PlanningCampaignSummary | None = None
@@ -1306,6 +1406,7 @@ async def get_planning_events(
 
         out.append(PlanningEvent(
             slot_id=slot.id,
+            kind="specific",
             label=slot.label or "(unnamed event)",
             location=slot.location,
             date=slot.date,
@@ -1313,10 +1414,144 @@ async def get_planning_events(
             bucket=bucket,
             booked=booked,
             capacity=capacity,
+            min_required_total=min_required_total,
             fill_pct=round(fill_pct, 3),
             campaign=campaign_summary,
             health=health,
+            time_range=time_range,
         ))
+
+    # ── Recurring events ──
+    # Materialize each AvailabilityRule occurrence within the window. A
+    # specific_date_slot on the same date takes precedence (e.g., a
+    # one-off cancellation or replacement), so we skip recurring rows
+    # when a specific slot already covers that date for the same rule's
+    # label/location signature.
+    from app.models.availability import AvailabilityRule
+
+    rules = (await db.execute(
+        select(AvailabilityRule).where(
+            AvailabilityRule.tenant_id == tenant.id,
+            AvailabilityRule.is_active.is_(True),
+        )
+    )).scalars().all()
+
+    if rules:
+        # Pull all non-cancelled bookings against recurring events
+        # (event_slot_id IS NULL) in the window. Bucket by (date,
+        # appointment_type_id) for O(1) lookups in the inner loop.
+        day_start = datetime.combine(start, time.min, tzinfo=timezone.utc)
+        day_end = datetime.combine(end, time.max, tzinfo=timezone.utc)
+        recurring_bookings = (await db.execute(
+            select(Booking.scheduled_at, Booking.appointment_type_id)
+            .where(
+                Booking.tenant_id == tenant.id,
+                Booking.event_slot_id.is_(None),
+                Booking.scheduled_at.between(day_start, day_end),
+                Booking.status != BookingStatus.CANCELLED,
+            )
+        )).all()
+        bookings_by_day_type: dict[tuple[date, uuid.UUID], int] = {}
+        for sched_at, type_id in recurring_bookings:
+            if type_id is None:
+                continue
+            key = (sched_at.date(), type_id)
+            bookings_by_day_type[key] = bookings_by_day_type.get(key, 0) + 1
+
+        # Dates covered by specific slots — skip recurring on those.
+        covered_dates = {s.date for s in slots}
+
+        current_day = start
+        one_day = timedelta(days=1)
+        while current_day <= end:
+            dow = current_day.weekday()  # Mon=0..Sun=6
+            for rule in rules:
+                if rule.day_of_week != dow:
+                    continue
+                # Skip if a specific slot already covers this date AND
+                # location/label matches — gives admins a clean "cancel
+                # this Saturday's recurring and run a one-off instead" path.
+                if current_day in covered_dates:
+                    continue
+
+                capacity = 0
+                min_required_total = 0
+                booked = 0
+                for svc in (rule.service_config or []):
+                    try:
+                        capacity += int(svc.get("max_allowed", 0) or 0)
+                        min_required_total += int(svc.get("min_required", 0) or 0)
+                        type_id_raw = svc.get("appointment_type_id")
+                        if type_id_raw:
+                            type_id = (
+                                type_id_raw
+                                if isinstance(type_id_raw, uuid.UUID)
+                                else uuid.UUID(str(type_id_raw))
+                            )
+                            booked += bookings_by_day_type.get(
+                                (current_day, type_id), 0
+                            )
+                    except (TypeError, ValueError):
+                        continue
+
+                if capacity == 0:
+                    continue
+
+                days_until = (current_day - today).days
+                fill_pct = booked / capacity if capacity > 0 else 0.0
+
+                if days_until <= 7:
+                    bucket = "this_week"
+                elif days_until <= 14:
+                    bucket = "week_2"
+                elif days_until <= 28:
+                    bucket = "weeks_3_4"
+                else:
+                    bucket = "month_2"
+
+                try:
+                    time_range = (
+                        rule.start_time.strftime("%-I:%M%p").lstrip("0").lower()
+                        + "–"
+                        + rule.end_time.strftime("%-I:%M%p").lstrip("0").lower()
+                    )
+                except (ValueError, OSError, AttributeError):
+                    time_range = None
+
+                # Synthetic stable id per (rule, date). Used purely as a
+                # React key + navigation hint; never persists.
+                synth_id = uuid.uuid5(rule.id, current_day.isoformat())
+
+                # Health label — recurring events don't have campaigns,
+                # so the "needs_campaign" / "not_started" labels don't
+                # quite fit. Collapse to filled/filling/under-filled.
+                if fill_pct >= 1.0:
+                    health = "filled"
+                elif fill_pct >= 0.6:
+                    health = "filling"
+                else:
+                    health = "needs_campaign"
+
+                out.append(PlanningEvent(
+                    slot_id=synth_id,
+                    kind="recurring",
+                    label=rule.label or "(recurring)",
+                    location=rule.location,
+                    date=current_day,
+                    days_until=days_until,
+                    bucket=bucket,
+                    booked=booked,
+                    capacity=capacity,
+                    min_required_total=min_required_total,
+                    fill_pct=round(fill_pct, 3),
+                    campaign=None,
+                    health=health,
+                    time_range=time_range,
+                ))
+            current_day += one_day
+
+    # Final sort: by date first, then label for stable display.
+    out.sort(key=lambda e: (e.date, e.label.lower()))
     return out
 
 
@@ -1448,15 +1683,17 @@ async def get_recommendations(
             booked = booked_by_slot.get(slot.id, 0)
             if booked / capacity >= 0.7:
                 continue
-            # Check last wave activity
+            # Check last wave activity. RecruitmentWave has created_at
+            # only (no updated_at), which is fine here — we want to know
+            # when the most recent wave was kicked off.
             last_wave = (await db.execute(
                 select(RecruitmentWave)
                 .where(RecruitmentWave.campaign_id == camp.id)
-                .order_by(RecruitmentWave.updated_at.desc())
+                .order_by(RecruitmentWave.created_at.desc())
                 .limit(1)
             )).scalar_one_or_none()
             if last_wave is None or (
-                last_wave.updated_at and last_wave.updated_at > five_days_ago
+                last_wave.created_at and last_wave.created_at > five_days_ago
             ):
                 continue
             recs.append(Recommendation(
