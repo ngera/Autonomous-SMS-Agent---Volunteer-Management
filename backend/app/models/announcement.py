@@ -61,8 +61,13 @@ class Announcement(Base):
     created_by_admin_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("admin_users.id"), nullable=False
     )
+    # SET NULL — when a wave is deleted (typically via a cascading
+    # slot/campaign delete), the announcement broadcast record is
+    # preserved as a historical audit row with the back-pointer nulled.
     recruitment_wave_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("recruitment_waves.id"), nullable=True
+        UUID(as_uuid=True),
+        ForeignKey("recruitment_waves.id", ondelete="SET NULL"),
+        nullable=True,
     )
     created_at: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

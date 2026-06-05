@@ -391,6 +391,10 @@ export interface AvailabilityRuleResponse {
 }
 
 export interface AvailabilityRuleUpdate {
+  /** Send the existing rule's id so the server upserts in place
+   *  (preserves the FK link from any materialized SpecificDateSlot).
+   *  Leave undefined for brand-new rules. */
+  id?: string;
   day_of_week: number;
   label?: string;
   location?: string;
@@ -400,6 +404,12 @@ export interface AvailabilityRuleUpdate {
   service_config?: ServiceSlotConfig[] | null;
   is_active?: boolean;
   allow_roster_sharing?: boolean;
+}
+
+export interface RuleDriftEntry {
+  field: string;
+  from: unknown;
+  to: unknown;
 }
 
 export interface SpecificDateSlotResponse {
@@ -414,6 +424,14 @@ export interface SpecificDateSlotResponse {
   is_active: boolean;
   allow_roster_sharing: boolean;
   description: string | null;
+  /** When set, the slot was materialized from this rule. The
+   *  propagation engine uses it to fan out rule edits. */
+  availability_rule_id?: string | null;
+  /** Set when the parent rule changed but this slot couldn't
+   *  auto-absorb the diff (bookings or active campaign). Cleared
+   *  via apply-rule-drift or ignore-rule-drift. */
+  rule_drift_at?: string | null;
+  rule_drift_summary?: RuleDriftEntry[] | null;
 }
 
 export interface SpecificDateSlotCreate {

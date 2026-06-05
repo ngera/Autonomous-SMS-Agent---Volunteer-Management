@@ -1,6 +1,6 @@
 import { CalendarClock } from "lucide-react";
 import { RecommendationsStrip } from "./recommendations-strip";
-import { HorizonTimeline } from "./horizon-timeline";
+import { PlanningHeatmap } from "./planning-heatmap";
 
 /**
  * Planning tab — strategic view of T+8 → T+60.
@@ -21,12 +21,12 @@ export function PlanningView() {
           </div>
           <div className="min-w-0 flex-1">
             <h2 className="text-lg font-semibold">
-              Planning · the next 1–2 months
+              Planning · beyond the next 2 weeks
             </h2>
             <p className="mt-0.5 max-w-2xl text-sm text-muted-foreground">
-              Spot events that need a campaign before they get tight. Each
-              recommendation is a one-click action — nothing fires without
-              your say-so.
+              Events 15–60 days out — past the operational window where
+              you'd just send reminders. Start campaigns now to give the
+              recruiter agent enough runway to fill them.
             </p>
           </div>
         </div>
@@ -42,14 +42,18 @@ export function PlanningView() {
         <RecommendationsStrip />
       </section>
 
-      {/* Horizon timeline */}
+      {/* Planning heatmap — a calendar grid (week × day) keeps a 60-day
+          horizon scannable even when there are 20+ events. Clicking a
+          cell expands the rich min/stretch bars used on Needs-You-Now,
+          so the per-event detail is one click away rather than always
+          on screen. */}
       <section>
         <SectionHeader
           eyebrow="Horizon"
-          title="Events across the next 60 days"
-          hint="Click any event to open the run sheet."
+          title="Events 15–60 days out"
+          hint="Click a day for event details."
         />
-        <HorizonTimeline />
+        <PlanningHeatmap />
       </section>
     </div>
   );

@@ -74,6 +74,48 @@ export function SpecificDateSlotsPanel({
   const showForm = creating || editingId !== null;
   const isPending = createSlot.isPending || updateSlot.isPending;
 
+  // First-pass delete asks for a simple confirm. If the backend
+  // responds 409 because volunteers are booked, surface the count
+  // and ask a second confirm — then retry with force=true which
+  // cancels the bookings and deletes the event.
+  function handleDelete(s: SpecificDateSlotResponse) {
+    if (!confirm(`Delete event "${s.label || s.date}"?`)) return;
+    deleteSlot.mutate(
+      { id: s.id },
+      {
+        onError: (err) => {
+          const detail = errDetail(err) as
+            | {
+                code?: string;
+                message?: string;
+                booking_count?: number;
+              }
+            | undefined;
+          if (detail?.code !== "bookings_attached") {
+            alert(detail?.message || "Failed to delete event.");
+            return;
+          }
+          const count = detail.booking_count ?? 0;
+          const msg =
+            detail.message ||
+            `${count} volunteer${count === 1 ? "" : "s"} booked. Cancel them and delete anyway?`;
+          if (!confirm(msg)) return;
+          deleteSlot.mutate(
+            { id: s.id, force: true },
+            {
+              onError: (err2) => {
+                const d2 = errDetail(err2) as
+                  | { message?: string }
+                  | undefined;
+                alert(d2?.message || "Failed to delete event.");
+              },
+            },
+          );
+        },
+      },
+    );
+  }
+
   function resetForm() {
     setFormDate(EMPTY_FORM.date);
     setFormLabel(EMPTY_FORM.label);
@@ -294,9 +336,7 @@ export function SpecificDateSlotsPanel({
                   className="h-7 w-7 text-destructive"
                   onClick={(e) => {
                     e.stopPropagation();
-                    if (confirm(`Delete event "${s.label || s.date}"?`)) {
-                      deleteSlot.mutate(s.id);
-                    }
+                    handleDelete(s);
                   }}
                 >
                   <Trash2 className="h-3.5 w-3.5" />

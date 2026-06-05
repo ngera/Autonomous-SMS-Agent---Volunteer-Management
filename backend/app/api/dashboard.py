@@ -1,5 +1,6 @@
 import asyncio
 import uuid
+import datetime as _dt
 from datetime import date, datetime, time, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, status
@@ -847,6 +848,57 @@ async def _alerts_walkup_candidates(db, tenant, now) -> list[AlertItem]:
     )]
 
 
+async def _alerts_rule_changed(db, tenant, now) -> list[AlertItem]:
+    """Materialized slots where the parent AvailabilityRule changed but
+    the slot couldn't safely auto-absorb the new values (had bookings
+    or an active campaign). Surface so admin can apply or ignore."""
+    rows = (await db.execute(
+        select(SpecificDateSlot).where(
+            SpecificDateSlot.tenant_id == tenant.id,
+            SpecificDateSlot.rule_drift_at.is_not(None),
+        )
+        .order_by(SpecificDateSlot.rule_drift_at.desc())
+        .limit(20)
+    )).scalars().all()
+    items: list[AlertItem] = []
+    for slot in rows:
+        changed_fields = [
+            d.get("field") for d in (slot.rule_drift_summary or [])
+            if isinstance(d, dict)
+        ]
+        # Render "start_time, services" rather than the full diff in the
+        # alert headline; the review modal shows the values themselves.
+        pretty = ", ".join(
+            f.replace("_", " ") for f in changed_fields if f
+        ) or "rule"
+        try:
+            date_str = slot.date.strftime("%a, %b %-d")
+        except (ValueError, OSError):
+            date_str = slot.date.strftime("%a, %b %d").replace(" 0", " ")
+        items.append(AlertItem(
+            id=f"rule_changed:{slot.id}",
+            source="rule_changed",
+            severity="medium",
+            title=(
+                f"Rule changed — review {slot.label or 'event'} on {date_str}"
+            ),
+            body=(
+                f"Updated: {pretty}. Slot has bookings or an active "
+                f"campaign so the change wasn't applied automatically."
+            ),
+            cta_label="Review",
+            cta_url=f"/events/specific/{slot.id}",
+            age_seconds=_age(now, slot.rule_drift_at),
+            icon="GitPullRequestArrow",
+            accent="amber",
+            context={
+                "slot_id": str(slot.id),
+                "diff": slot.rule_drift_summary or [],
+            },
+        ))
+    return items
+
+
 async def _alerts_at_risk_events(db, tenant, now) -> list[AlertItem]:
     """Events in the next 7 days that are under-filled at < 60% with no
     pending campaign. These get auto-promoted from passive list items to
@@ -996,6 +1048,7 @@ async def list_alerts(
         _alerts_unreviewed_suspensions,
         _alerts_walkup_candidates,
         _alerts_at_risk_events,
+        _alerts_rule_changed,
     ):
         items.extend(await fn(db, tenant, now))
     items.extend(_alerts_dummy_issue_reports(now))
@@ -1151,7 +1204,15 @@ async def clear_alert_state(
 # ── Start Campaign (dashboard event card → recruiter agent) ──
 
 class StartCampaignRequest(BaseModel):
-    slot_id: uuid.UUID
+    """Either `slot_id` for an existing specific event, OR
+    `rule_id + date` for a recurring event — in which case the server
+    materializes the recurring occurrence into a real
+    SpecificDateSlot first (campaigns require an event_slot_id FK)."""
+    slot_id: uuid.UUID | None = None
+    rule_id: uuid.UUID | None = None
+    # `date` shadows the imported `date` class in the class body, so
+    # qualify the annotation via the module to keep both readable.
+    date: _dt.date | None = None
 
 
 class StartCampaignResponse(BaseModel):
@@ -1159,6 +1220,10 @@ class StartCampaignResponse(BaseModel):
     agent_reply: str | None
     synthetic_message: str
     fell_through_to_llm: bool
+    # When materialization happened, return the new slot id so the
+    # frontend can refresh its planning grid and the row flips from
+    # kind='recurring' → kind='specific' on next fetch.
+    materialized_slot_id: uuid.UUID | None = None
 
 
 @router.post("/start-campaign", response_model=StartCampaignResponse)
@@ -1173,18 +1238,42 @@ async def start_campaign_from_dashboard(
     no new business logic, no duplicated state handling. Returns the agent's
     user-facing reply so the dashboard can show it as a toast / chat bubble.
 
+    For recurring events the server materializes a SpecificDateSlot from
+    (rule_id, date) before invoking the recruiter — campaigns attach to
+    event_slot_id, so the slot has to exist first. The materialization
+    is idempotent (partial unique index on rule_id+date), so two admins
+    clicking simultaneously end up pointing at the same row.
+
     The agent itself decides what to do: route to its planner, ask for
     clarification, surface no-eligible-volunteers, etc. The dashboard button
     is just the trigger.
     """
-    slot = (await db.execute(
-        select(SpecificDateSlot).where(
-            SpecificDateSlot.id == body.slot_id,
-            SpecificDateSlot.tenant_id == tenant.id,
+    materialized_id: uuid.UUID | None = None
+
+    if body.slot_id is None and (body.rule_id is None or body.date is None):
+        raise HTTPException(
+            status_code=400,
+            detail="Provide either slot_id, or both rule_id and date",
         )
-    )).scalar_one_or_none()
-    if slot is None:
-        raise HTTPException(status_code=404, detail="Event slot not found")
+
+    if body.slot_id is not None:
+        slot = (await db.execute(
+            select(SpecificDateSlot).where(
+                SpecificDateSlot.id == body.slot_id,
+                SpecificDateSlot.tenant_id == tenant.id,
+            )
+        )).scalar_one_or_none()
+        if slot is None:
+            raise HTTPException(status_code=404, detail="Event slot not found")
+    else:
+        from app.services.availability import materialize_slot_from_rule
+        try:
+            slot = await materialize_slot_from_rule(
+                db, tenant, body.rule_id, body.date
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        materialized_id = slot.id
 
     label = slot.label or "the event"
     # Format date naturally: "Sat, Jul 4". Falls back gracefully on Windows
@@ -1216,6 +1305,7 @@ async def start_campaign_from_dashboard(
         agent_reply=reply,
         synthetic_message=synthetic,
         fell_through_to_llm=reply is None,
+        materialized_slot_id=materialized_id,
     )
 
 
@@ -1236,6 +1326,10 @@ class PlanningEvent(BaseModel):
     detail page to navigate to."""
     slot_id: uuid.UUID
     kind: str = "specific"  # 'specific' | 'recurring'
+    # For kind='recurring' rows, the AvailabilityRule the event came from.
+    # The frontend sends {rule_id, date} to /start-campaign which then
+    # materializes a specific_date_slot before invoking the recruiter.
+    rule_id: uuid.UUID | None = None
     label: str
     location: str | None
     date: date
@@ -1458,8 +1552,15 @@ async def get_planning_events(
             key = (sched_at.date(), type_id)
             bookings_by_day_type[key] = bookings_by_day_type.get(key, 0) + 1
 
-        # Dates covered by specific slots — skip recurring on those.
-        covered_dates = {s.date for s in slots}
+        # Materialized (rule_id, date) pairs — skip emitting the synthetic
+        # recurring row when the same rule has already been materialized
+        # into a real specific_date_slot on that date (that slot is
+        # already in `slots` and was emitted above as kind='specific').
+        materialized_rule_dates: set[tuple[uuid.UUID, date]] = {
+            (s.availability_rule_id, s.date)
+            for s in slots
+            if s.availability_rule_id is not None
+        }
 
         current_day = start
         one_day = timedelta(days=1)
@@ -1468,10 +1569,9 @@ async def get_planning_events(
             for rule in rules:
                 if rule.day_of_week != dow:
                     continue
-                # Skip if a specific slot already covers this date AND
-                # location/label matches — gives admins a clean "cancel
-                # this Saturday's recurring and run a one-off instead" path.
-                if current_day in covered_dates:
+                # Skip when this exact (rule, date) has already been
+                # promoted into a specific slot — it was emitted above.
+                if (rule.id, current_day) in materialized_rule_dates:
                     continue
 
                 capacity = 0
@@ -1535,6 +1635,7 @@ async def get_planning_events(
                 out.append(PlanningEvent(
                     slot_id=synth_id,
                     kind="recurring",
+                    rule_id=rule.id,
                     label=rule.label or "(recurring)",
                     location=rule.location,
                     date=current_day,
@@ -1574,173 +1675,243 @@ async def get_recommendations(
     current_user: CurrentUser,
     tenant: CurrentTenant,
 ):
-    """Rule-based planning recommendations.
+    """Top-3 recommendations for the Planning tab.
 
-    Phase 2 rules (no AI yet — the user said 'Suggestive', meaning the
-    admin clicks Start, not auto-fire):
-      1. start_campaign  : event 14-45 days out, no campaign yet, fill < 50%
-      2. push_wave       : campaign exists but stalled (active > 5 days
-                            since last send) and fill < 70%
-      3. stagger         : 3+ events on the same day
+    Operates on T+14 → T+28 (T → T+14 is covered by Needs-You-Now's
+    at-risk alerts). Both specific events and recurring occurrences
+    are considered.
+
+    Rules:
+      A. push_wave      — has campaign, fill < 50% → push the next wave
+      B. start_campaign — no campaign, fill < 50% → suggest starting one
+                          (works for recurring too — server materializes
+                          a SpecificDateSlot on click)
+
+    Ranked by fill_pct ascending (most under-filled first), capped to 3.
     """
-    from app.models.recruitment_campaign import (
-        CampaignStatus,
-        RecruitmentCampaign,
-        RecruitmentWave,
-        WaveStatus,
-    )
+    from app.models.recruitment_campaign import RecruitmentCampaign
 
     today = date.today()
-    horizon_start = today + timedelta(days=8)
-    horizon_end = today + timedelta(days=60)
+    window_start = today + timedelta(days=14)
+    window_end = today + timedelta(days=28)
 
+    # Specific date slots in window.
     slots = (await db.execute(
         select(SpecificDateSlot).where(
             SpecificDateSlot.tenant_id == tenant.id,
             SpecificDateSlot.is_active.is_(True),
-            SpecificDateSlot.date.between(horizon_start, horizon_end),
-        ).order_by(SpecificDateSlot.date.asc())
+            SpecificDateSlot.date.between(window_start, window_end),
+        )
     )).scalars().all()
-
-    if not slots:
-        return []
-
     slot_ids = [s.id for s in slots]
-    booked_rows = (await db.execute(
-        select(Booking.event_slot_id, func.count())
-        .where(
-            Booking.tenant_id == tenant.id,
-            Booking.event_slot_id.in_(slot_ids),
-            Booking.status != BookingStatus.CANCELLED,
-        )
-        .group_by(Booking.event_slot_id)
-    )).all()
-    booked_by_slot = {sid: int(n) for sid, n in booked_rows}
 
-    campaigns = (await db.execute(
-        select(RecruitmentCampaign).where(
-            RecruitmentCampaign.tenant_id == tenant.id,
-            RecruitmentCampaign.event_slot_id.in_(slot_ids),
+    booked_by_slot: dict[uuid.UUID, int] = {}
+    campaign_by_slot: dict[uuid.UUID, RecruitmentCampaign] = {}
+    if slot_ids:
+        booked_rows = (await db.execute(
+            select(Booking.event_slot_id, func.count())
+            .where(
+                Booking.tenant_id == tenant.id,
+                Booking.event_slot_id.in_(slot_ids),
+                Booking.status != BookingStatus.CANCELLED,
+            )
+            .group_by(Booking.event_slot_id)
+        )).all()
+        booked_by_slot = {sid: int(n) for sid, n in booked_rows}
+
+        campaigns = (await db.execute(
+            select(RecruitmentCampaign).where(
+                RecruitmentCampaign.tenant_id == tenant.id,
+                RecruitmentCampaign.event_slot_id.in_(slot_ids),
+            )
+        )).scalars().all()
+        for c in campaigns:
+            # Most-recent wins if a slot has multiple (shouldn't normally).
+            campaign_by_slot.setdefault(c.event_slot_id, c)
+
+    # Recurring rules — materialize one occurrence per (rule, day) in
+    # the window. Skip dates already covered by a specific slot tied
+    # to the same rule (those are handled as kind='specific' above).
+    rules = (await db.execute(
+        select(AvailabilityRule).where(
+            AvailabilityRule.tenant_id == tenant.id,
+            AvailabilityRule.is_active.is_(True),
         )
     )).scalars().all()
-    campaign_by_slot: dict[uuid.UUID, RecruitmentCampaign] = {}
-    for c in campaigns:
-        campaign_by_slot[c.event_slot_id] = c
+    materialized_rule_dates: set[tuple[uuid.UUID, date]] = {
+        (s.availability_rule_id, s.date)
+        for s in slots
+        if s.availability_rule_id is not None
+    }
 
-    recs: list[Recommendation] = []
+    # Bookings against recurring (event_slot_id IS NULL) in the window,
+    # bucketed by (date, appointment_type_id) for the inner loop.
+    rec_bookings_by_day_type: dict[tuple[date, uuid.UUID], int] = {}
+    if rules:
+        day_start_utc = datetime.combine(window_start, time.min, tzinfo=timezone.utc)
+        day_end_utc = datetime.combine(window_end, time.max, tzinfo=timezone.utc)
+        rec_booking_rows = (await db.execute(
+            select(Booking.scheduled_at, Booking.appointment_type_id)
+            .where(
+                Booking.tenant_id == tenant.id,
+                Booking.event_slot_id.is_(None),
+                Booking.scheduled_at.between(day_start_utc, day_end_utc),
+                Booking.status != BookingStatus.CANCELLED,
+            )
+        )).all()
+        for sched_at, type_id in rec_booking_rows:
+            if type_id is None:
+                continue
+            key = (sched_at.date(), type_id)
+            rec_bookings_by_day_type[key] = rec_bookings_by_day_type.get(key, 0) + 1
 
-    # Rule 1: start a campaign for under-filled events with no campaign yet
+    # Build a uniform candidate list across specific + recurring.
+    candidates: list[dict] = []
+
     for slot in slots:
-        days_until = (slot.date - today).days
-        if days_until < 14 or days_until > 45:
-            continue
-        if slot.id in campaign_by_slot:
-            continue
-        capacity = sum(
-            int(s.get("max_allowed", 0) or 0)
-            for s in (slot.service_config or [])
-        )
+        capacity = 0
+        min_required = 0
+        for s in (slot.service_config or []):
+            try:
+                capacity += int(s.get("max_allowed", 0) or 0)
+                min_required += int(s.get("min_required", 0) or 0)
+            except (TypeError, ValueError):
+                continue
         if capacity == 0:
             continue
         booked = booked_by_slot.get(slot.id, 0)
-        if booked / capacity >= 0.5:
-            continue
-        recs.append(Recommendation(
-            id=f"rec_start:{slot.id}",
-            kind="start_campaign",
-            title=f"Start a campaign for {slot.label or 'event'}",
-            body=(
-                f"{days_until} days out and only {booked} of {capacity} "
-                f"booked. Recruitment waves take 1-3 weeks to land — start "
-                f"now to fill comfortably."
-            ),
-            cta_label="Start campaign",
-            cta_url=f"/campaigns?event_slot_id={slot.id}",
-            accent="blue",
-            context={
-                "slot_id": str(slot.id),
-                "days_until": days_until,
-                "fill_pct": round(booked / capacity, 2),
-            },
-        ))
+        candidates.append({
+            "kind": "specific",
+            "slot_id": str(slot.id),
+            "rule_id": None,
+            "date": slot.date,
+            "label": slot.label or "event",
+            "days_until": (slot.date - today).days,
+            "booked": booked,
+            "capacity": capacity,
+            "min_required": min_required,
+            "campaign": campaign_by_slot.get(slot.id),
+            "fill_pct": booked / capacity,
+        })
 
-    # Rule 2: push next wave for stalled active campaigns
-    if campaigns:
-        five_days_ago = datetime.now(timezone.utc) - timedelta(days=5)
-        for camp in campaigns:
-            status = camp.status.value if hasattr(camp.status, "value") else camp.status
-            if str(status) != CampaignStatus.ACTIVE.value:
+    one_day = timedelta(days=1)
+    cur = window_start
+    while cur <= window_end:
+        dow = cur.weekday()
+        for rule in rules:
+            if rule.day_of_week != dow:
                 continue
-            slot = next((s for s in slots if s.id == camp.event_slot_id), None)
-            if slot is None:
+            if (rule.id, cur) in materialized_rule_dates:
                 continue
-            capacity = sum(
-                int(s.get("max_allowed", 0) or 0)
-                for s in (slot.service_config or [])
-            )
+            capacity = 0
+            min_required = 0
+            booked = 0
+            for svc in (rule.service_config or []):
+                try:
+                    capacity += int(svc.get("max_allowed", 0) or 0)
+                    min_required += int(svc.get("min_required", 0) or 0)
+                    tid_raw = svc.get("appointment_type_id")
+                    if tid_raw:
+                        tid = (
+                            tid_raw
+                            if isinstance(tid_raw, uuid.UUID)
+                            else uuid.UUID(str(tid_raw))
+                        )
+                        booked += rec_bookings_by_day_type.get((cur, tid), 0)
+                except (TypeError, ValueError):
+                    continue
             if capacity == 0:
                 continue
-            booked = booked_by_slot.get(slot.id, 0)
-            if booked / capacity >= 0.7:
-                continue
-            # Check last wave activity. RecruitmentWave has created_at
-            # only (no updated_at), which is fine here — we want to know
-            # when the most recent wave was kicked off.
-            last_wave = (await db.execute(
-                select(RecruitmentWave)
-                .where(RecruitmentWave.campaign_id == camp.id)
-                .order_by(RecruitmentWave.created_at.desc())
-                .limit(1)
-            )).scalar_one_or_none()
-            if last_wave is None or (
-                last_wave.created_at and last_wave.created_at > five_days_ago
-            ):
-                continue
-            recs.append(Recommendation(
+            candidates.append({
+                "kind": "recurring",
+                "slot_id": None,
+                "rule_id": str(rule.id),
+                "date": cur,
+                "label": rule.label or "Recurring event",
+                "days_until": (cur - today).days,
+                "booked": booked,
+                "capacity": capacity,
+                "min_required": min_required,
+                "campaign": None,  # recurring has no campaign until materialized
+                "fill_pct": booked / capacity,
+            })
+        cur += one_day
+
+    # Apply rules A + B, rank by lowest fill_pct, cap to 3.
+    scored: list[tuple[float, Recommendation]] = []
+
+    for c in candidates:
+        if c["fill_pct"] >= 0.5:
+            continue
+        days_until = c["days_until"]
+
+        # Compact date for the headline, e.g. "Jun 18". %-d isn't
+        # supported on Windows, so strip a leading zero by hand there.
+        try:
+            date_str = c["date"].strftime("%b %-d")
+        except (ValueError, OSError):
+            date_str = c["date"].strftime("%b %d").replace(" 0", " ")
+        ratio_str = f"{c['booked']}/{c['min_required'] or c['capacity']}"
+
+        if c["campaign"] is not None:
+            # Rule A — push the next wave on an existing campaign.
+            camp = c["campaign"]
+            scored.append((c["fill_pct"], Recommendation(
                 id=f"rec_push:{camp.id}",
                 kind="push_wave",
-                title=f"Campaign stalled for {slot.label or 'event'}",
+                title=(
+                    f"Campaign falling behind for ({date_str}) "
+                    f"{c['label']} ({ratio_str})"
+                ),
                 body=(
-                    f"Last wave moved 5+ days ago, only {booked} of "
-                    f"{capacity} booked. Push the next wave to recover."
+                    f"{days_until} days out, only {c['booked']} of "
+                    f"{c['capacity']} booked. Open the campaign to "
+                    f"push the next wave."
                 ),
                 cta_label="Open campaign",
                 cta_url=f"/campaigns/{camp.id}",
                 accent="amber",
-                context={"campaign_id": str(camp.id)},
-            ))
+                context={
+                    "campaign_id": str(camp.id),
+                    "slot_id": c["slot_id"],
+                    "days_until": days_until,
+                    "fill_pct": round(c["fill_pct"], 2),
+                },
+            )))
+        else:
+            # Rule B — agent-driven start campaign. Recurring rows
+            # carry (rule_id, date) so the server materializes a slot
+            # before invoking the recruiter.
+            ident = (
+                c["slot_id"]
+                or f"{c['rule_id']}:{c['date'].isoformat()}"
+            )
+            scored.append((c["fill_pct"], Recommendation(
+                id=f"rec_start:{ident}",
+                kind="start_campaign",
+                title=(
+                    f"Start a campaign for ({date_str}) "
+                    f"{c['label']} ({ratio_str})"
+                ),
+                body=(
+                    f"{days_until} days out and only {c['booked']} of "
+                    f"{c['capacity']} booked. Recruitment waves take "
+                    f"1–3 weeks to land — start now to fill comfortably."
+                ),
+                cta_label="Start campaign",
+                cta_url="",  # agent-driven, no nav
+                accent="blue",
+                context={
+                    "slot_id": c["slot_id"],
+                    "rule_id": c["rule_id"],
+                    "date": c["date"].isoformat(),
+                    "days_until": days_until,
+                    "fill_pct": round(c["fill_pct"], 2),
+                },
+            )))
 
-    # Rule 3: stagger same-day stacking (3+ events on one date)
-    by_date: dict[date, list[SpecificDateSlot]] = {}
-    for slot in slots:
-        by_date.setdefault(slot.date, []).append(slot)
-    for slot_date, group in by_date.items():
-        if len(group) < 3:
-            continue
-        days_until = (slot_date - today).days
-        recs.append(Recommendation(
-            id=f"rec_stagger:{slot_date.isoformat()}",
-            kind="stagger",
-            title=(
-                f"{len(group)} events stacked on "
-                f"{slot_date.strftime('%a, %b %-d') if hasattr(slot_date, 'strftime') else slot_date}"
-            ),
-            body=(
-                "Multi-event days historically have lower co-fill rates. "
-                "Consider staggering campaigns or message templates so "
-                "volunteers don't see overlapping asks."
-            ),
-            cta_label="Review the day",
-            cta_url=f"/bookings?date={slot_date.isoformat()}",
-            accent="violet",
-            context={
-                "date": slot_date.isoformat(),
-                "event_count": len(group),
-                "days_until": days_until,
-            },
-        ))
-
-    return recs
+    scored.sort(key=lambda x: x[0])
+    return [rec for _, rec in scored[:3]]
 
 
 # Small helper — cast bool to int in a portable way for SUM().

@@ -5,20 +5,40 @@ import { cn } from "@/lib/utils";
 import type { AlertItem } from "../api";
 import { useAlerts } from "../hooks/use-dashboard";
 import { useAlertState } from "../lib/alert-state";
+import {
+  ALERT_CATEGORY_META,
+  type AlertCategory,
+  categoryFor,
+} from "../lib/alert-categories";
 import { AlertCard } from "./alert-card";
 
-const SEVERITY_GROUPS: { key: AlertItem["severity"]; label: string; accent: string }[] = [
-  { key: "high",   label: "Urgent",       accent: "text-amber-700 dark:text-amber-300" },
-  { key: "medium", label: "Needs review", accent: "text-violet-700 dark:text-violet-300" },
-  { key: "low",    label: "Heads-up",     accent: "text-slate-600 dark:text-slate-400" },
+const SEVERITY_GROUPS: {
+  key: AlertItem["severity"];
+  label: string;
+  accent: string;
+}[] = [
+  { key: "high", label: "Urgent", accent: "text-amber-700 dark:text-amber-300" },
+  {
+    key: "medium",
+    label: "Needs review",
+    accent: "text-violet-700 dark:text-violet-300",
+  },
+  {
+    key: "low",
+    label: "Heads-up",
+    accent: "text-slate-600 dark:text-slate-400",
+  },
 ];
 
-export function AlertsFeed() {
+interface AlertsFeedProps {
+  /** When set, only show alerts in this category. Null = show all. */
+  categoryFilter?: AlertCategory | null;
+}
+
+export function AlertsFeed({ categoryFilter = null }: AlertsFeedProps) {
   const { data, isLoading } = useAlerts();
   const state = useAlertState();
 
-  // Filter locally-dismissed and snoozed items so the feed stays clean.
-  // Snoozed past their expiry naturally come back into view.
   const visible = useMemo(() => {
     if (!data) return [];
     const now = Date.now();
@@ -26,9 +46,10 @@ export function AlertsFeed() {
       const snoozedUntil = state.snoozedUntil(a.id);
       if (snoozedUntil && snoozedUntil > now) return false;
       if (state.dismissedRecord(a.id)) return false;
+      if (categoryFilter && categoryFor(a) !== categoryFilter) return false;
       return true;
     });
-  }, [data, state]);
+  }, [data, state, categoryFilter]);
 
   const grouped = useMemo(() => {
     const map = new Map<AlertItem["severity"], AlertItem[]>();
@@ -50,11 +71,32 @@ export function AlertsFeed() {
   }
 
   if (visible.length === 0) {
-    return <EmptyAlertsState totalRaw={data?.length ?? 0} />;
+    return (
+      <EmptyAlertsState
+        totalRaw={data?.length ?? 0}
+        categoryFilter={categoryFilter}
+      />
+    );
   }
 
   return (
     <div className="space-y-5">
+      {categoryFilter && (
+        <div className="flex items-center gap-2 rounded-md border bg-card px-3 py-2 text-xs text-muted-foreground">
+          <span
+            className="inline-block h-2 w-2 rounded-full"
+            style={{
+              backgroundColor: ALERT_CATEGORY_META[categoryFilter].color,
+            }}
+          />
+          Filtered by{" "}
+          <span className="font-semibold text-foreground">
+            {ALERT_CATEGORY_META[categoryFilter].label}
+          </span>
+          {" · "}
+          {visible.length} item{visible.length === 1 ? "" : "s"}
+        </div>
+      )}
       {SEVERITY_GROUPS.map(({ key, label, accent }) => {
         const items = grouped.get(key) ?? [];
         if (items.length === 0) return null;
@@ -86,8 +128,27 @@ export function AlertsFeed() {
   );
 }
 
-function EmptyAlertsState({ totalRaw }: { totalRaw: number }) {
+function EmptyAlertsState({
+  totalRaw,
+  categoryFilter,
+}: {
+  totalRaw: number;
+  categoryFilter: AlertCategory | null;
+}) {
   const hasSnoozed = totalRaw > 0;
+  if (categoryFilter) {
+    return (
+      <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed py-8 text-center">
+        <p className="text-sm font-medium">
+          No {ALERT_CATEGORY_META[categoryFilter].label.toLowerCase()} right
+          now
+        </p>
+        <p className="mt-1 max-w-sm text-xs text-muted-foreground">
+          Clear the filter to see other alerts.
+        </p>
+      </div>
+    );
+  }
   return (
     <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed py-10 text-center">
       <div className="flex h-14 w-14 items-center justify-center rounded-full bg-gradient-to-br from-emerald-100 to-emerald-50 ring-1 ring-emerald-200 dark:from-emerald-950/50 dark:to-emerald-950/20 dark:ring-emerald-900/50">

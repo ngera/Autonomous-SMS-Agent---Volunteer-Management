@@ -73,8 +73,31 @@ export async function updateSpecificDateSlot(
   return data;
 }
 
-export async function deleteSpecificDateSlot(id: string): Promise<void> {
-  await api.delete(`/availability/specific-slots/${id}`);
+export async function deleteSpecificDateSlot(
+  id: string,
+  options: { force?: boolean } = {},
+): Promise<void> {
+  await api.delete(`/availability/specific-slots/${id}`, {
+    params: options.force ? { force: true } : undefined,
+  });
+}
+
+export async function applyRuleDrift(
+  slotId: string,
+): Promise<SpecificDateSlotResponse> {
+  const { data } = await api.post<SpecificDateSlotResponse>(
+    `/availability/specific-slots/${slotId}/apply-rule-drift`,
+  );
+  return data;
+}
+
+export async function ignoreRuleDrift(
+  slotId: string,
+): Promise<SpecificDateSlotResponse> {
+  const { data } = await api.post<SpecificDateSlotResponse>(
+    `/availability/specific-slots/${slotId}/ignore-rule-drift`,
+  );
+  return data;
 }
 
 export async function getSlotPreview(

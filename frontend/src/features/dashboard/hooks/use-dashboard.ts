@@ -6,7 +6,9 @@ import {
   sendSlotReminder,
   getNotifications,
   markNotificationRead,
+  startCampaignForEvent,
 } from "../api";
+import type { StartCampaignArgs } from "../api";
 import { useActiveTenantId } from "@/hooks/use-active-tenant";
 
 export function useDashboardSummary() {
@@ -108,15 +110,46 @@ export function useAlerts() {
 }
 
 /**
- * Planning horizon — events in T+8 → T+60 grouped by week bucket.
- * Polled every 5 min since the data changes slowly (events get
- * scheduled, campaigns get started).
+ * Fire a synthetic admin SMS to the recruiter agent's start-campaign
+ * router. Used by the event cards' "Start Campaign" button.
+ */
+export function useStartCampaign() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: StartCampaignArgs) => startCampaignForEvent(args),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+  });
+}
+
+/**
+ * Planning horizon — events beyond the 2-week operational window
+ * (T+15 → T+60). The 2-week boundary is the campaign-runway cutoff:
+ * events sooner than 15 days are typically too imminent to start a
+ * fresh multi-wave campaign for, so they're operational (Needs You
+ * Now) rather than strategic (Planning).
  */
 export function usePlanning() {
   const tenantId = useActiveTenantId();
   return useQuery({
     queryKey: ["dashboard", "planning", tenantId],
-    queryFn: getPlanning,
+    queryFn: () => getPlanning(15, 60),
+    enabled: tenantId !== "none",
+    staleTime: 5 * 60_000,
+  });
+}
+
+/**
+ * Upcoming events for the Capacity Pulse — T-0 → T+14 (next 2 weeks).
+ * Operational horizon: anything I can still influence by sending
+ * reminders or making last-mile pushes.
+ */
+export function useUpcomingEvents() {
+  const tenantId = useActiveTenantId();
+  return useQuery({
+    queryKey: ["dashboard", "upcoming", tenantId],
+    queryFn: () => getPlanning(0, 14),
     enabled: tenantId !== "none",
     staleTime: 5 * 60_000,
   });

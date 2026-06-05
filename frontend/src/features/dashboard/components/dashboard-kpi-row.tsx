@@ -27,51 +27,62 @@ function KpiCard({ label, value, subline, isLoading }: KpiCardProps) {
 }
 
 interface DashboardKpiRowProps {
-  totalVolunteers?: number;
-  eventsThisWeek?: number;
-  recurringCount?: number;
-  oneTimeCount?: number;
-  openSlots?: number;
-  monthlyBookings?: number;
+  /** Headline for the events card — varies by tab horizon (e.g.
+   *  "Events this week" vs "Events 15-60 days"). */
+  eventsLabel: string;
+  eventsCount?: number;
+  /** Optional subline under the events count
+   *  (e.g. "3 recurring · 5 one-time"). */
+  eventsSubline?: string;
+  /** Open-slots card value — usually rendered as "openMin / totalRequired". */
+  openSlotsValue: string | number;
+  openSlotsSubline?: string;
+  /** Number of events under their minimum staffing in the horizon. */
+  atRiskCount?: number;
+  atRiskSubline?: string;
+  /** Campaigns-running headline value — e.g. "3 / 14"
+   *  (events with a non-terminal campaign / total events). */
+  campaignsValue?: string | number;
+  campaignsSubline?: string;
   isLoading: boolean;
 }
 
 export function DashboardKpiRow({
-  totalVolunteers,
-  eventsThisWeek,
-  recurringCount,
-  oneTimeCount,
-  openSlots,
-  monthlyBookings,
+  eventsLabel,
+  eventsCount,
+  eventsSubline,
+  openSlotsValue,
+  openSlotsSubline,
+  atRiskCount,
+  atRiskSubline,
+  campaignsValue,
+  campaignsSubline,
   isLoading,
 }: DashboardKpiRowProps) {
-  const eventsSubline =
-    typeof recurringCount === "number" && typeof oneTimeCount === "number"
-      ? `${recurringCount} recurring · ${oneTimeCount} one-time`
-      : undefined;
-
   return (
     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
       <KpiCard
-        label="Active volunteers"
-        value={totalVolunteers ?? 0}
-        isLoading={isLoading}
-      />
-      <KpiCard
-        label="Events this week"
-        value={eventsThisWeek ?? 0}
+        label={eventsLabel}
+        value={eventsCount ?? 0}
         subline={eventsSubline}
         isLoading={isLoading}
       />
       <KpiCard
         label="Open slots"
-        value={openSlots ?? 0}
-        subline="Slots needing more volunteers"
+        value={openSlotsValue}
+        subline={openSlotsSubline}
         isLoading={isLoading}
       />
       <KpiCard
-        label="Bookings this month"
-        value={monthlyBookings ?? 0}
+        label="At-risk events"
+        value={atRiskCount ?? 0}
+        subline={atRiskSubline}
+        isLoading={isLoading}
+      />
+      <KpiCard
+        label="Campaigns running"
+        value={campaignsValue ?? 0}
+        subline={campaignsSubline}
         isLoading={isLoading}
       />
     </div>

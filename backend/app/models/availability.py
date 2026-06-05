@@ -1,6 +1,7 @@
 import uuid
+from datetime import datetime
 
-from sqlalchemy import Boolean, Date, ForeignKey, Integer, String, Text, Time
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text, Time
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -65,3 +66,24 @@ class SpecificDateSlot(Base):
     # get_event_info tool so the assistant can answer "what's this
     # event about?" without an admin in the loop.
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Provenance: when an admin clicks "Start Campaign" on a recurring
+    # event instance, the system materializes that occurrence into a
+    # specific_date_slot so a campaign can attach. This FK records the
+    # source rule. ON DELETE SET NULL: deleting the rule strands the
+    # slot as a standalone specific event but preserves bookings.
+    availability_rule_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("availability_rules.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # Set by the propagation engine when the parent rule changed but
+    # this slot couldn't safely auto-absorb the new values (had
+    # bookings or an active campaign). The dashboard surfaces these
+    # as "Rule changed — review" alerts and an admin chooses to
+    # accept (apply the diff) or ignore (clear the flag).
+    rule_drift_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # JSONB list of {"field", "from", "to"} entries — the human-readable
+    # diff the alert/review modal renders.
+    rule_drift_summary: Mapped[list | None] = mapped_column(JSONB, nullable=True)

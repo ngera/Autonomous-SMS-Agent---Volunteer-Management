@@ -109,9 +109,11 @@ export function useUpdateSpecificDateSlot() {
 export function useDeleteSpecificDateSlot() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: deleteSpecificDateSlot,
+    mutationFn: (args: { id: string; force?: boolean }) =>
+      deleteSpecificDateSlot(args.id, { force: args.force }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["availability", "specific-slots"] });
+      void qc.invalidateQueries({ queryKey: ["dashboard"] });
     },
   });
 }

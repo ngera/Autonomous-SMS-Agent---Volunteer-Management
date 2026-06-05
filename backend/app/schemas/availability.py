@@ -37,6 +37,10 @@ class AvailabilityRuleResponse(BaseModel):
 
 
 class AvailabilityRuleUpdate(BaseModel):
+    # Carrying `id` is what lets PUT /rules behave as a real upsert
+    # (preserving rule identity + FK link from materialized slots)
+    # instead of a destructive delete-and-recreate. None for new rows.
+    id: uuid.UUID | None = None
     day_of_week: int
     label: str | None = None
     location: str | None = None
@@ -66,6 +70,9 @@ class SpecificDateSlotResponse(BaseModel):
     is_active: bool
     allow_roster_sharing: bool = True
     description: str | None = None
+    availability_rule_id: uuid.UUID | None = None
+    rule_drift_at: datetime | None = None
+    rule_drift_summary: list[dict] | None = None
 
     model_config = {"from_attributes": True}
 

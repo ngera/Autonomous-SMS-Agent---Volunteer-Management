@@ -1,8 +1,12 @@
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
+  AlertCircle,
   AlertTriangle,
+  CheckCircle2,
   ChevronRight,
   Layers,
+  Loader2,
   Megaphone,
   Sparkles,
   TrendingUp,
@@ -11,7 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import type { Recommendation } from "../api";
-import { useRecommendations } from "../hooks/use-dashboard";
+import { useRecommendations, useStartCampaign } from "../hooks/use-dashboard";
 
 const KIND_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   start_campaign: Megaphone,
@@ -63,7 +67,6 @@ const ACCENT_STYLES: Record<
 };
 
 export function RecommendationsStrip() {
-  const navigate = useNavigate();
   const { data, isLoading } = useRecommendations();
 
   if (isLoading) {
@@ -95,51 +98,127 @@ export function RecommendationsStrip() {
 
   return (
     <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-      {data.map((rec) => {
-        const Icon = KIND_ICONS[rec.kind] ?? AlertTriangle;
-        const styles = ACCENT_STYLES[rec.accent] ?? ACCENT_STYLES.slate;
-        return (
-          <div
-            key={rec.id}
-            className={cn(
-              "group relative flex flex-col gap-2 rounded-2xl p-3 ring-1 transition-all",
-              "hover:shadow-md hover:-translate-y-px",
-              styles.ring,
-              styles.bg,
-            )}
+      {data.map((rec) => (
+        <RecommendationCard key={rec.id} rec={rec} />
+      ))}
+    </div>
+  );
+}
+
+function RecommendationCard({ rec }: { rec: Recommendation }) {
+  const navigate = useNavigate();
+  const startCampaign = useStartCampaign();
+  const [agentReply, setAgentReply] = useState<string | null>(null);
+
+  const Icon = KIND_ICONS[rec.kind] ?? AlertTriangle;
+  const styles = ACCENT_STYLES[rec.accent] ?? ACCENT_STYLES.slate;
+
+  // start_campaign recommendations carry either slot_id (specific
+  // event) or rule_id+date (recurring — server materializes the slot
+  // first) in context. Either way we fire the agent directly instead
+  // of navigating, mirroring the Capacity Pulse row's affordance.
+  const slotId =
+    rec.kind === "start_campaign"
+      ? (rec.context?.slot_id as string | undefined)
+      : undefined;
+  const ruleId =
+    rec.kind === "start_campaign"
+      ? (rec.context?.rule_id as string | undefined)
+      : undefined;
+  const recurringDate =
+    rec.kind === "start_campaign"
+      ? (rec.context?.date as string | undefined)
+      : undefined;
+  const isAgentDriven =
+    Boolean(slotId) || (Boolean(ruleId) && Boolean(recurringDate));
+
+  function handleClick() {
+    if (isAgentDriven) {
+      const args = slotId
+        ? { slotId }
+        : { ruleId: ruleId as string, date: recurringDate as string };
+      startCampaign.mutate(args, {
+        onSuccess: (data) => {
+          setAgentReply(data.agent_reply ?? "Sent to agent.");
+        },
+      });
+    } else {
+      navigate(rec.cta_url);
+    }
+  }
+
+  return (
+    <div
+      className={cn(
+        "group relative flex flex-col gap-2 rounded-2xl p-3 ring-1 transition-all",
+        "hover:shadow-md hover:-translate-y-px",
+        styles.ring,
+        styles.bg,
+      )}
+    >
+      <div className="flex items-start gap-2.5">
+        <div
+          className={cn(
+            "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg",
+            styles.iconBg,
+          )}
+        >
+          <Icon className={cn("h-4.5 w-4.5", styles.iconFg)} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold leading-tight">
+            {rec.title}
+          </p>
+          <p className="mt-1 line-clamp-3 text-xs text-muted-foreground">
+            {rec.body}
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-auto">
+        {agentReply ? (
+          <div className="space-y-1">
+            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300">
+              <CheckCircle2 className="h-3 w-3" />
+              Agent replied
+            </span>
+            <p className="line-clamp-2 text-[11px] italic text-muted-foreground">
+              “{agentReply}”
+            </p>
+          </div>
+        ) : (
+          <Button
+            size="sm"
+            variant="default"
+            className="h-7 text-xs"
+            disabled={isAgentDriven && startCampaign.isPending}
+            onClick={handleClick}
+            title={
+              isAgentDriven
+                ? "Ask the recruiter agent to plan a campaign for this event"
+                : undefined
+            }
           >
-            <div className="flex items-start gap-2.5">
-              <div
-                className={cn(
-                  "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg",
-                  styles.iconBg,
-                )}
-              >
-                <Icon className={cn("h-4.5 w-4.5", styles.iconFg)} />
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-semibold leading-tight">
-                  {rec.title}
-                </p>
-                <p className="mt-1 line-clamp-3 text-xs text-muted-foreground">
-                  {rec.body}
-                </p>
-              </div>
-            </div>
-            <div className="mt-auto">
-              <Button
-                size="sm"
-                variant="default"
-                className="h-7 text-xs"
-                onClick={() => navigate(rec.cta_url)}
-              >
+            {isAgentDriven && startCampaign.isPending ? (
+              <>
+                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                Asking agent…
+              </>
+            ) : (
+              <>
                 {rec.cta_label}
                 <ChevronRight className="ml-0.5 h-3 w-3" />
-              </Button>
-            </div>
-          </div>
-        );
-      })}
+              </>
+            )}
+          </Button>
+        )}
+        {startCampaign.error && (
+          <span className="ml-2 inline-flex items-center gap-1 text-[11px] text-destructive">
+            <AlertCircle className="h-3 w-3" />
+            Failed
+          </span>
+        )}
+      </div>
     </div>
   );
 }

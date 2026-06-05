@@ -135,20 +135,36 @@ export interface PlanningCampaignSummary {
 
 export interface PlanningEvent {
   slot_id: string;
+  /** 'specific' = backed by a SpecificDateSlot row (campaigns + Start Campaign allowed).
+   *  'recurring' = generated from an AvailabilityRule; clicking Start Campaign
+   *  on this row materializes a SpecificDateSlot server-side before the
+   *  recruiter agent runs. */
+  kind: "specific" | "recurring";
+  /** Set when kind='recurring'. Frontend sends {rule_id, date} to
+   *  /start-campaign so the server materializes a real slot before
+   *  invoking the recruiter. */
+  rule_id: string | null;
   label: string;
   location: string | null;
   date: string;            // ISO date
   days_until: number;
-  bucket: "week_2" | "weeks_3_4" | "month_2";
+  bucket: "this_week" | "week_2" | "weeks_3_4" | "month_2";
   booked: number;
   capacity: number;
+  min_required_total: number;
   fill_pct: number;
   campaign: PlanningCampaignSummary | null;
   health: "filled" | "filling" | "needs_campaign" | "not_started";
+  time_range: string | null;
 }
 
-export async function getPlanning(): Promise<PlanningEvent[]> {
-  const { data } = await api.get<PlanningEvent[]>("/dashboard/planning");
+export async function getPlanning(
+  startOffset: number = 8,
+  endOffset: number = 60,
+): Promise<PlanningEvent[]> {
+  const { data } = await api.get<PlanningEvent[]>("/dashboard/planning", {
+    params: { start_offset: startOffset, end_offset: endOffset },
+  });
   return data;
 }
 
@@ -168,6 +184,40 @@ export interface Recommendation {
 export async function getRecommendations(): Promise<Recommendation[]> {
   const { data } = await api.get<Recommendation[]>(
     "/dashboard/recommendations",
+  );
+  return data;
+}
+
+// ── Start Campaign (event card → recruiter agent) ──
+
+export interface StartCampaignResponse {
+  ok: boolean;
+  agent_reply: string | null;
+  synthetic_message: string;
+  fell_through_to_llm: boolean;
+  /** When the request used (rule_id + date), this is the new
+   *  SpecificDateSlot id created server-side. Null for direct slot_id
+   *  calls. */
+  materialized_slot_id: string | null;
+}
+
+/** Specific event: pass `{ slotId }`.
+ *  Recurring event: pass `{ ruleId, date }` and the server will
+ *  materialize a real slot first. */
+export type StartCampaignArgs =
+  | { slotId: string }
+  | { ruleId: string; date: string };
+
+export async function startCampaignForEvent(
+  args: StartCampaignArgs,
+): Promise<StartCampaignResponse> {
+  const body =
+    "slotId" in args
+      ? { slot_id: args.slotId }
+      : { rule_id: args.ruleId, date: args.date };
+  const { data } = await api.post<StartCampaignResponse>(
+    "/dashboard/start-campaign",
+    body,
   );
   return data;
 }

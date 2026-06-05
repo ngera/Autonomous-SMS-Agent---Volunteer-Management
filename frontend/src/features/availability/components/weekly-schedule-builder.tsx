@@ -11,6 +11,11 @@ import { useAppointmentTypes } from "@/features/appointment-types/hooks/use-appo
 import type { AvailabilityRuleResponse, AvailabilityRuleUpdate, ServiceSlotConfig } from "@/types/api";
 
 interface SlotRule {
+  /** Existing rule's id, when this row was loaded from the server.
+   *  Sent back on save so the API upserts in place instead of
+   *  deleting + recreating (which would break the FK from any
+   *  materialized SpecificDateSlot). New rows have no id. */
+  id?: string;
   label: string;
   location: string;
   start_time: string;
@@ -49,6 +54,7 @@ export function WeeklyScheduleBuilder({ rules, onSave, isSaving, canEdit }: Week
     for (let i = 0; i < 7; i++) grouped[i] = [];
     for (const rule of rules) {
       grouped[rule.day_of_week].push({
+        id: rule.id,
         label: rule.label || "",
         location: rule.location || "",
         start_time: rule.start_time,
@@ -100,6 +106,7 @@ export function WeeklyScheduleBuilder({ rules, onSave, isSaving, canEdit }: Week
     for (let day = 0; day < 7; day++) {
       for (const slot of schedule[day] || []) {
         allRules.push({
+          id: slot.id,
           day_of_week: day,
           label: slot.label || undefined,
           location: slot.location.trim() || undefined,

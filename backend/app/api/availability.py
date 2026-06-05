@@ -2,7 +2,7 @@ import uuid
 from datetime import date, datetime
 
 from fastapi import APIRouter, HTTPException, Query, status
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 from app.core.dependencies import CurrentTenant, CurrentUser, DbSession, ManagerUser
 from app.models.availability import AvailabilityRule, SpecificDateSlot
@@ -52,17 +52,73 @@ async def get_availability_rules(db: DbSession, current_user: CurrentUser, tenan
 async def update_availability_rules(
     body: WeeklyScheduleUpdate, db: DbSession, current_user: ManagerUser, tenant: CurrentTenant
 ):
-    await db.execute(delete(AvailabilityRule).where(AvailabilityRule.tenant_id == tenant.id))
-    new_rules = []
+    """Replace the weekly schedule with an upsert that preserves rule
+    identity. Rules carrying an `id` are updated in place (which
+    preserves the FK link to any SpecificDateSlot they've already
+    materialized), rules without an `id` are inserted, and rules
+    that disappear from the payload are deleted (which nulls the FK
+    on materialized slots — they survive as standalone events).
+
+    Whenever an existing rule's propagated fields change, the
+    propagation engine fans the diff out to materialized future
+    slots: safe slots absorb silently, unsafe slots get a "Rule
+    changed — review" alert. See
+    services.availability.propagate_rule_edit_to_materialized_slots.
+    """
+    from app.services.availability import (
+        _PROPAGATED_RULE_FIELDS,
+        cleanup_unused_materialized_slots,
+        propagate_rule_edit_to_materialized_slots,
+    )
+
+    existing_rows = (await db.execute(
+        select(AvailabilityRule).where(AvailabilityRule.tenant_id == tenant.id)
+    )).scalars().all()
+    existing_by_id: dict[uuid.UUID, AvailabilityRule] = {r.id: r for r in existing_rows}
+
+    kept_ids: set[uuid.UUID] = set()
+    edited_rules: list[AvailabilityRule] = []
+    result_rules: list[AvailabilityRule] = []
+
     for rule_data in body.rules:
         data = _serialize_service_config(rule_data.model_dump())
-        rule = AvailabilityRule(tenant_id=tenant.id, **data)
-        db.add(rule)
-        new_rules.append(rule)
+        incoming_id = data.pop("id", None)
+        if incoming_id and incoming_id in existing_by_id:
+            rule = existing_by_id[incoming_id]
+            # Snapshot the fields the propagation engine cares about so
+            # we know whether to fan out after the update.
+            before = {f: getattr(rule, f) for f in _PROPAGATED_RULE_FIELDS}
+            for field, value in data.items():
+                setattr(rule, field, value)
+            after = {f: getattr(rule, f) for f in _PROPAGATED_RULE_FIELDS}
+            if before != after:
+                edited_rules.append(rule)
+            kept_ids.add(rule.id)
+            result_rules.append(rule)
+        else:
+            rule = AvailabilityRule(tenant_id=tenant.id, **data)
+            db.add(rule)
+            result_rules.append(rule)
+
+    # Anything not kept is deleted. First scrub empty materialized
+    # slots (no bookings, no campaigns) so they don't linger as
+    # orphan "(unnamed)" rows after the FK SET NULL. Slots with
+    # real state survive with their FK nulled.
+    for old_id, old_rule in existing_by_id.items():
+        if old_id not in kept_ids:
+            await cleanup_unused_materialized_slots(db, tenant, old_id)
+            await db.delete(old_rule)
+
     await db.flush()
-    for rule in new_rules:
+    for rule in result_rules:
         await db.refresh(rule)
-    return new_rules
+
+    # Propagate edits AFTER flush so the materialized-slot writes see
+    # the rule's new values. Drift summaries point at the new state.
+    for rule in edited_rules:
+        await propagate_rule_edit_to_materialized_slots(db, tenant, rule)
+
+    return result_rules
 
 
 # ── Specific date slots / events ──
@@ -205,18 +261,195 @@ async def update_specific_date_slot(
     return slot
 
 
+@router.post(
+    "/specific-slots/{slot_id}/apply-rule-drift",
+    response_model=SpecificDateSlotResponse,
+)
+async def apply_rule_drift(
+    slot_id: uuid.UUID,
+    db: DbSession,
+    current_user: ManagerUser,
+    tenant: CurrentTenant,
+):
+    """Apply the pending rule drift to this slot — overwrite the slot's
+    propagated fields with the parent rule's current values, then clear
+    the drift flag. The slot's existing bookings stay attached; the
+    admin is acknowledging the schedule change is acceptable to the
+    volunteers (typically because they've already been notified).
+
+    Returns the updated slot. Surfaced by the "Rule changed — review"
+    alert's Apply action.
+    """
+    from app.services.availability import _PROPAGATED_RULE_FIELDS
+
+    slot = (await db.execute(
+        select(SpecificDateSlot).where(
+            SpecificDateSlot.id == slot_id,
+            SpecificDateSlot.tenant_id == tenant.id,
+        )
+    )).scalar_one_or_none()
+    if slot is None:
+        raise HTTPException(status_code=404, detail="Slot not found")
+    if slot.availability_rule_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Slot was not materialized from a rule",
+        )
+    if slot.rule_drift_at is None:
+        raise HTTPException(
+            status_code=400,
+            detail="No pending rule drift for this slot",
+        )
+
+    rule = (await db.execute(
+        select(AvailabilityRule).where(
+            AvailabilityRule.id == slot.availability_rule_id,
+            AvailabilityRule.tenant_id == tenant.id,
+        )
+    )).scalar_one_or_none()
+    if rule is None:
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                "Parent rule no longer exists. Resolve via ignore-rule-drift "
+                "or edit the slot manually."
+            ),
+        )
+
+    for field in _PROPAGATED_RULE_FIELDS:
+        setattr(slot, field, getattr(rule, field))
+    slot.rule_drift_at = None
+    slot.rule_drift_summary = None
+    await db.flush()
+    await db.refresh(slot)
+    return slot
+
+
+@router.post(
+    "/specific-slots/{slot_id}/ignore-rule-drift",
+    response_model=SpecificDateSlotResponse,
+)
+async def ignore_rule_drift(
+    slot_id: uuid.UUID,
+    db: DbSession,
+    current_user: ManagerUser,
+    tenant: CurrentTenant,
+):
+    """Mark the pending rule drift as resolved without touching the
+    slot's own values. The admin's intent: this slot stays as-is, the
+    rule change applies only to future occurrences."""
+    slot = (await db.execute(
+        select(SpecificDateSlot).where(
+            SpecificDateSlot.id == slot_id,
+            SpecificDateSlot.tenant_id == tenant.id,
+        )
+    )).scalar_one_or_none()
+    if slot is None:
+        raise HTTPException(status_code=404, detail="Slot not found")
+    if slot.rule_drift_at is None:
+        raise HTTPException(
+            status_code=400,
+            detail="No pending rule drift for this slot",
+        )
+    slot.rule_drift_at = None
+    slot.rule_drift_summary = None
+    await db.flush()
+    await db.refresh(slot)
+    return slot
+
+
 @router.delete("/specific-slots/{slot_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_specific_date_slot(
-    slot_id: uuid.UUID, db: DbSession, current_user: ManagerUser, tenant: CurrentTenant
+    slot_id: uuid.UUID,
+    db: DbSession,
+    current_user: ManagerUser,
+    tenant: CurrentTenant,
+    force: bool = Query(False),
 ):
-    result = await db.execute(
+    """Delete a specific-date slot.
+
+    Cascade rules:
+      - Attached campaigns are slot-derivatives — deleted automatically
+        (recruitment_campaigns.event_slot_id is RESTRICT, so leaving
+        them attached would block the slot delete). Waves and signups
+        cascade through the campaign's own ON DELETE CASCADE.
+      - Non-cancelled bookings block the delete with a 409 unless
+        `force=true` is passed. With force the bookings are flipped to
+        CANCELLED first so the volunteer history survives — the FK
+        from Booking → slot is SET NULL, so the row persists.
+      - Cancelled bookings, roster pings, candidates, recognitions all
+        use SET NULL / CASCADE already and don't need any pre-work.
+    """
+    from app.models.booking import Booking, BookingStatus
+    from app.models.contact import Contact
+    from app.models.recruitment_campaign import RecruitmentCampaign
+
+    slot = (await db.execute(
         select(SpecificDateSlot).where(
-            SpecificDateSlot.id == slot_id, SpecificDateSlot.tenant_id == tenant.id
+            SpecificDateSlot.id == slot_id,
+            SpecificDateSlot.tenant_id == tenant.id,
         )
-    )
-    slot = result.scalar_one_or_none()
-    if not slot:
+    )).scalar_one_or_none()
+    if slot is None:
         raise HTTPException(status_code=404, detail="Specific date slot not found")
+
+    if not force:
+        booking_rows = (await db.execute(
+            select(Booking, Contact)
+            .join(Contact, Contact.id == Booking.contact_id)
+            .where(
+                Booking.event_slot_id == slot_id,
+                Booking.status != BookingStatus.CANCELLED,
+            )
+            .limit(5)
+        )).all()
+        if booking_rows:
+            count = (await db.execute(
+                select(func.count()).where(
+                    Booking.event_slot_id == slot_id,
+                    Booking.status != BookingStatus.CANCELLED,
+                )
+            )).scalar() or 0
+            first_names = [
+                ((c.name or c.phone or "").split() + [""])[0]
+                for _, c in booking_rows
+            ]
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "bookings_attached",
+                    "message": (
+                        f"{count} volunteer{'s' if count != 1 else ''} "
+                        f"booked. Confirm to cancel them and delete the event."
+                    ),
+                    "booking_count": count,
+                    "first_volunteer_names": first_names,
+                },
+            )
+
+    # force=True OR no bookings — proceed.
+    if force:
+        active_bookings = (await db.execute(
+            select(Booking).where(
+                Booking.event_slot_id == slot_id,
+                Booking.status != BookingStatus.CANCELLED,
+            )
+        )).scalars().all()
+        for b in active_bookings:
+            b.status = BookingStatus.CANCELLED
+        if active_bookings:
+            await db.flush()
+
+    campaigns = (await db.execute(
+        select(RecruitmentCampaign).where(
+            RecruitmentCampaign.event_slot_id == slot_id,
+        )
+    )).scalars().all()
+    for camp in campaigns:
+        await db.delete(camp)
+    if campaigns:
+        await db.flush()
+
     await db.delete(slot)
 
 
