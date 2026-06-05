@@ -40,6 +40,7 @@ from app.scheduler.jobs import (
     conversation_expiry,
     event_status_ping_tick,
     follow_up_dispatch,
+    kpi_summary_tick,
     no_show_review_tick,
     pending_review_tick,
     prune_stale_candidates_tick,
@@ -131,6 +132,15 @@ async def lifespan(app: FastAPI):
         pending_review_tick,
         CronTrigger(minute="*/15"),  # every 15 minutes
         id="pending_review_tick",
+        replace_existing=True,
+    )
+    # Daily KPI digest — per-tenant configurable time + days-of-week.
+    # The job runs every 5 min and uses idempotency stamps + local-time
+    # gating so each tenant gets exactly one SMS per configured day.
+    scheduler.add_job(
+        kpi_summary_tick,
+        CronTrigger(minute="*/5"),
+        id="kpi_summary_tick",
         replace_existing=True,
     )
     scheduler.start()

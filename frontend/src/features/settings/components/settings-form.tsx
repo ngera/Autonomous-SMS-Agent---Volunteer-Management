@@ -36,6 +36,17 @@ const SUSPENSION_DEFAULTS: Record<string, string> = {
 
 const SUSPENSION_KEYS = Object.keys(SUSPENSION_DEFAULTS);
 
+// Daily KPI digest SMS — sent to OWNER + MANAGER admins on configured
+// days at the configured tenant-local time. Default off so new tenants
+// don't get unexpected messages until an admin opts in.
+const KPI_SUMMARY_DEFAULTS: Record<string, string> = {
+  kpi_summary_sms_enabled: "false",
+  kpi_summary_sms_time: "08:00",
+  kpi_summary_sms_days_of_week: "0,1,2,3,4", // Mon-Fri
+};
+const KPI_SUMMARY_KEYS = Object.keys(KPI_SUMMARY_DEFAULTS);
+const DOW_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
 // Per-tenant LLM rate limit (calls per rolling 60-second window). See
 // design_decisions.md #15. Backend enforces bounds [10, 1000]; out-of-
 // range values silently fall back to the default.
@@ -50,7 +61,7 @@ const SPECIAL_KEYS = new Set([LLM_RATE_LIMIT_KEY]);
 // Setting keys that are internal state markers (written by background jobs)
 // rather than configuration. They're stored in system_settings for
 // per-tenant scoping but shouldn't appear in the admin UI.
-const HIDDEN_KEY_PREFIXES = ["last_reminder_"];
+const HIDDEN_KEY_PREFIXES = ["last_reminder_", "last_kpi_summary_sent_"];
 
 function isHiddenSettingKey(key: string): boolean {
   return HIDDEN_KEY_PREFIXES.some((p) => key.startsWith(p));
@@ -79,6 +90,32 @@ export function SettingsForm() {
 
   function setSuspensionValue(key: string, val: string) {
     setValues((prev) => ({ ...prev, [key]: val }));
+  }
+
+  function getKpiValue(key: string): string {
+    return values[key] ?? KPI_SUMMARY_DEFAULTS[key] ?? "";
+  }
+
+  function setKpiValue(key: string, val: string) {
+    setValues((prev) => ({ ...prev, [key]: val }));
+  }
+
+  // CSV of "0,1,2..." (0=Mon..6=Sun) <-> Set<number>.
+  const kpiDaysCsv = getKpiValue("kpi_summary_sms_days_of_week");
+  const kpiDays = new Set(
+    kpiDaysCsv
+      .split(",")
+      .map((x) => Number(x.trim()))
+      .filter((x) => Number.isInteger(x) && x >= 0 && x <= 6),
+  );
+  function toggleKpiDay(d: number) {
+    const next = new Set(kpiDays);
+    if (next.has(d)) next.delete(d);
+    else next.add(d);
+    setKpiValue(
+      "kpi_summary_sms_days_of_week",
+      [...next].sort((a, b) => a - b).join(","),
+    );
   }
 
   function handleSave() {
@@ -161,12 +198,12 @@ export function SettingsForm() {
             }
           />
         </div>
-        {settings && settings.filter((s) => s.key !== "ai_model" && !SUSPENSION_KEYS.includes(s.key) && !SPECIAL_KEYS.has(s.key) && !isHiddenSettingKey(s.key)).length === 0 && (
+        {settings && settings.filter((s) => s.key !== "ai_model" && !SUSPENSION_KEYS.includes(s.key) && !KPI_SUMMARY_KEYS.includes(s.key) && !SPECIAL_KEYS.has(s.key) && !isHiddenSettingKey(s.key)).length === 0 && (
           <p className="text-sm text-muted-foreground">
             No additional settings configured.
           </p>
         )}
-        {settings?.filter((s) => s.key !== "ai_model" && !SUSPENSION_KEYS.includes(s.key) && !SPECIAL_KEYS.has(s.key) && !isHiddenSettingKey(s.key)).map((s) => (
+        {settings?.filter((s) => s.key !== "ai_model" && !SUSPENSION_KEYS.includes(s.key) && !KPI_SUMMARY_KEYS.includes(s.key) && !SPECIAL_KEYS.has(s.key) && !isHiddenSettingKey(s.key)).map((s) => (
           <div key={s.key} className="space-y-1">
             <div className="flex items-center justify-between">
               <Label className="text-sm font-medium">{s.key}</Label>
@@ -279,6 +316,78 @@ export function SettingsForm() {
             value={getSuspensionValue("suspension_suspension_message")}
             onChange={(e) => setSuspensionValue("suspension_suspension_message", e.target.value)}
           />
+        </div>
+      </CardContent>
+    </Card>
+
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Daily Status SMS</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-5">
+        <div className="flex items-center gap-3">
+          <Switch
+            checked={getKpiValue("kpi_summary_sms_enabled") === "true"}
+            onCheckedChange={(checked) =>
+              setKpiValue("kpi_summary_sms_enabled", checked ? "true" : "false")
+            }
+          />
+          <div>
+            <Label className="text-sm font-medium">
+              Send daily KPI digest to OWNER + MANAGER admins
+            </Label>
+            <p className="text-xs text-muted-foreground">
+              SMS with the same dashboard numbers (events, open slots,
+              at-risk, campaigns) for the next 2 weeks and the planning
+              horizon. Admins can also text “summary” or “how are things
+              going?” for the same digest on demand.
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-1">
+            <Label className="text-sm font-medium">Time (tenant local)</Label>
+            <p className="text-xs text-muted-foreground">
+              The digest goes out at or just after this time on each
+              configured day.
+            </p>
+            <Input
+              type="time"
+              className="w-40"
+              value={getKpiValue("kpi_summary_sms_time")}
+              onChange={(e) =>
+                setKpiValue("kpi_summary_sms_time", e.target.value)
+              }
+            />
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          <Label className="text-sm font-medium">Days of week</Label>
+          <p className="text-xs text-muted-foreground">
+            Pick the days you want the digest. Defaults to Mon–Fri.
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {DOW_LABELS.map((label, idx) => {
+              const active = kpiDays.has(idx);
+              return (
+                <button
+                  key={label}
+                  type="button"
+                  onClick={() => toggleKpiDay(idx)}
+                  className={
+                    "rounded-md border px-3 py-1 text-xs font-medium transition-colors " +
+                    (active
+                      ? "border-primary bg-primary text-primary-foreground"
+                      : "border-input bg-background text-foreground hover:bg-accent")
+                  }
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
         </div>
       </CardContent>
     </Card>

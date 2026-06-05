@@ -25,6 +25,7 @@ import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.engagement import admin_intents as engagement_admin
+from app.agents.orchestrator import kpi_summary_intent
 from app.agents.recruiter_scheduler import admin_intents as scheduler_admin
 from app.core.logging import get_logger
 from app.models.admin_user import AdminUser
@@ -54,6 +55,12 @@ async def maybe_handle_admin_command(
     (caller falls through to the admin LLM tool_use conversation).
     """
     body = (message_body or "")
+
+    # Cross-domain — "summary" / "how are things going" daily-digest
+    # recall. Matched ahead of domain agents because it's a fixed
+    # natural-language phrasing the LLM doesn't need to parse.
+    if kpi_summary_intent.matches_kpi_summary_command(body):
+        return await kpi_summary_intent.handle(db, admin=admin, message_body=body)
 
     # Engagement domain — check-in/check-out/status/STOP STATUS family.
     if engagement_admin.matches_engagement_command(body):

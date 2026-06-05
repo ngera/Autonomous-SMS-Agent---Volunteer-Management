@@ -802,3 +802,195 @@ async def _send_escalation_alert(
             logger.exception(
                 "Failed to mirror escalation alert into admin conversation"
             )
+
+
+# ── KPI summary digest ───────────────────────────────────────────────
+#
+# Daily SMS digest of the dashboard's KPI numbers. Per-tenant
+# configurable in system_settings:
+#   - kpi_summary_sms_enabled        : "true" / "false"
+#   - kpi_summary_sms_time           : "HH:MM" in tenant timezone
+#   - kpi_summary_sms_days_of_week   : CSV of 0..6 (0=Mon..6=Sun)
+#   - last_kpi_summary_sent_date     : YYYY-MM-DD idempotency stamp
+#
+# The tick fires every 5 minutes and uses the idempotency stamp +
+# local-time gate to ensure exactly one digest goes out per
+# configured day, even if APScheduler is delayed.
+
+
+async def kpi_summary_tick() -> None:
+    """Every 5 min — fan out the daily KPI digest to admins of each
+    tenant whose configured time has arrived. See
+    [services/kpi_summary.py](backend/app/services/kpi_summary.py)
+    for what's in the digest body."""
+    import pytz
+
+    from app.models.admin_user import AdminRole, AdminUser
+    from app.models.system_setting import SystemSetting
+    from app.services.kpi_summary import (
+        compute_kpi_summary,
+        format_kpi_summary_sms,
+    )
+
+    async with async_session_factory() as db:
+        try:
+            tenants = (await db.execute(
+                select(Tenant).where(Tenant.is_active.is_(True))
+            )).scalars().all()
+            now_utc = datetime.now(timezone.utc)
+
+            for tenant in tenants:
+                try:
+                    await _kpi_summary_for_tenant(
+                        db, tenant, now_utc,
+                        AdminRole=AdminRole, AdminUser=AdminUser,
+                        SystemSetting=SystemSetting,
+                        compute_kpi_summary=compute_kpi_summary,
+                        format_kpi_summary_sms=format_kpi_summary_sms,
+                        pytz=pytz,
+                    )
+                except Exception as e:
+                    logger.error(
+                        "KPI summary tick failed for tenant %s: %s",
+                        tenant.slug, str(e), exc_info=True,
+                    )
+            await db.commit()
+        except Exception as e:
+            await db.rollback()
+            logger.error("KPI summary tick failed: %s", str(e), exc_info=True)
+
+
+async def _kpi_summary_for_tenant(
+    db,
+    tenant: Tenant,
+    now_utc: datetime,
+    *,
+    AdminRole,
+    AdminUser,
+    SystemSetting,
+    compute_kpi_summary,
+    format_kpi_summary_sms,
+    pytz,
+) -> None:
+    """Send the daily digest for one tenant if today is a configured
+    day, the local scheduled time has arrived, and we haven't already
+    sent today."""
+    settings_rows = (await db.execute(
+        select(SystemSetting).where(
+            SystemSetting.tenant_id == tenant.id,
+            SystemSetting.key.in_([
+                "kpi_summary_sms_enabled",
+                "kpi_summary_sms_time",
+                "kpi_summary_sms_days_of_week",
+                "last_kpi_summary_sent_date",
+            ]),
+        )
+    )).scalars().all()
+    s: dict[str, str] = {r.key: r.value for r in settings_rows}
+
+    if (s.get("kpi_summary_sms_enabled") or "false").lower() != "true":
+        return
+
+    # Parse schedule. Bad/missing values are conservative no-ops.
+    time_str = s.get("kpi_summary_sms_time") or "08:00"
+    try:
+        sched_h, sched_m = (int(x) for x in time_str.split(":")[:2])
+    except (ValueError, TypeError):
+        logger.warning(
+            "tenant %s has invalid kpi_summary_sms_time=%r; skipping",
+            tenant.slug, time_str,
+        )
+        return
+
+    dow_csv = s.get("kpi_summary_sms_days_of_week") or "0,1,2,3,4,5,6"
+    try:
+        allowed_dows = {int(x.strip()) for x in dow_csv.split(",") if x.strip()}
+    except ValueError:
+        logger.warning(
+            "tenant %s has invalid kpi_summary_sms_days_of_week=%r; skipping",
+            tenant.slug, dow_csv,
+        )
+        return
+
+    tz = pytz.timezone(tenant.business_timezone or "UTC")
+    local_now = now_utc.astimezone(tz)
+    if local_now.weekday() not in allowed_dows:
+        return
+
+    # Idempotency: did we already fire today (tenant-local date)?
+    today_str = local_now.date().isoformat()
+    if s.get("last_kpi_summary_sent_date") == today_str:
+        return
+
+    # The local time gate: send when we've passed the scheduled time.
+    # Using >= rather than == makes the job tolerant of APScheduler
+    # delays — we'll catch up on the next tick after the configured
+    # time has passed.
+    scheduled_today = local_now.replace(
+        hour=sched_h, minute=sched_m, second=0, microsecond=0
+    )
+    if local_now < scheduled_today:
+        return
+
+    # Lookup recipients — active OWNER + MANAGER admins with a phone.
+    recipients = (await db.execute(
+        select(AdminUser).where(
+            AdminUser.tenant_id == tenant.id,
+            AdminUser.is_active.is_(True),
+            AdminUser.role.in_([AdminRole.OWNER, AdminRole.MANAGER]),
+            AdminUser.phone.is_not(None),
+        )
+    )).scalars().all()
+    recipients = [a for a in recipients if (a.phone or "").strip()]
+    if not recipients:
+        logger.info(
+            "tenant %s KPI digest scheduled but no admin recipients", tenant.slug,
+        )
+        # Still stamp so we don't retry every tick — admins must configure
+        # at least one recipient phone for digests to land.
+        await _stamp_last_sent(db, tenant.id, today_str, SystemSetting)
+        return
+
+    summary = await compute_kpi_summary(db, tenant)
+    body = format_kpi_summary_sms(summary)
+
+    sent_to = 0
+    for admin in recipients:
+        try:
+            ok = await send_sms(admin.phone, body, tenant)
+            if ok:
+                sent_to += 1
+        except Exception:
+            logger.exception(
+                "tenant %s — failed to send KPI digest to %s",
+                tenant.slug, admin.phone,
+            )
+
+    await _stamp_last_sent(db, tenant.id, today_str, SystemSetting)
+    logger.info(
+        "tenant %s KPI digest sent to %d/%d admins",
+        tenant.slug, sent_to, len(recipients),
+    )
+
+
+async def _stamp_last_sent(
+    db, tenant_id: uuid.UUID, today_str: str, SystemSetting,
+) -> None:
+    """Upsert last_kpi_summary_sent_date so the next tick today bails."""
+    existing = (await db.execute(
+        select(SystemSetting).where(
+            SystemSetting.tenant_id == tenant_id,
+            SystemSetting.key == "last_kpi_summary_sent_date",
+        )
+    )).scalar_one_or_none()
+    now = datetime.now(timezone.utc)
+    if existing:
+        existing.value = today_str
+        existing.updated_at = now
+    else:
+        db.add(SystemSetting(
+            tenant_id=tenant_id,
+            key="last_kpi_summary_sent_date",
+            value=today_str,
+        ))
+    await db.flush()
