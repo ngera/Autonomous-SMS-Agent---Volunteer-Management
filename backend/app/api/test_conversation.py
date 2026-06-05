@@ -17,7 +17,7 @@ from app.modules.screener import Classification, screen_message
 from app.modules.pipeline import (
     ABUSIVE_WARNING_MESSAGE,
     STRIKE_MESSAGES,
-    SUSPENSION_MESSAGE,
+    _get_suspension_settings,
     _handle_strike,
 )
 from app.modules.tool_definitions import ADMIN_TOOLS, CUSTOMER_TOOLS
@@ -107,10 +107,13 @@ async def test_conversation(
             contact_id = contact.id
             contact_phone = contact.phone
 
-            # Check if customer is suspended
+            # Check if customer is suspended — surface the configured
+            # suspension message so admins can preview the exact copy
+            # the volunteer would actually receive.
             if contact.status in (ContactStatus.SUSPENDED, ContactStatus.BANNED):
+                cfg = await _get_suspension_settings(db, tenant_id)
                 return TestConversationResponse(
-                    reply=f"[SUSPENDED] This customer is {contact.status.value}. Messages are blocked.",
+                    reply=f"[SUSPENDED] {cfg['suspension_message']}",
                     tool_calls=[],
                     screened=True,
                 )
@@ -155,7 +158,11 @@ async def test_conversation(
                 strike_count = strike_count_result.scalar() or 0
 
                 if contact.status == ContactStatus.SUSPENDED:
-                    reply = f"[SCREENED — {screener_result.classification.value}] {SUSPENSION_MESSAGE}"
+                    cfg = await _get_suspension_settings(db, tenant_id)
+                    reply = (
+                        f"[SCREENED — {screener_result.classification.value}] "
+                        f"{cfg['suspension_message']}"
+                    )
                 elif screener_result.classification == Classification.ABUSIVE:
                     # First abusive strike → polite warning (the production
                     # _handle_strike just sent this via SMS).

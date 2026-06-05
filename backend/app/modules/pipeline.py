@@ -326,12 +326,16 @@ async def process_inbound_message(
         await _process_admin_message(db, from_phone, message_body, tenant, admin_user)
         return
 
-    # Step 6: Check suspension status
+    # Step 6: Check suspension status — re-send the tenant-configured
+    # suspension message so subsequent inbound texts get the same copy
+    # the initial suspension SMS used. Previously a hardcoded fallback
+    # was sent here, which diverged from the admin's configured value.
     if contact.status in (ContactStatus.SUSPENDED, ContactStatus.BANNED):
         logger.info("Message from suspended/banned contact %s — sending suspension notice", from_phone)
+        cfg = await _get_suspension_settings(db, tenant_id)
         await send_sms(
             to=from_phone,
-            body="Your access is currently suspended. Please contact us directly for assistance.",
+            body=cfg["suspension_message"],
             tenant=tenant,
         )
         return
