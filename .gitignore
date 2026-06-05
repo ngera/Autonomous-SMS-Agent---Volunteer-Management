@@ -50,3 +50,7 @@ AI-Engineering-Coach/
 
 # VS Code extension packages — not part of this codebase.
 *.vsix
+
+# Internal-only collateral (pitch decks, architecture briefs, demo
+# scripts, generated visuals). Kept locally but not pushed.
+docs/
