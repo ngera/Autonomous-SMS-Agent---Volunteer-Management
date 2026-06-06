@@ -30,6 +30,20 @@ class WeeklyHourBlock(BaseModel):
         return self
 
 
+class RosterVisibilityHistoryEntry(BaseModel):
+    """One row of the volunteer's stated roster-visibility timeline.
+
+    Recorded each time the volunteer explicitly changes their preference
+    during a booking (default → first_name → hidden, etc.). Always
+    append-only — admins see the full history on the Volunteer page.
+    """
+    previous_value: str | None
+    new_value: str
+    source: str  # 'user_sms' | 'admin'
+    source_booking_id: uuid.UUID | None
+    changed_at: datetime
+
+
 class CustomerResponse(BaseModel):
     id: uuid.UUID
     phone: str
@@ -49,6 +63,13 @@ class CustomerResponse(BaseModel):
     preferences: dict | None = None
     notes: str | None = None
     memory_updated_at: datetime | None = None
+    # Roster visibility — the volunteer's current saved default. None
+    # means they've never stated a preference; the booking handler
+    # treats that as HIDDEN (privacy-first default).
+    default_roster_visibility: str | None = None
+    # Append-only timeline of explicit changes the volunteer has made
+    # to their roster visibility. Newest first.
+    roster_visibility_history: list[RosterVisibilityHistoryEntry] = []
     created_at: datetime
     updated_at: datetime
 

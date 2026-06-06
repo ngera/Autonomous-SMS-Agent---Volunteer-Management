@@ -468,9 +468,16 @@ async def handle_check_availability(ctx: ToolContext, tool_input: dict) -> str:
                     roster_rows = await _fetch_slot_roster(
                         ctx, appt_type.id, start, appt_type.duration_minutes
                     )
-                    names = [
-                        ((r["name"] or "").strip() or r["phone"]) for r in roster_rows
-                    ]
+                    # Format as "Name (phone)" so the LLM rendering on the
+                    # admin side surfaces both — names alone are easy to
+                    # confuse when two volunteers share a first name, and
+                    # phone alone reads as anonymous. When the contact has
+                    # no name yet, the phone stands on its own.
+                    names: list[str] = []
+                    for r in roster_rows:
+                        nm = (r["name"] or "").strip()
+                        phone = r["phone"]
+                        names.append(f"{nm} ({phone})" if nm else phone)
                     if names:
                         slot_info["who_signed_up"] = names
                 else:
@@ -502,6 +509,145 @@ async def handle_check_availability(ctx: ToolContext, tool_input: dict) -> str:
         return json.dumps({"message": f"No available slots on {target_date.strftime('%A %B %d')}."})
 
     return json.dumps({"date": tool_input["date"], "slots": all_slots})
+
+
+async def handle_get_event_roster(ctx: ToolContext, tool_input: dict) -> str:
+    """Return every active signup for one event, across ALL services and
+    time windows. The piece check_availability misses by design (it slices
+    per-time-slot, so a sign-up at 1pm is invisible to a 4pm slot query).
+
+    For volunteers, applies the slot's allow_roster_sharing flag AND each
+    booking's roster_visibility — hidden bookings get counted into a
+    hidden_signups bucket so the LLM can say "and 2 others kept private".
+    For admins, returns "Full Name (phone)" strings (same shape as
+    check_availability's admin who_signed_up array)."""
+    from app.models.availability import SpecificDateSlot
+    from app.models.appointment_type import AppointmentType
+
+    label_raw = (tool_input.get("event_label") or "").strip()
+    date_str = tool_input.get("event_date")
+
+    if not label_raw and not date_str:
+        return json.dumps(
+            {"error": "Provide event_label or event_date so I can find the event."}
+        )
+
+    target_date: date | None = None
+    if date_str:
+        try:
+            target_date = date.fromisoformat(date_str)
+        except ValueError:
+            return json.dumps({"error": "Invalid date format. Use YYYY-MM-DD."})
+
+    label_lc = label_raw.lower()
+
+    # Resolve slot. Prefer date + label; fall back to label-only across the
+    # next 90 days; bail with clarification when multiple match.
+    slot_q = select(SpecificDateSlot).where(
+        SpecificDateSlot.tenant_id == ctx.tenant.id,
+        SpecificDateSlot.is_active.is_(True),
+    )
+    if target_date is not None:
+        slot_q = slot_q.where(SpecificDateSlot.date == target_date)
+    else:
+        # Upcoming window only — avoids ambiguity with old occurrences.
+        slot_q = slot_q.where(
+            SpecificDateSlot.date >= date.today(),
+            SpecificDateSlot.date <= date.today() + timedelta(days=90),
+        )
+    candidates = (await ctx.db.execute(slot_q.order_by(SpecificDateSlot.date.asc()))).scalars().all()
+
+    if label_lc:
+        candidates = [c for c in candidates if label_lc in (c.label or "").lower()]
+
+    if not candidates:
+        return json.dumps({
+            "message": (
+                f"No event found matching {label_raw!r}"
+                + (f" on {date_str}" if date_str else "")
+                + "."
+            ),
+        })
+    if len(candidates) > 1 and not target_date:
+        # Multiple dates match → tell the LLM which to pick from.
+        options = [
+            {"label": c.label, "date": c.date.isoformat()} for c in candidates[:5]
+        ]
+        return json.dumps({
+            "needs_clarification": True,
+            "message": "Multiple events match — narrow by date.",
+            "options": options,
+        })
+
+    slot = candidates[0]
+
+    # Non-admin volunteers respect the slot's allow_roster_sharing flag.
+    if not ctx.is_admin and not slot.allow_roster_sharing:
+        return json.dumps({
+            "event_label": slot.label,
+            "event_date": slot.date.isoformat(),
+            "message": "The organizer has set this event's roster to private.",
+        })
+
+    # Pull every active booking tied to this slot, joined to contact +
+    # appointment type. event_slot_id is the canonical link; using it
+    # picks up bookings regardless of which time window inside the event
+    # they're at.
+    rows = (await ctx.db.execute(
+        select(Booking, Contact, AppointmentType)
+        .join(Contact, Contact.id == Booking.contact_id)
+        .join(AppointmentType, AppointmentType.id == Booking.appointment_type_id)
+        .where(
+            Booking.tenant_id == ctx.tenant.id,
+            Booking.event_slot_id == slot.id,
+            Booking.status.in_([BookingStatus.SCHEDULED, BookingStatus.RESCHEDULED]),
+        )
+        .order_by(AppointmentType.name, Booking.scheduled_at)
+    )).all()
+
+    by_service: dict[str, list[str]] = {}
+    hidden_count = 0
+    total_visible = 0
+    for booking, contact, appt in rows:
+        if ctx.is_admin:
+            nm = (contact.name or "").strip()
+            display = f"{nm} ({contact.phone})" if nm else contact.phone
+        else:
+            vis_raw = booking.roster_visibility
+            vis = (
+                vis_raw if isinstance(vis_raw, str)
+                else (vis_raw.value if vis_raw else "first_name")
+            )
+            display = _format_roster_name(contact.name, contact.phone, vis)
+            if display is None:
+                hidden_count += 1
+                continue
+        by_service.setdefault(appt.name, []).append(display)
+        total_visible += 1
+
+    services_out = [
+        {"service": name, "signups": names}
+        for name, names in by_service.items()
+    ]
+
+    payload: dict = {
+        "event_label": slot.label,
+        "event_date": slot.date.isoformat(),
+        "event_time": (
+            f"{slot.start_time.strftime('%I:%M %p').lstrip('0')}"
+            f"–{slot.end_time.strftime('%I:%M %p').lstrip('0')}"
+        ),
+        "services": services_out,
+        "total_signups": total_visible + hidden_count,
+        "visible_signups": total_visible,
+    }
+    if not ctx.is_admin and hidden_count > 0:
+        payload["hidden_signups"] = hidden_count
+    if total_visible == 0 and hidden_count == 0:
+        payload["message"] = (
+            f"No one has signed up for {slot.label or 'this event'} yet."
+        )
+    return json.dumps(payload)
 
 
 async def handle_get_my_appointments(ctx: ToolContext, tool_input: dict) -> str:
@@ -563,7 +709,13 @@ async def handle_book_appointment(ctx: ToolContext, tool_input: dict) -> str:
     elif contact_row and contact_row.default_roster_visibility:
         raw_visibility = contact_row.default_roster_visibility
     else:
-        raw_visibility = "first_name"
+        # Privacy-first default: until the volunteer states a preference,
+        # they're hidden from the public roster. Admins still see them
+        # in full — admin roster fetchers bypass _format_roster_name.
+        # When the volunteer later says "show my first name" / "use my
+        # full name", that explicit pick gets persisted as their
+        # default and carries forward.
+        raw_visibility = "hidden"
 
     try:
         roster_visibility = RosterVisibility(raw_visibility)
@@ -575,13 +727,22 @@ async def handle_book_appointment(ctx: ToolContext, tool_input: dict) -> str:
     # Persist the explicit pick as the contact's default so they aren't
     # re-asked on every future booking. Only writes when the value actually
     # differs from what's stored — avoids a no-op UPDATE on every booking.
+    # When the value changes, also stash a ContactPreferenceHistory row
+    # to be linked to the booking once it has an id (see below). Admins
+    # see this on the Volunteer detail page as a timeline of stated
+    # preferences.
+    preference_change_pending: dict | None = None
     if (
         explicit_visibility is not None
         and contact_row is not None
         and contact_row.default_roster_visibility != roster_visibility.value
     ):
+        previous = contact_row.default_roster_visibility
         contact_row.default_roster_visibility = roster_visibility.value
-        # Flush is implicit on the eventual session commit downstream.
+        preference_change_pending = {
+            "previous": previous,
+            "new": roster_visibility.value,
+        }
 
     appt_type = await _resolve_appointment_type(ctx.db, ctx.tenant.id, service_name)
     if not appt_type:
@@ -719,6 +880,29 @@ async def handle_book_appointment(ctx: ToolContext, tool_input: dict) -> str:
         tenant_id=ctx.tenant.id,
     )
     ctx.db.add(history)
+
+    # Tie the visibility-preference change to this booking now that we
+    # have an id. Append-only row admins can see on the Volunteer page.
+    if preference_change_pending is not None:
+        from app.models.contact_preference_history import (
+            PREFERENCE_FIELD_ROSTER_VISIBILITY,
+            PREFERENCE_SOURCE_ADMIN,
+            PREFERENCE_SOURCE_USER_SMS,
+            ContactPreferenceHistory,
+        )
+        ctx.db.add(ContactPreferenceHistory(
+            tenant_id=ctx.tenant.id,
+            contact_id=ctx.contact_id,
+            field=PREFERENCE_FIELD_ROSTER_VISIBILITY,
+            previous_value=preference_change_pending["previous"],
+            new_value=preference_change_pending["new"],
+            source=(
+                PREFERENCE_SOURCE_ADMIN
+                if ctx.is_admin
+                else PREFERENCE_SOURCE_USER_SMS
+            ),
+            source_booking_id=booking.id,
+        ))
 
     # Process calendar + ICS (no SMS — Claude's response is the confirmation)
     try:
@@ -2481,6 +2665,7 @@ from app.agents.recruiter.chat_tools import (
 TOOL_HANDLERS = {
     "list_services": handle_list_services,
     "check_availability": handle_check_availability,
+    "get_event_roster": handle_get_event_roster,
     "get_my_appointments": handle_get_my_appointments,
     "book_appointment": handle_book_appointment,
     "cancel_appointment": handle_cancel_appointment,

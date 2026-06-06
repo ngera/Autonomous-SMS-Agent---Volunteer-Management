@@ -96,6 +96,29 @@ class EventRosterEvent(BaseModel):
     end_time: time
 
 
+class EventRosterHistoryEntry(BaseModel):
+    """One row in the roster's combined audit feed.
+
+    Spans every booking in the slot — creations, status changes,
+    reschedules, cancellations — so an admin gets one chronological
+    log of who did what to which booking when.
+    """
+    timestamp: datetime
+    event_type: str  # mirrors BookingEventType.value
+    booking_id: uuid.UUID
+    volunteer_name: str | None
+    volunteer_phone: str
+    service_name: str
+    previous_scheduled_at: datetime | None = None
+    new_scheduled_at: datetime | None = None
+    previous_status: str | None = None
+    new_status: str | None = None
+    changed_by: str  # 'user_sms' | 'admin' | 'scheduler'
+    admin_email: str | None = None
+    notes: str | None = None
+
+
 class EventRosterResponse(BaseModel):
     event: EventRosterEvent | None
     services: list[EventRosterService]
+    history: list[EventRosterHistoryEntry] = []

@@ -19,6 +19,35 @@ LIST_SERVICES = {
     },
 }
 
+GET_EVENT_ROSTER = {
+    "name": "get_event_roster",
+    "description": (
+        "List EVERY volunteer signed up for a specific event, across all "
+        "services and time windows of that event. Call this — not "
+        "check_availability — when the volunteer asks who else is going / "
+        "who has signed up / who's helping. check_availability returns "
+        "per-time-slot data which silently misses signups at other time "
+        "windows of the same event. Roster sharing + per-volunteer "
+        "visibility are applied automatically. Returns first names (or "
+        "full names where the volunteer chose that) plus a hidden_signups "
+        "count; never includes phone numbers for volunteers."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "event_label": {
+                "type": "string",
+                "description": "Event name / label (e.g. 'Awareness Seminar'). Substring match; case-insensitive.",
+            },
+            "event_date": {
+                "type": "string",
+                "description": "Optional event date in YYYY-MM-DD. Narrows when the label is ambiguous (same event name on multiple dates).",
+            },
+        },
+        "required": ["event_label"],
+    },
+}
+
 CHECK_AVAILABILITY = {
     "name": "check_availability",
     "description": (
@@ -772,6 +801,7 @@ DELETE_RECRUITMENT_CAMPAIGN = {
 CUSTOMER_TOOLS = [
     LIST_SERVICES,
     CHECK_AVAILABILITY,
+    GET_EVENT_ROSTER,
     GET_MY_APPOINTMENTS,
     BOOK_APPOINTMENT,
     CANCEL_APPOINTMENT,
@@ -781,6 +811,7 @@ CUSTOMER_TOOLS = [
 ADMIN_TOOLS = [
     LIST_SERVICES,
     CHECK_AVAILABILITY,
+    GET_EVENT_ROSTER,
     GET_MY_APPOINTMENTS,
     BOOK_APPOINTMENT,
     CANCEL_APPOINTMENT,

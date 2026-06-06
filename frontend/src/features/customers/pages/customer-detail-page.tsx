@@ -150,7 +150,7 @@ export function CustomerDetailPage() {
         </div>
 
         <div className="lg:col-span-2">
-          <Tabs defaultValue="bookings">
+          <Tabs defaultValue="services">
             <TabsList>
               <TabsTrigger value="services">Services</TabsTrigger>
               <TabsTrigger value="availability">Availability</TabsTrigger>

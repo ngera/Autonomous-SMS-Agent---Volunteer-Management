@@ -189,7 +189,11 @@ def _parse_services(s: str, name_to_id: dict[str, "uuid.UUID"]) -> list:
 
 
 def _build_customer_response(
-    contact, consent_status, preferred_type_ids=None, total_minutes: int = 0
+    contact,
+    consent_status,
+    preferred_type_ids=None,
+    total_minutes: int = 0,
+    roster_visibility_history=None,
 ):
     return CustomerResponse(
         id=contact.id,
@@ -210,6 +214,8 @@ def _build_customer_response(
         preferences=contact.preferences,
         notes=contact.notes,
         memory_updated_at=contact.memory_updated_at,
+        default_roster_visibility=contact.default_roster_visibility,
+        roster_visibility_history=roster_visibility_history or [],
         created_at=contact.created_at,
         updated_at=contact.updated_at,
     )
@@ -353,6 +359,11 @@ async def get_volunteer_hours_summary(
 
 @router.get("/{phone}", response_model=CustomerResponse)
 async def get_customer(phone: str, db: DbSession, current_user: CurrentUser, tenant: CurrentTenant):
+    from app.models.contact_preference_history import (
+        PREFERENCE_FIELD_ROSTER_VISIBILITY,
+        ContactPreferenceHistory,
+    )
+
     result = await db.execute(
         select(Contact).options(joinedload(Contact.consent)).where(
             Contact.phone == phone, Contact.tenant_id == tenant.id
@@ -363,10 +374,31 @@ async def get_customer(phone: str, db: DbSession, current_user: CurrentUser, ten
         raise HTTPException(status_code=404, detail="Customer not found")
 
     pref_ids = await _get_preferred_type_ids(db, contact.id, tenant.id)
+
+    # Roster-visibility change timeline (newest first).
+    history_rows = (await db.execute(
+        select(ContactPreferenceHistory).where(
+            ContactPreferenceHistory.tenant_id == tenant.id,
+            ContactPreferenceHistory.contact_id == contact.id,
+            ContactPreferenceHistory.field == PREFERENCE_FIELD_ROSTER_VISIBILITY,
+        ).order_by(ContactPreferenceHistory.changed_at.desc())
+    )).scalars().all()
+    history = [
+        {
+            "previous_value": r.previous_value,
+            "new_value": r.new_value,
+            "source": r.source,
+            "source_booking_id": r.source_booking_id,
+            "changed_at": r.changed_at,
+        }
+        for r in history_rows
+    ]
+
     return _build_customer_response(
         contact,
         contact.consent.status if contact.consent else None,
         pref_ids,
+        roster_visibility_history=history,
     )
 
 

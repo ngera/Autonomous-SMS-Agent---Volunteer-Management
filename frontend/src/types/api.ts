@@ -201,9 +201,32 @@ export interface EventRosterEvent {
   end_time: string;
 }
 
+export interface EventRosterHistoryEntry {
+  timestamp: string;
+  event_type:
+    | "created"
+    | "rescheduled"
+    | "cancelled"
+    | "completed"
+    | "no_show"
+    | "status_changed";
+  booking_id: string;
+  volunteer_name: string | null;
+  volunteer_phone: string;
+  service_name: string;
+  previous_scheduled_at: string | null;
+  new_scheduled_at: string | null;
+  previous_status: string | null;
+  new_status: string | null;
+  changed_by: "user_sms" | "admin" | "scheduler";
+  admin_email: string | null;
+  notes: string | null;
+}
+
 export interface EventRosterResponse {
   event: EventRosterEvent | null;
   services: EventRosterService[];
+  history: EventRosterHistoryEntry[];
 }
 
 // ── Customers ──
@@ -212,6 +235,16 @@ export interface WeeklyHourBlock {
   day_of_week: number; // 0=Mon..6=Sun
   start_time: string; // "HH:MM:SS" or "HH:MM"
   end_time: string;
+}
+
+export type RosterVisibility = "hidden" | "first_name" | "full_name";
+
+export interface RosterVisibilityHistoryEntry {
+  previous_value: RosterVisibility | null;
+  new_value: RosterVisibility;
+  source: "user_sms" | "admin";
+  source_booking_id: string | null;
+  changed_at: string;
 }
 
 export interface CustomerResponse {
@@ -230,6 +263,10 @@ export interface CustomerResponse {
   reminder_preference_days: number;
   consent_status: ConsentStatus | null;
   preferred_appointment_type_ids: string[];
+  /** Volunteer's saved roster-visibility default. `null` = never stated; effective behavior is "hidden". */
+  default_roster_visibility: RosterVisibility | null;
+  /** Append-only change log of the volunteer's stated roster visibility, newest first. */
+  roster_visibility_history: RosterVisibilityHistoryEntry[];
   created_at: string;
   updated_at: string;
 }

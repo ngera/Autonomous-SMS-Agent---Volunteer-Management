@@ -15,6 +15,7 @@ from app.schemas.booking import (
     BookingListResponse,
     BookingResponse,
     EventRosterEvent,
+    EventRosterHistoryEntry,
     EventRosterResponse,
     EventRosterService,
     EventRosterSignup,
@@ -469,7 +470,77 @@ async def build_event_roster_response(
             signups=signups,
         ))
     services.sort(key=lambda s: (s.category.lower(), s.name.lower()))
-    return EventRosterResponse(event=event_meta, services=services)
+
+    # Build the per-event audit feed: every BookingHistory row for any
+    # booking in this slot — creations, reschedules, cancellations,
+    # status changes — joined to volunteer + service + admin (when
+    # the change was admin-driven). Sorted most recent first so the
+    # latest action surfaces at the top of the UI.
+    history: list[EventRosterHistoryEntry] = []
+    booking_ids = [b.id for b in slot_bookings]
+    if booking_ids:
+        from app.models.admin_user import AdminUser
+        from app.models.booking_history import BookingHistory
+
+        type_name_by_id = {tid: row.name for tid, row in type_rows.items()}
+        appt_by_booking = {b.id: b.appointment_type_id for b in slot_bookings}
+        booking_contact = {b.id: b.contact_id for b in slot_bookings}
+        booking_phone = {b.id: b.contact_phone for b in slot_bookings}
+
+        hist_rows = (await db.execute(
+            select(BookingHistory).where(
+                BookingHistory.tenant_id == tenant.id,
+                BookingHistory.booking_id.in_(booking_ids),
+            )
+            .order_by(BookingHistory.created_at.desc())
+        )).scalars().all()
+
+        admin_ids = {h.changed_by_admin_id for h in hist_rows if h.changed_by_admin_id}
+        admin_email_by_id: dict[uuid.UUID, str] = {}
+        if admin_ids:
+            admin_rows = (await db.execute(
+                select(AdminUser.id, AdminUser.email).where(AdminUser.id.in_(admin_ids))
+            )).all()
+            admin_email_by_id = {aid: email for aid, email in admin_rows}
+
+        for h in hist_rows:
+            tid = appt_by_booking.get(h.booking_id)
+            cid = booking_contact.get(h.booking_id)
+            history.append(EventRosterHistoryEntry(
+                timestamp=h.created_at,
+                event_type=(
+                    h.event_type.value
+                    if hasattr(h.event_type, "value")
+                    else str(h.event_type)
+                ),
+                booking_id=h.booking_id,
+                volunteer_name=name_by_contact.get(cid) if cid else None,
+                volunteer_phone=booking_phone.get(h.booking_id, ""),
+                service_name=type_name_by_id.get(tid, "") if tid else "",
+                previous_scheduled_at=h.previous_scheduled_at,
+                new_scheduled_at=h.new_scheduled_at,
+                previous_status=(
+                    h.previous_status.value
+                    if h.previous_status is not None
+                    and hasattr(h.previous_status, "value")
+                    else (str(h.previous_status) if h.previous_status else None)
+                ),
+                new_status=(
+                    h.new_status.value
+                    if h.new_status is not None
+                    and hasattr(h.new_status, "value")
+                    else (str(h.new_status) if h.new_status else None)
+                ),
+                changed_by=(
+                    h.changed_by.value
+                    if hasattr(h.changed_by, "value")
+                    else str(h.changed_by)
+                ),
+                admin_email=admin_email_by_id.get(h.changed_by_admin_id),
+                notes=h.notes,
+            ))
+
+    return EventRosterResponse(event=event_meta, services=services, history=history)
 
 
 @router.get("/{booking_id}/event-roster", response_model=EventRosterResponse)

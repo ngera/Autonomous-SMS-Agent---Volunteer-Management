@@ -4,13 +4,17 @@ import {
   AlertTriangle,
   ArrowLeft,
   CheckCircle,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
+  CircleDashed,
+  CircleDot,
   Megaphone,
   Pencil,
   RefreshCw,
   XCircle,
 } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { differenceInCalendarDays } from "date-fns";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -33,6 +37,8 @@ import {
   useCancelBooking,
 } from "../hooks/use-bookings";
 import { BookingHistoryTimeline } from "../components/booking-history-timeline";
+import { HistorySection } from "../components/event-roster-card";
+import { CapacityBars } from "@/features/dashboard/components/capacity-pulse";
 import { RescheduleDialog } from "../components/reschedule-dialog";
 import { StatusUpdateDialog } from "../components/status-update-dialog";
 import { AnnouncementForm } from "@/features/announcements/components/announcement-form";
@@ -287,7 +293,14 @@ export function BookingDetailPage() {
                     <Pencil className="mr-2 h-3.5 w-3.5" />
                     Edit event
                   </Button>
-                  <RecruitmentCta slotId={event.source_id} />
+                  <RecruitmentCta
+                    slotId={event.source_id}
+                    allSlotsFilled={
+                      totals.hasConfig &&
+                      totals.totalMax > 0 &&
+                      totals.totalActive >= totals.totalMax
+                    }
+                  />
                 </>
               )}
               {canModify && event?.source === "weekly_rule" && (
@@ -329,28 +342,18 @@ export function BookingDetailPage() {
         </CardHeader>
 
         <CardContent>
-          <div className="grid gap-3 sm:grid-cols-4">
-            <Stat label="Booked" value={totals.totalActive} />
-            <Stat
-              label="Minimum needed"
-              value={totals.hasConfig ? totals.totalMin : "—"}
+          {totals.hasConfig ? (
+            <CapacityBars
+              booked={totals.totalActive}
+              min={totals.totalMin}
+              max={totals.totalMax}
+              showLegend
             />
-            <Stat
-              label="Maximum"
-              value={totals.hasConfig ? totals.totalMax : "—"}
-            />
-            <Stat
-              label="More needed"
-              value={totals.hasConfig ? totals.moreNeeded : 0}
-              accent={
-                totals.hasConfig && totals.moreNeeded > 0
-                  ? showAlert
-                    ? "danger"
-                    : "warning"
-                  : "ok"
-              }
-            />
-          </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              {totals.totalActive} booked · no min / max configured for this event.
+            </p>
+          )}
         </CardContent>
       </Card>
 
@@ -436,15 +439,22 @@ export function BookingDetailPage() {
         </button>
         {historyOpen && (
           <CardContent id="event-history-content" className="space-y-4 pt-0">
-            {cancelledSignups.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                No cancelled or no-show bookings for this event.
-              </p>
-            ) : (
-              <div className="space-y-1.5">
-                {cancelledSignups.map((sg) => (
-                  <CancelledRow key={sg.booking_id} sg={sg} />
-                ))}
+            {/* Event-level audit feed — who booked / cancelled / rescheduled
+                / changed status, across every volunteer on this slot.
+                Read from roster.data.history so a CREATED row shows up
+                the moment a sign-up lands. */}
+            <HistorySection history={roster.data?.history ?? []} />
+
+            {cancelledSignups.length > 0 && (
+              <div className="border-t pt-3">
+                <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Cancelled / no-show roster rows
+                </p>
+                <div className="space-y-1.5">
+                  {cancelledSignups.map((sg) => (
+                    <CancelledRow key={sg.booking_id} sg={sg} />
+                  ))}
+                </div>
               </div>
             )}
 
@@ -548,29 +558,6 @@ export function BookingDetailPage() {
   );
 }
 
-interface StatProps {
-  label: string;
-  value: number | string;
-  accent?: "ok" | "warning" | "danger";
-}
-
-function Stat({ label, value, accent = "ok" }: StatProps) {
-  const accentClass =
-    accent === "danger"
-      ? "text-red-700 dark:text-red-300"
-      : accent === "warning"
-        ? "text-amber-700 dark:text-amber-300"
-        : "text-foreground";
-  return (
-    <div className="rounded-md border bg-muted/30 p-3">
-      <p className="text-xs text-muted-foreground">{label}</p>
-      <p className={`text-2xl font-semibold leading-none ${accentClass}`}>
-        {value}
-      </p>
-    </div>
-  );
-}
-
 interface ServiceBlockProps {
   svc: EventRosterService;
   highlightBookingId: string;
@@ -583,10 +570,44 @@ function ServiceBlock({ svc, highlightBookingId }: ServiceBlockProps) {
       ? `${activeSignups.length} / ${svc.min_required} min · ${svc.max_allowed} max`
       : `${activeSignups.length} / ${svc.max_allowed} signed up`;
 
+  // Three-state status icon — same logic + look as event-roster-card.tsx
+  // so a slot-detail page (where dashboard alerts now land) and the
+  // generic roster card surface the same fill cue.
+  const fillKind: "empty" | "partial" | "full" =
+    activeSignups.length === 0
+      ? "empty"
+      : svc.max_allowed > 0 && activeSignups.length >= svc.max_allowed
+        ? "full"
+        : "partial";
+  const StatusIcon =
+    fillKind === "full"
+      ? CheckCircle2
+      : fillKind === "empty"
+        ? CircleDashed
+        : CircleDot;
+  const statusColor =
+    fillKind === "full"
+      ? "text-emerald-600 dark:text-emerald-400"
+      : fillKind === "empty"
+        ? "text-red-600 dark:text-red-400"
+        : "text-amber-600 dark:text-amber-400";
+  const statusLabel =
+    fillKind === "full"
+      ? "100% booked"
+      : fillKind === "empty"
+        ? "Nothing booked"
+        : "Partially booked";
+
   return (
     <div className="rounded-md border p-3">
-      <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
-        <p className="text-sm font-medium">{svc.name}</p>
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <StatusIcon
+            className={cn("h-4 w-4 shrink-0", statusColor)}
+            aria-label={statusLabel}
+          />
+          <p className="text-sm font-medium">{svc.name}</p>
+        </div>
         <p className="text-xs text-muted-foreground">{filledLabel}</p>
       </div>
       {activeSignups.length === 0 ? (
@@ -670,9 +691,21 @@ function CancelledRow({ sg }: CancelledRowProps) {
   );
 }
 
-function RecruitmentCta({ slotId }: { slotId: string }) {
+function RecruitmentCta({
+  slotId,
+  allSlotsFilled,
+}: {
+  slotId: string;
+  allSlotsFilled: boolean;
+}) {
   const navigate = useNavigate();
   const createCampaign = useCreateCampaign();
+
+  // Once every slot for the event is booked, the CTA has nothing to
+  // do — same outcome whether the muster ran to completion, was
+  // cancelled, or just got filled organically. Hide rather than
+  // disable so the row stays tidy.
+  if (allSlotsFilled) return null;
 
   function handleClick() {
     createCampaign.mutate(
@@ -682,7 +715,7 @@ function RecruitmentCta({ slotId }: { slotId: string }) {
         onError: (err: unknown) => {
           const detail =
             (err as { response?: { data?: { detail?: string } } })?.response
-              ?.data?.detail ?? "Could not start recruitment campaign.";
+              ?.data?.detail ?? "Could not start muster.";
           alert(detail);
         },
       }
@@ -698,7 +731,7 @@ function RecruitmentCta({ slotId }: { slotId: string }) {
       title="Have the recruitment agent plan SMS outreach for this event"
     >
       <Users2 className="mr-2 h-3.5 w-3.5" />
-      {createCampaign.isPending ? "Starting…" : "Recruit volunteers"}
+      {createCampaign.isPending ? "Starting…" : "Muster Volunteers"}
     </Button>
   );
 }
