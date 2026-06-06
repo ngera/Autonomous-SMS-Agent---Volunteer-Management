@@ -68,7 +68,7 @@ const SECTIONS: NavSection[] = [
       { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
       { to: "/bookings", label: "Calendar", icon: Calendar },
       { to: "/announcements", label: "Announcements", icon: Megaphone },
-      { to: "/campaigns", label: "Campaigns", icon: Users2 },
+      { to: "/campaigns", label: "Musters", icon: Users2 },
       { to: "/reminders", label: "Reminders", icon: Bell },
       { to: "/conversations", label: "Conversations", icon: MessageSquare },
       { to: "/suspensions", label: "Suspensions", icon: ShieldAlert },

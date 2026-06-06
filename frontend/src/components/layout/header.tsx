@@ -24,13 +24,26 @@ export function Header({ title }: HeaderProps) {
   const { mode, toggle } = useTheme();
 
   return (
-    <header className="flex h-14 items-center justify-between border-b border-border bg-card px-6">
+    <header className="grid h-14 grid-cols-3 items-center border-b border-border bg-card px-6">
       <div className="flex items-center gap-4">
         <h1 className="text-lg font-semibold">{title}</h1>
         <TenantFilterBar />
       </div>
 
-      <div className="flex items-center gap-3">
+      <div className="flex items-center justify-center">
+        <img
+          src={
+            mode === "dark"
+              ? "/brand/mustr-white-transparent.png"
+              : "/brand/mustr-navy-transparent.png"
+          }
+          alt="mustr"
+          className="h-7 w-auto select-none"
+          draggable={false}
+        />
+      </div>
+
+      <div className="flex items-center justify-end gap-3">
         <Button
           variant="ghost"
           size="icon-sm"
