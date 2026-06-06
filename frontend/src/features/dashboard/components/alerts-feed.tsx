@@ -8,7 +8,9 @@ import { useAlertState } from "../lib/alert-state";
 import {
   ALERT_CATEGORY_META,
   type AlertCategory,
+  type AlertGroup,
   categoryFor,
+  groupForCategory,
 } from "../lib/alert-categories";
 import { AlertCard } from "./alert-card";
 
@@ -33,9 +35,14 @@ const SEVERITY_GROUPS: {
 interface AlertsFeedProps {
   /** When set, only show alerts in this category. Null = show all. */
   categoryFilter?: AlertCategory | null;
+  /** When set, only show alerts whose category belongs to this dashboard group. */
+  groupFilter?: AlertGroup | null;
 }
 
-export function AlertsFeed({ categoryFilter = null }: AlertsFeedProps) {
+export function AlertsFeed({
+  categoryFilter = null,
+  groupFilter = null,
+}: AlertsFeedProps) {
   const { data, isLoading } = useAlerts();
   const state = useAlertState();
 
@@ -46,10 +53,12 @@ export function AlertsFeed({ categoryFilter = null }: AlertsFeedProps) {
       const snoozedUntil = state.snoozedUntil(a.id);
       if (snoozedUntil && snoozedUntil > now) return false;
       if (state.dismissedRecord(a.id)) return false;
-      if (categoryFilter && categoryFor(a) !== categoryFilter) return false;
+      const cat = categoryFor(a);
+      if (categoryFilter && cat !== categoryFilter) return false;
+      if (groupFilter && groupForCategory(cat) !== groupFilter) return false;
       return true;
     });
-  }, [data, state, categoryFilter]);
+  }, [data, state, categoryFilter, groupFilter]);
 
   const grouped = useMemo(() => {
     const map = new Map<AlertItem["severity"], AlertItem[]>();

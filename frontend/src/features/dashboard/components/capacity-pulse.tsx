@@ -170,6 +170,70 @@ export function Legend() {
   );
 }
 
+/**
+ * Standalone min/stretch dual-bar component — same visual language as
+ * the Capacity Pulse rows but without the metadata column or Start
+ * Campaign button. Use anywhere a (booked, min, max) triple needs to
+ * be visualized: roster page totals, campaigns table Fill column, etc.
+ */
+export function CapacityBars({
+  booked,
+  min,
+  max,
+  showLegend = false,
+  showSummary = true,
+  className,
+}: {
+  booked: number;
+  min: number;
+  max: number;
+  showLegend?: boolean;
+  showSummary?: boolean;
+  className?: string;
+}) {
+  const filledMin = Math.min(booked, min);
+  const openMin = Math.max(0, min - booked);
+  const filledStretch = Math.max(0, Math.min(booked - min, max - min));
+  const openStretch = Math.max(0, max - min - filledStretch);
+
+  return (
+    <div className={cn("w-full space-y-1.5", className)}>
+      {showLegend && <Legend />}
+      <BarRow
+        label="min"
+        widthPct={max > 0 ? (min / max) * 100 : 0}
+        totalCapacity={min}
+        segments={[
+          { value: filledMin, color: FILLED_MIN_COLOR, fg: "text-white" },
+          { value: openMin, color: OPEN_MIN_COLOR, fg: "text-white" },
+        ]}
+      />
+      <BarRow
+        label="stretch"
+        widthPct={max > 0 ? ((max - min) / max) * 100 : 0}
+        totalCapacity={max - min}
+        segments={[
+          {
+            value: filledStretch,
+            color: FILLED_STRETCH_COLOR,
+            fg: "text-emerald-900",
+          },
+          {
+            value: openStretch,
+            color: OPEN_STRETCH_COLOR,
+            fg: "text-rose-900",
+          },
+        ]}
+      />
+      {showSummary && (
+        <p className="text-[10px] tabular-nums text-muted-foreground">
+          {booked}/{max} booked · min {min}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function CapacityRow({
   row,
   globalMax,
@@ -299,7 +363,7 @@ export function CapacityRow({
               ) : (
                 <>
                   <Megaphone className="mr-1 h-3 w-3" />
-                  Start Campaign
+                  Muster Volunteers
                 </>
               )}
             </Button>
@@ -374,7 +438,7 @@ function CampaignBadge({
     label = "Awaiting approval";
   } else if (isDone) {
     tone = "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300";
-    label = campaign.status === "completed" ? "Campaign done" : "Cancelled";
+    label = campaign.status === "completed" ? "all mustr'ed" : "Cancelled";
   }
   return (
     <span

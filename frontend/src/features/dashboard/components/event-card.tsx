@@ -142,7 +142,7 @@ function CampaignBadge({
     label = "Awaiting approval";
   } else if (status === "completed" || status === "cancelled") {
     tone = "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300";
-    label = status === "completed" ? "Campaign done" : "Campaign cancelled";
+    label = status === "completed" ? "all mustr'ed" : "Campaign cancelled";
   }
   const Tag = onClick ? "button" : "span";
   return (
@@ -317,7 +317,7 @@ export function EventCard(props: EventCardProps) {
               ) : (
                 <>
                   <Megaphone className="mr-1 h-3 w-3" />
-                  Start Campaign
+                  Muster Volunteers
                 </>
               )}
             </Button>

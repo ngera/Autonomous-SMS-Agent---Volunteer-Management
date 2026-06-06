@@ -14,8 +14,10 @@ import {
   ALERT_CATEGORY_META,
   type AlertCategory,
   type AlertCategoryCount,
+  categoriesInGroup,
   categoryFor,
   countByCategory,
+  groupForCategory,
 } from "../lib/alert-categories";
 
 interface AlertsDonutProps {
@@ -30,6 +32,8 @@ export function AlertsDonut({ selected, onSelect }: AlertsDonutProps) {
   const state = useAlertState();
 
   // Filter out locally-suppressed alerts so the chart matches the feed.
+  // Heads-up categories are intentionally excluded — those live in their
+  // own dashboard section now; this donut is the Decisions slice only.
   const visible = useMemo(() => {
     if (!alerts) return [];
     const now = Date.now();
@@ -37,11 +41,24 @@ export function AlertsDonut({ selected, onSelect }: AlertsDonutProps) {
       const sn = state.snoozedUntil(a.id);
       if (sn && sn > now) return false;
       if (state.dismissedRecord(a.id)) return false;
+      if (groupForCategory(categoryFor(a)) !== "decisions") return false;
       return true;
     });
   }, [alerts, state]);
 
-  const data = useMemo(() => countByCategory(visible), [visible]);
+  // Restrict the legend to Decisions categories only so the empty
+  // heads-up rows don't pad the panel.
+  const decisionCategories = useMemo(
+    () => new Set<AlertCategory>(categoriesInGroup("decisions")),
+    [],
+  );
+  const data = useMemo(
+    () =>
+      countByCategory(visible).filter((d) =>
+        decisionCategories.has(d.category),
+      ),
+    [visible, decisionCategories],
+  );
   const total = useMemo(
     () => data.reduce((sum, d) => sum + d.count, 0),
     [data],

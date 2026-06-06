@@ -11,9 +11,44 @@ export type AlertCategory =
   | "candidate"
   | "at_risk_event"
   | "rule_changed"
+  | "urgent_message"
   | "complaint"
   | "hallucination"
-  | "feedback";
+  | "feedback"
+  | "token_usage"
+  | "issue";
+
+/**
+ * Dashboard sections each category belongs to:
+ *  - "decisions" : something a human needs to act on
+ *  - "heads_up"  : informational; admin can look when ready
+ */
+export type AlertGroup = "decisions" | "heads_up";
+
+const CATEGORY_GROUP: Record<AlertCategory, AlertGroup> = {
+  service_change: "decisions",
+  review: "decisions",
+  suspension: "decisions",
+  at_risk_event: "decisions",
+  rule_changed: "decisions",
+  urgent_message: "decisions",
+  candidate: "heads_up",
+  complaint: "heads_up",
+  hallucination: "heads_up",
+  feedback: "heads_up",
+  token_usage: "heads_up",
+  issue: "heads_up",
+};
+
+export function groupForCategory(cat: AlertCategory): AlertGroup {
+  return CATEGORY_GROUP[cat];
+}
+
+export function categoriesInGroup(group: AlertGroup): AlertCategory[] {
+  return (Object.keys(CATEGORY_GROUP) as AlertCategory[]).filter(
+    (c) => CATEGORY_GROUP[c] === group,
+  );
+}
 
 export const ALERT_CATEGORY_META: Record<
   AlertCategory,
@@ -65,6 +100,21 @@ export const ALERT_CATEGORY_META: Record<
     color: "#3B82F6", // blue-500
     description: "Volunteer feedback (informational)",
   },
+  urgent_message: {
+    label: "Urgent messages",
+    color: "#DC2626", // red-600
+    description: "Volunteer texts flagged as urgent (emergencies, deadlines)",
+  },
+  token_usage: {
+    label: "High token usage",
+    color: "#F97316", // orange-500
+    description: "AI cost surges that need a look",
+  },
+  issue: {
+    label: "Open issues",
+    color: "#A855F7", // purple-500
+    description: "Operational issues that need triage",
+  },
 };
 
 export function categoryFor(alert: AlertItem): AlertCategory {
@@ -78,6 +128,9 @@ export function categoryFor(alert: AlertItem): AlertCategory {
   if (s === "issue_complaint") return "complaint";
   if (s === "issue_hallucination") return "hallucination";
   if (s === "issue_feedback") return "feedback";
+  if (s === "urgent_message") return "urgent_message";
+  if (s === "token_usage" || s === "issue_token_usage") return "token_usage";
+  if (s === "issue" || s === "issue_open") return "issue";
   // Defensive default — surface as "complaint" so unknown sources still appear.
   return "complaint";
 }

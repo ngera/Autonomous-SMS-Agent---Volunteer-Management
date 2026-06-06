@@ -948,7 +948,12 @@ async def _alerts_at_risk_events(db, tenant, now) -> list[AlertItem]:
             ),
             body=f"{booked} of {capacity} booked. Send reminders or start a wave.",
             cta_label="View event",
-            cta_url=f"/run-sheet/{slot.id}",
+            # /run-sheet is the during-event check-in surface and only has
+            # useful data inside the live window; for events still days
+            # out it renders blank. The slot-detail roster page works for
+            # any future date and is what the admin actually needs to
+            # decide whether to push a wave or send reminders.
+            cta_url=f"/events/specific/{slot.id}",
             age_seconds=0,
             icon="AlertTriangle",
             accent="amber" if days_until > 2 else "red",
@@ -1860,15 +1865,15 @@ async def get_recommendations(
                 id=f"rec_push:{camp.id}",
                 kind="push_wave",
                 title=(
-                    f"Campaign falling behind for ({date_str}) "
+                    f"Muster falling behind for ({date_str}) "
                     f"{c['label']} ({ratio_str})"
                 ),
                 body=(
                     f"{days_until} days out, only {c['booked']} of "
-                    f"{c['capacity']} booked. Open the campaign to "
+                    f"{c['capacity']} booked. Open the muster to "
                     f"push the next wave."
                 ),
-                cta_label="Open campaign",
+                cta_label="Open muster",
                 cta_url=f"/campaigns/{camp.id}",
                 accent="amber",
                 context={
@@ -1890,7 +1895,7 @@ async def get_recommendations(
                 id=f"rec_start:{ident}",
                 kind="start_campaign",
                 title=(
-                    f"Start a campaign for ({date_str}) "
+                    f"Muster volunteers for ({date_str}) "
                     f"{c['label']} ({ratio_str})"
                 ),
                 body=(
@@ -1898,7 +1903,7 @@ async def get_recommendations(
                     f"{c['capacity']} booked. Recruitment waves take "
                     f"1–3 weeks to land — start now to fill comfortably."
                 ),
-                cta_label="Start campaign",
+                cta_label="Muster Volunteers",
                 cta_url="",  # agent-driven, no nav
                 accent="blue",
                 context={
