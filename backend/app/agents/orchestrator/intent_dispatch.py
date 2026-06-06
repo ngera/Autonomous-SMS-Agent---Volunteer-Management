@@ -91,8 +91,17 @@ async def maybe_handle_via_classifier(
         )
 
     if intent == "status":
+        # The status router filters by event label/date when present —
+        # discarding the classifier's event_reference here was making
+        # "what is the status of awareness seminar" render every active
+        # campaign instead of just that one. Pass the ref through so
+        # _extract_status_filter can narrow the result.
+        if event_ref:
+            synthetic = f"status of {event_ref} campaign"
+        else:
+            synthetic = "list active campaigns"
         return await maybe_handle_status_directly(
-            db, tenant, "list active campaigns"
+            db, tenant, synthetic, admin_id=admin_user.id
         )
 
     if intent == "start_planning":

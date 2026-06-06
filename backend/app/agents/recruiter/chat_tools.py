@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import uuid
 from datetime import date, datetime, timezone
 
@@ -1556,25 +1557,87 @@ async def maybe_handle_status_directly(
     db,
     tenant: Tenant,
     message: str,
+    admin_id: uuid.UUID | None = None,
 ) -> str | None:
     """Server-side router for unambiguous status questions.
 
-    The LLM has repeatedly fabricated campaign lists rather than calling
-    ``recruitment_status``. Intercepting clean status queries here gives
-    the admin a reliable answer based on real DB state.
+    Two paths:
 
-    When the admin names a specific event ("status of food drive"), the
-    response is filtered to that one campaign. When they don't, every
-    non-terminal campaign is rendered (same shape per block). Each block
-    leads with totals, then per-service breakdown, then wave history +
-    next scheduled wave — matches what an admin asking "where are we?"
-    actually wants to see.
+      1. Initial query (or one carrying an event filter):
+         - "status of awareness seminar" / "status of campaigns on Jul 4" →
+           filter narrows to one campaign → render the full block (totals,
+           per-service breakdown, wave history).
+         - "status of campaigns" with no filter and N>1 results → render a
+           SHORT numbered list ("1. Awareness Seminar — 2026-06-14 [active]")
+           and persist the list keyed to ``admin_id`` so the next SMS can
+           pick one. SMS gets too long otherwise — a list of N full blocks
+           would blow past Twilio segment limits the moment N > 2.
+
+      2. Follow-up selection ("1" / "awareness seminar" / "Jul 4"):
+         - If ``admin_id`` has a saved pending list, the message is matched
+           against it (ordinal → date → label substring) and we render that
+           one campaign's full block.
+
+    Without ``admin_id`` we can't persist or recall — the function falls
+    back to the legacy "render every campaign" behavior (still better than
+    dumping nothing). The pipeline.py + intent_dispatch admin paths
+    always pass admin_id; the test_conversation tool passes None.
     """
-    if not _looks_like_status_query(message):
-        return None
-
     from app.models.availability import SpecificDateSlot
     from app.models.appointment_type import AppointmentType
+
+    # ── Path 2: follow-up selection against a saved list ──────────
+    if admin_id is not None:
+        pending = await _load_pending_status_list(db, tenant.id, admin_id)
+        if pending:
+            picked = _resolve_pending_selection(pending, message)
+            if picked is not None:
+                try:
+                    campaign_uuid = uuid.UUID(str(picked["campaign_id"]))
+                except (ValueError, KeyError, TypeError):
+                    campaign_uuid = None
+                if campaign_uuid is not None:
+                    row = (await db.execute(
+                        select(RecruitmentCampaign, SpecificDateSlot)
+                        .join(
+                            SpecificDateSlot,
+                            SpecificDateSlot.id
+                            == RecruitmentCampaign.event_slot_id,
+                        )
+                        .where(
+                            RecruitmentCampaign.id == campaign_uuid,
+                            RecruitmentCampaign.tenant_id == tenant.id,
+                        )
+                    )).first()
+                    if row is not None:
+                        c, slot = row
+                        type_ids = {
+                            uuid.UUID(g["appointment_type_id"])
+                            for g in (c.goals or [])
+                            if g.get("appointment_type_id")
+                        }
+                        type_names: dict[str, str] = {}
+                        if type_ids:
+                            nq = await db.execute(
+                                select(
+                                    AppointmentType.id, AppointmentType.name
+                                ).where(AppointmentType.id.in_(type_ids))
+                            )
+                            type_names = {
+                                str(tid): name for tid, name in nq.all()
+                            }
+                        block = await _render_campaign_status_block(
+                            db, c, slot, type_names
+                        )
+                        # Pending list consumed — clear so the next "1"
+                        # isn't a stale shortcut to a different campaign.
+                        await _clear_pending_status_list(
+                            db, tenant.id, admin_id
+                        )
+                        return block
+
+    if not _looks_like_status_query(message):
+        return None
 
     # Pull all non-terminal campaigns + their slots
     q = await db.execute(
@@ -1598,30 +1661,30 @@ async def maybe_handle_status_directly(
     )
     rows = list(q.all())
     if not rows:
+        if admin_id is not None:
+            await _clear_pending_status_list(db, tenant.id, admin_id)
         return (
             "No recruitment campaigns are currently active or pending. "
             "Say 'plan recruitment for <event>' to start one."
         )
 
-    # Optional event filter: extract date / label from the admin's text
-    # using the same helpers the start + delete routers use. When we can
-    # narrow to one or two campaigns the output reads naturally; if the
-    # filter would zero everything out we fall through and show all (the
-    # admin's hint just didn't match — better to over-show than to lie).
+    # Optional event filter: extract date / label from the admin's text.
+    # When this narrows the result we go straight to full-block render
+    # (no numbered list needed — admin already named their event).
     filter_date, filter_label = _extract_status_filter(message)
     if filter_date or filter_label:
         filtered = _filter_campaigns_by_event(rows, filter_date, filter_label)
         if filtered:
             rows = filtered
 
-    # Service-name lookup
+    # Service-name lookup (used only for the full-block path)
     type_ids = {
         uuid.UUID(g["appointment_type_id"])
         for c, _ in rows
         for g in (c.goals or [])
         if g.get("appointment_type_id")
     }
-    type_names: dict[str, str] = {}
+    type_names = {}
     if type_ids:
         nq = await db.execute(
             select(AppointmentType.id, AppointmentType.name).where(
@@ -1630,18 +1693,40 @@ async def maybe_handle_status_directly(
         )
         type_names = {str(tid): name for tid, name in nq.all()}
 
-    blocks: list[str] = []
-    for c, slot in rows:
-        block = await _render_campaign_status_block(
-            db, c, slot, type_names
-        )
-        blocks.append(block)
+    # Single campaign — full block, clear any stale pending list.
+    if len(rows) == 1:
+        c, slot = rows[0]
+        block = await _render_campaign_status_block(db, c, slot, type_names)
+        if admin_id is not None:
+            await _clear_pending_status_list(db, tenant.id, admin_id)
+        return block
 
-    # Single campaign → no count prefix. Multiple → small header so the
-    # admin knows N blocks are coming.
-    if len(blocks) == 1:
-        return blocks[0]
-    return f"{len(blocks)} campaign(s):\n\n" + "\n\n".join(blocks)
+    # Multiple campaigns — short numbered list. Persist for follow-up
+    # selection when we know which admin asked.
+    list_lines = [f"{len(rows)} active campaign(s):"]
+    entries_for_pending: list[dict] = []
+    for idx, (c, slot) in enumerate(rows, start=1):
+        label = slot.label or "event"
+        event_date = slot.date.isoformat() if slot.date else "?"
+        list_lines.append(
+            f"{idx}. {label} — {event_date} [{c.status.value}]"
+        )
+        entries_for_pending.append({
+            "campaign_id": str(c.id),
+            "label": label,
+            "date": event_date,
+        })
+    list_lines.append("")
+    list_lines.append(
+        "Reply with a number, event name, or date for details."
+    )
+
+    if admin_id is not None:
+        await _save_pending_status_list(
+            db, tenant.id, admin_id, entries_for_pending
+        )
+
+    return "\n".join(list_lines)
 
 
 def _extract_status_filter(message: str) -> tuple[str | None, str | None]:
@@ -1701,6 +1786,155 @@ def _filter_campaigns_by_event(
                 continue
         out.append((c, slot))
     return out
+
+
+# ── Pending status-selection state ────────────────────────────────
+#
+# An admin's "status of campaigns" query (with no event filter) returns
+# a short numbered list rather than dumping every campaign's full block —
+# SMS would be too long to scan. The admin then replies with a number,
+# event name, or date to pick which one to expand. That follow-up reply
+# is a SHORT, contextless message ("1", "awareness seminar", "Jul 4") so
+# we persist the offered list per-admin and resolve the next reply
+# against it.
+#
+# Storage: per-tenant SystemSetting row keyed by admin id; value is a
+# JSON blob with a TTL we enforce on read. Avoids new tables for what's
+# effectively a 10-minute breadcrumb.
+
+_PENDING_STATUS_TTL_SECONDS = 600
+_PENDING_STATUS_KEY_PREFIX = "pending_status_list_"
+_NUMERIC_SELECTION_RE = re.compile(r"^\s*#?\s*(\d{1,2})\s*$")
+
+
+def _pending_status_key(admin_id: uuid.UUID) -> str:
+    return f"{_PENDING_STATUS_KEY_PREFIX}{admin_id}"
+
+
+async def _save_pending_status_list(
+    db,
+    tenant_id: uuid.UUID,
+    admin_id: uuid.UUID,
+    entries: list[dict],
+) -> None:
+    """Persist {campaign_id, label, date} list so a follow-up selection
+    reply can resolve back to a campaign without re-running the query."""
+    from datetime import datetime, timezone
+
+    from app.models.system_setting import SystemSetting
+
+    key = _pending_status_key(admin_id)
+    payload = json.dumps({
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "entries": entries,
+    })
+    existing = (await db.execute(
+        select(SystemSetting).where(
+            SystemSetting.tenant_id == tenant_id,
+            SystemSetting.key == key,
+        )
+    )).scalar_one_or_none()
+    if existing:
+        existing.value = payload
+        existing.updated_at = datetime.now(timezone.utc)
+    else:
+        db.add(SystemSetting(tenant_id=tenant_id, key=key, value=payload))
+    await db.flush()
+
+
+async def _load_pending_status_list(
+    db,
+    tenant_id: uuid.UUID,
+    admin_id: uuid.UUID,
+) -> list[dict] | None:
+    """Return the saved list if it's still within TTL, else None."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.models.system_setting import SystemSetting
+
+    row = (await db.execute(
+        select(SystemSetting).where(
+            SystemSetting.tenant_id == tenant_id,
+            SystemSetting.key == _pending_status_key(admin_id),
+        )
+    )).scalar_one_or_none()
+    if row is None:
+        return None
+    try:
+        payload = json.loads(row.value or "{}")
+        created = datetime.fromisoformat(payload.get("created_at", ""))
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return None
+    if datetime.now(timezone.utc) - created > timedelta(
+        seconds=_PENDING_STATUS_TTL_SECONDS
+    ):
+        return None
+    entries = payload.get("entries")
+    if not isinstance(entries, list) or not entries:
+        return None
+    return entries
+
+
+async def _clear_pending_status_list(
+    db,
+    tenant_id: uuid.UUID,
+    admin_id: uuid.UUID,
+) -> None:
+    from sqlalchemy import delete as sql_delete
+    from app.models.system_setting import SystemSetting
+
+    await db.execute(
+        sql_delete(SystemSetting).where(
+            SystemSetting.tenant_id == tenant_id,
+            SystemSetting.key == _pending_status_key(admin_id),
+        )
+    )
+    await db.flush()
+
+
+def _resolve_pending_selection(
+    entries: list[dict],
+    message: str,
+) -> dict | None:
+    """Match a follow-up reply against the saved list.
+
+    Order of attempts:
+      1. Ordinal — "1", "2", "#3" (1-indexed against the list)
+      2. ISO date or date-extraction match against entry["date"]
+      3. Case-insensitive label substring match
+
+    Returns the matched entry, or None if nothing resolves
+    unambiguously (multiple matches on label also returns None — the
+    admin has to disambiguate).
+    """
+    text = (message or "").strip().lower()
+    if not text:
+        return None
+
+    m = _NUMERIC_SELECTION_RE.match(text)
+    if m:
+        idx = int(m.group(1)) - 1
+        if 0 <= idx < len(entries):
+            return entries[idx]
+        return None
+
+    iso_date, leftover = _extract_date_from_text(text)
+    if iso_date:
+        matches = [e for e in entries if e.get("date") == iso_date]
+        if len(matches) == 1:
+            return matches[0]
+        # Multiple events on the same date — fall through and try label.
+
+    candidate_label = (leftover or text).strip()
+    candidate_label = _clean_label(candidate_label)
+    if len(candidate_label) >= 3:
+        lc = candidate_label.lower()
+        matches = [e for e in entries if lc in (e.get("label") or "").lower()]
+        if len(matches) == 1:
+            return matches[0]
+    return None
 
 
 def _fmt_short_date(dt) -> str:
@@ -2187,6 +2421,85 @@ async def _pending_reconfirm_block(
     )
 
 
+async def _my_existing_bookings_block(
+    db,
+    tenant: Tenant,
+    contact_id: uuid.UUID,
+) -> str | None:
+    """Render the volunteer's own upcoming non-cancelled bookings so
+    the LLM can tell "you're already signed up for X at this time"
+    apart from "someone else has reserved a slot at this time" —
+    the latter is capacity/who_signed_up info and is NOT a conflict
+    for this volunteer.
+
+    Without this block the LLM was reading the `who_signed_up` array
+    on a check_availability response and treating other volunteers'
+    names as if they were the current volunteer's own bookings,
+    leading to spurious "you can't do both" overlap warnings.
+
+    Returns None when the volunteer has no upcoming bookings.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    import pytz
+
+    from app.models.appointment_type import AppointmentType
+    from app.models.availability import SpecificDateSlot
+    from app.models.booking import Booking, BookingStatus
+
+    now = datetime.now(timezone.utc)
+    rows = (await db.execute(
+        select(Booking, AppointmentType, SpecificDateSlot)
+        .join(AppointmentType, AppointmentType.id == Booking.appointment_type_id)
+        .outerjoin(
+            SpecificDateSlot,
+            SpecificDateSlot.id == Booking.event_slot_id,
+        )
+        .where(
+            Booking.tenant_id == tenant.id,
+            Booking.contact_id == contact_id,
+            Booking.status.in_([
+                BookingStatus.SCHEDULED,
+                BookingStatus.RESCHEDULED,
+            ]),
+            Booking.scheduled_at >= now,
+        )
+        .order_by(Booking.scheduled_at.asc())
+        .limit(10)
+    )).all()
+    if not rows:
+        return None
+
+    try:
+        tz = pytz.timezone(tenant.business_timezone or "UTC")
+    except Exception:
+        tz = pytz.UTC
+
+    lines: list[str] = []
+    for booking, appt, slot in rows:
+        local = booking.scheduled_at.astimezone(tz)
+        duration = timedelta(minutes=appt.duration_minutes or 0)
+        end_local = (booking.scheduled_at + duration).astimezone(tz)
+        when = local.strftime("%a %b %d %Y, %I:%M %p")
+        end_str = end_local.strftime("%I:%M %p")
+        event_label = (slot.label if slot is not None else None) or "(recurring window)"
+        location = (slot.location if slot is not None else None) or "TBD"
+        lines.append(
+            f"- {appt.name} at {event_label} on {when}–{end_str} ({location})"
+        )
+
+    return (
+        "=== MY EXISTING BOOKINGS (this volunteer's own commitments) ===\n"
+        "These are the bookings THIS volunteer has already made. Use this "
+        "list — and ONLY this list — to detect 'you're already signed up' "
+        "overlaps before calling book_appointment. The who_signed_up array "
+        "on check_availability shows OTHER volunteers and is NOT a conflict "
+        "for this volunteer.\n"
+        + "\n".join(lines)
+        + "\n=== END MY EXISTING BOOKINGS ===\n"
+    )
+
+
 async def build_customer_state_preamble(
     db,
     tenant: Tenant,
@@ -2206,6 +2519,12 @@ async def build_customer_state_preamble(
         reconfirm_block = await _pending_reconfirm_block(db, tenant, contact_id)
         if reconfirm_block:
             blocks.append(reconfirm_block)
+
+        existing_block = await _my_existing_bookings_block(
+            db, tenant, contact_id
+        )
+        if existing_block:
+            blocks.append(existing_block)
 
     # Roster-visibility default: surface the volunteer's saved preference (if
     # any) so the booking-flow rules know whether to ASK or to proceed

@@ -138,7 +138,7 @@ async def _process_admin_message(
     )
     if auto_reply is None:
         auto_reply = await maybe_handle_status_directly(
-            db, tenant, message_body
+            db, tenant, message_body, admin_id=admin_user.id
         )
     if auto_reply is None:
         # Start + delete + list-events routers need a ToolContext
