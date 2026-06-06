@@ -21,6 +21,7 @@ import type {
   CampaignListItem,
   FillPerService,
 } from "@/types/api";
+import { CapacityBars } from "@/features/dashboard/components/capacity-pulse";
 
 const STATUS_VARIANT: Record<
   string,
@@ -68,17 +69,7 @@ function campaignTotals(fill: Record<string, FillPerService>) {
     if (e.max_allowed == null) hasUncapped = true;
     else maxTotal += e.max_allowed;
   }
-  const remainingMin = Math.max(0, minTotal - signedTotal);
-  return {
-    minTotal,
-    maxLabel: hasUncapped
-      ? entries.length === 1
-        ? "∞"
-        : `${maxTotal}+∞`
-      : maxTotal.toString(),
-    signedTotal,
-    remainingMin,
-  };
+  return { minTotal, maxTotal, hasUncapped, signedTotal };
 }
 
 function AggregateStrip({
@@ -156,18 +147,6 @@ function StatCard({
   );
 }
 
-function FillBar({ pct }: { pct: number }) {
-  const clamped = Math.max(0, Math.min(1, pct));
-  return (
-    <div className="h-2 w-32 overflow-hidden rounded-full bg-muted">
-      <div
-        className="h-full bg-primary"
-        style={{ width: `${clamped * 100}%` }}
-      />
-    </div>
-  );
-}
-
 export default function CampaignsListPage() {
   const [statusFilter, setStatusFilter] = useState<CampaignStatus | "all">(
     "all"
@@ -186,9 +165,11 @@ export default function CampaignsListPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Campaigns</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">Musters</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Volunteer recruitment campaigns, closest event first.
+            Filling events from your existing volunteer pool, closest
+            event first. Fundraising and Recruiting campaigns will live
+            in their own sections when they ship.
           </p>
         </div>
       </div>
@@ -205,7 +186,7 @@ export default function CampaignsListPage() {
 
       <Card>
         <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
-          <CardTitle className="text-base">Campaigns</CardTitle>
+          <CardTitle className="text-base">Musters</CardTitle>
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2">
               <Switch
@@ -253,10 +234,6 @@ export default function CampaignsListPage() {
                   <TableHead>Days</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Fill</TableHead>
-                  <TableHead className="text-right" title="Sum of min_required across all services in this campaign">Min</TableHead>
-                  <TableHead className="text-right" title="Sum of max_allowed across all services (∞ when any service is uncapped)">Max</TableHead>
-                  <TableHead className="text-right" title="Total volunteers signed up across all services">Signed up</TableHead>
-                  <TableHead className="text-right" title="Volunteers still needed to hit the minimum across all services">Need (min)</TableHead>
                   <TableHead>Last sent</TableHead>
                   <TableHead>Next wave</TableHead>
                 </TableRow>
@@ -296,33 +273,29 @@ export default function CampaignsListPage() {
                         {c.status}
                       </Badge>
                     </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-2">
-                        <FillBar pct={c.overall_fill_pct} />
-                        <span className="text-xs text-muted-foreground">
-                          {formatPct(c.overall_fill_pct)}
-                        </span>
-                      </div>
+                    <TableCell className="min-w-[220px]">
+                      {/* Uncapped campaigns ("∞ max" on at least one service)
+                          don't have a concrete max to scale the stretch bar
+                          against — fall back to a soft target of 2× min or
+                          a few past current signups so the visual still
+                          conveys "filling, more is welcome". */}
+                      <CapacityBars
+                        booked={totals.signedTotal}
+                        min={totals.minTotal}
+                        max={
+                          totals.hasUncapped
+                            ? Math.max(
+                                totals.minTotal * 2,
+                                totals.signedTotal + 5,
+                                totals.maxTotal,
+                              )
+                            : Math.max(totals.maxTotal, totals.minTotal, 1)
+                        }
+                        showSummary={false}
+                      />
                       <div className="mt-1 text-xs text-muted-foreground">
                         {fillSummary(c.fill_per_service)}
                       </div>
-                    </TableCell>
-                    <TableCell className="text-right tabular-nums text-sm">
-                      {totals.minTotal}
-                    </TableCell>
-                    <TableCell className="text-right tabular-nums text-sm">
-                      {totals.maxLabel}
-                    </TableCell>
-                    <TableCell className="text-right tabular-nums text-sm">
-                      {totals.signedTotal}
-                    </TableCell>
-                    <TableCell
-                      className={
-                        "text-right tabular-nums text-sm " +
-                        (totals.remainingMin > 0 ? "font-medium text-amber-700 dark:text-amber-400" : "text-muted-foreground")
-                      }
-                    >
-                      {totals.remainingMin}
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
                       {c.last_wave_sent_at
