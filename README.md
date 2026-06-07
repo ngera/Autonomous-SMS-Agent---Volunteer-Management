@@ -1,10 +1,6 @@
 # AI-Powered Volunteer Management System
 
-<p align="center">
-  <img src="docs/screenshots/landing-page.png" alt="mustr — Your outreach team, on autopilot." width="800" />
-</p>
-
-A full-stack, multi-tenant appointment booking system with an AI-powered SMS chatbot, built for service businesses. Customers (volunteers) book appointments via natural SMS conversations, while staff manage everything through a React admin panel.
+A full-stack, multi-tenant volunteer management system with an AI-powered SMS chatbot, built for service businesses. Volunteers book appointments via natural SMS conversations, while staff manage everything through a React admin panel.
 
 ## Features
 
