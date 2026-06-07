@@ -1,4 +1,4 @@
-# AI-Powered Appointment Booking System
+# AI-Powered Volunteer Management System
 
 <p align="center">
   <img src="docs/screenshots/landing-page.png" alt="mustr — Your outreach team, on autopilot." width="800" />
