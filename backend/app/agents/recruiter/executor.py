@@ -516,6 +516,38 @@ async def current_signups_per_service(
     return out
 
 
+async def mark_campaign_failed(
+    db: AsyncSession, campaign: RecruitmentCampaign, reason: str
+) -> None:
+    """Flip a muster to FAILED (used when the event passed without
+    meeting min staffing) and cancel any waves still in PLANNED so
+    the scheduler doesn't fire them post-event.
+
+    Distinct from mark_campaign_completed: failure is a real outcome
+    (admin should know "we tried and didn't get there"), completion
+    is a success outcome ("all slots filled"). Previously the
+    ABANDON path in the tick called mark_campaign_completed, which
+    paraded failed musters as completed and silently cancelled
+    every wave — see the Books Drive incident.
+    """
+    from app.models.recruitment_campaign import RecruitmentWave, WaveStatus
+
+    campaign.status = CampaignStatus.FAILED
+    planned = (await db.execute(
+        select(RecruitmentWave).where(
+            RecruitmentWave.campaign_id == campaign.id,
+            RecruitmentWave.status == WaveStatus.PLANNED,
+        )
+    )).scalars().all()
+    for wave in planned:
+        wave.status = WaveStatus.CANCELLED
+    await db.flush()
+    logger.info(
+        "Campaign %s failed (%s); cancelled %d unsent wave(s)",
+        campaign.id, reason, len(planned),
+    )
+
+
 async def mark_campaign_completed(
     db: AsyncSession, campaign: RecruitmentCampaign, reason: str
 ) -> None:
@@ -628,11 +660,20 @@ async def run_tick_for_campaign(campaign_id: uuid.UUID) -> None:
                     if c_fill.get(str(sid), 0) < min_int:
                         min_phase_service_ids.add(str(sid))
 
-            event_dt = datetime.combine(
-                slot.date,
-                slot.start_time or datetime.min.time(),
-                tzinfo=timezone.utc,
+            # event_dt is computed in tenant local time and then
+            # converted to UTC so the comparison with `now` matches
+            # the volunteer's wall-clock event start. Earlier this
+            # stamped local time as tzinfo=UTC, which made events
+            # appear to "pass" earlier than they actually did.
+            import pytz
+            try:
+                local_tz = pytz.timezone(tenant.business_timezone or "UTC")
+            except Exception:
+                local_tz = pytz.UTC
+            naive_local = datetime.combine(
+                slot.date, slot.start_time or datetime.min.time()
             )
+            event_dt = local_tz.localize(naive_local).astimezone(timezone.utc)
 
             # Drain due waves — the standard tick fires one wave per
             # campaign per 15-min cycle, but on a fresh approval it's
@@ -654,6 +695,8 @@ async def run_tick_for_campaign(campaign_id: uuid.UUID) -> None:
                 if action.kind != scheduler_engine.ActionKind.SEND_WAVE:
                     if action.kind == scheduler_engine.ActionKind.COMPLETE:
                         await mark_campaign_completed(db, campaign, action.reason)
+                    elif action.kind == scheduler_engine.ActionKind.ABANDON:
+                        await mark_campaign_failed(db, campaign, action.reason)
                     break
                 wave = next(
                     (w for w in waves if w.id == action.wave_id), None

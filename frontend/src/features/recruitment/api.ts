@@ -97,6 +97,13 @@ export async function cancelCampaign(id: string): Promise<CampaignResponse> {
   return data;
 }
 
+export async function restartCampaign(id: string): Promise<CampaignResponse> {
+  const { data } = await api.post<CampaignResponse>(
+    `/recruitment/campaigns/${id}/restart`
+  );
+  return data;
+}
+
 export async function deleteCampaign(id: string): Promise<void> {
   await api.delete(`/recruitment/campaigns/${id}`);
 }

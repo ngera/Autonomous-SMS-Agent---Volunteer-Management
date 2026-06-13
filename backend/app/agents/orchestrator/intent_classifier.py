@@ -64,7 +64,13 @@ _VALID_INTENTS = frozenset(
     {
         "start_planning",
         "approve",
-        "delete_campaign",
+        # Muster-specific intents (event staffing from the existing
+        # volunteer pool). Renamed from the generic *_campaign forms
+        # so when Fundraising Campaigns + Recruiting Campaigns ship,
+        # admins can address each type unambiguously.
+        "delete_muster",
+        "cancel_muster",
+        "restart_muster",
         "list_events",
         "status",
         "other",
@@ -72,23 +78,44 @@ _VALID_INTENTS = frozenset(
 )
 
 # Intents we never auto-dispatch — always surface a confirmation prompt
-# even at high confidence. Today: delete. The cost of acting wrong on
-# delete (cascading wave cancel + announcement back-link nullification)
-# is much higher than one extra admin reply.
-_DESTRUCTIVE_INTENTS = frozenset({"delete_campaign"})
+# even at high confidence. Today: delete (irreversible row removal +
+# cascading wave cleanup). Cancel and restart are reversible (admin can
+# undo each via the other) so they don't need the extra friction.
+_DESTRUCTIVE_INTENTS = frozenset({"delete_muster"})
 
 
 _SYSTEM_PROMPT = """You are an intent classifier for admin SMS messages \
 to a volunteer-recruitment system. Classify the user's last message \
 into exactly one intent and return STRICT JSON.
 
+CAMPAIGN-TYPE VOCABULARY:
+The product has three distinct campaign types. Only ONE is wired today (Musters).
+Future-proof your classification:
+  - MUSTER — fills an existing event from the existing volunteer pool. The
+    delete/cancel/restart intents below are MUSTER-SPECIFIC. Synonyms:
+    "muster", "campaign" used alongside event references like "for the gala",
+    "staffing for X", "recruit for X event", "fill X".
+  - FUNDRAISING CAMPAIGN — donor outreach. Synonyms: "fundraiser", "appeal",
+    "donation campaign", "marketing campaign", "donor outreach". NOT YET
+    BUILT — never classify a fundraising-flavored ask as muster.
+  - RECRUITING CAMPAIGN — bringing NEW volunteers into the pool (no event
+    yet). Synonyms: "recruiting campaign", "hiring campaign", "find new
+    volunteers", "volunteer drive". NOT YET BUILT — never classify a
+    pool-growth ask as muster.
+
+When the admin says bare "campaign" with no event reference AND no other
+clue about type → classify as "other" so we ask for clarification rather
+than mis-routing through a muster handler.
+
 Valid intents:
-- "start_planning"   admin wants to start a recruitment campaign for an event
-- "approve"          admin is approving a recruitment plan that's awaiting approval
-- "delete_campaign"  admin wants to delete/remove/cancel a recruitment campaign
+- "start_planning"   admin wants to start a MUSTER for an event
+- "approve"          admin is approving a muster plan that's awaiting approval
+- "delete_muster"    admin wants to permanently DELETE/REMOVE a MUSTER from the database
+- "cancel_muster"    admin wants to STOP/CANCEL a MUSTER (keeps the row, halts further waves)
+- "restart_muster"   admin wants to RESTART/REVIVE a previously cancelled or failed MUSTER
 - "list_events"      admin is asking what upcoming events exist
-- "status"           admin is asking what campaigns are active/running
-- "other"            anything else (greetings, questions, explanations, off-topic)
+- "status"           admin is asking what musters are active/running
+- "other"            anything else (greetings, questions, off-topic, ambiguous campaign type)
 
 Rules:
 1. Output JSON only. No prose, no markdown fence. Schema:
@@ -96,10 +123,13 @@ Rules:
 2. "event_reference" is the noun phrase identifying the event (e.g. "food drive on June 15", "the gala", "annual prize distribution"). Use null when the admin's message has no event reference.
 3. "confidence" is your honest self-assessed probability that this classification matches the admin's true intent. Be calibrated — use < 0.7 when the message is ambiguous or could plausibly mean something else.
 4. Prefer "other" when uncertain. False positives on action intents are worse than false negatives.
-5. "approve" should NEVER include verbs like "plan", "start", "begin", "delete", "cancel" — those are different intents.
-6. "delete_campaign" matches "delete", "remove", "cancel", "scrap", "kill", "drop" applied to a campaign / plan / recruitment / planning. NOT applied to events themselves (deleting an event is a different operation we don't handle here — classify those as "other").
-7. "list_events" is about UPCOMING EVENTS on the schedule. "status"/"list campaigns" is about ACTIVE RECRUITMENT CAMPAIGNS. They are different — read carefully.
-8. Approve phrases: "ok", "yes", "go", "approved", "approve it", "do it", "looks good", "lgtm", "ship it", "proceed". Only classify as "approve" if the message is short and unambiguous; long messages with "yes" embedded should be "other"."""
+5. "approve" should NEVER include verbs like "plan", "start", "begin", "delete", "cancel", "restart" — those are different intents.
+6. "delete_muster" is the IRREVERSIBLE remove-from-database action FOR A MUSTER. Match strong wording like "delete the muster for X" / "scrap the muster" / "wipe the X muster". Does NOT match the word "cancel" (use "cancel_muster"). REQUIRES a muster identifier — either an event reference OR an explicit "muster" / "staffing campaign" hint. Bare "delete the campaign" with no muster clue → "other".
+7. "cancel_muster" matches "cancel", "stop", "halt", "hold off on", "call off" applied SPECIFICALLY to a muster / event-staffing campaign. Distinguished from delete: cancel just stops sending; delete removes the row. Bare "cancel the campaign" with no muster clue (e.g. the admin might mean a future fundraising campaign) → "other".
+8. "restart_muster" matches "restart", "resume", "revive", "bring back", "start again", "re-enable", "un-cancel" applied SPECIFICALLY to an existing cancelled/failed muster. NOT a fresh "start_planning". Bare "restart the campaign" with no muster clue → "other".
+9. "list_events" is about UPCOMING EVENTS on the schedule. "status"/"list campaigns" is about ACTIVE MUSTERS. They are different — read carefully.
+10. Approve phrases: "ok", "yes", "go", "approved", "approve it", "do it", "looks good", "lgtm", "ship it", "proceed". Only classify as "approve" if the message is short and unambiguous; long messages with "yes" embedded should be "other".
+11. Fundraising / marketing / donor / recruiting-new-volunteers wording → always "other" (those backends aren't wired; the LLM will explain that)."""
 
 
 @dataclass(frozen=True)

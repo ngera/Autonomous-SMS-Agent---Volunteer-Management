@@ -10,6 +10,7 @@ import { RoleGate } from "@/components/guards/role-gate";
 import { AppLayout } from "@/components/layout/app-layout";
 import { LoginPage } from "@/pages/login-page";
 import { LandingPage } from "@/features/marketing/pages/landing-page";
+import { CoordinatorCharacterPage } from "@/features/video/coordinator-character-page";
 import { DashboardPage } from "@/features/dashboard/pages/dashboard-page";
 import { TenantDashboardPage } from "@/features/tenants/pages/tenant-dashboard-page";
 import { BookingsPage } from "@/features/bookings/pages/bookings-page";
@@ -36,6 +37,7 @@ import { TenantsPage } from "@/features/tenants/pages/tenants-page";
 import { TenantDetailPage } from "@/features/tenants/pages/tenant-detail-page";
 import { CandidatesListPage } from "@/features/candidates/pages/candidates-list-page";
 import { ObservabilityPage } from "@/features/observability/pages/observability-page";
+import { EvalCasesPage } from "@/features/evals/pages/eval-cases-page";
 import { RunSheetPage } from "@/features/event-ops/pages/run-sheet-page";
 import { EventReviewPage } from "@/features/reviews/pages/event-review-page";
 import { RecognitionDefinitionsPage } from "@/features/recognition/pages/definitions-page";
@@ -47,6 +49,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<LandingPage />} />
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/video/coordinator-character" element={<CoordinatorCharacterPage />} />
 
         <Route element={<ProtectedRoute />}>
           <Route element={<AppLayout />}>
@@ -192,6 +195,14 @@ export default function App() {
               element={
                 <RoleGate minimum={AdminRole.OWNER}>
                   <TemplatesPage />
+                </RoleGate>
+              }
+            />
+            <Route
+              path="/evals"
+              element={
+                <RoleGate minimum={AdminRole.SUPER_ADMIN}>
+                  <EvalCasesPage />
                 </RoleGate>
               }
             />

@@ -118,6 +118,12 @@ async def maybe_handle_via_classifier(
         )
         return await maybe_handle_start_campaign_directly(ctx, synthetic)
 
+    if intent == "cancel_muster":
+        return await _dispatch_cancel_muster(db, tenant, event_ref)
+
+    if intent == "restart_muster":
+        return await _dispatch_restart_muster(db, tenant, event_ref)
+
     # Unknown intent that survived validation (shouldn't happen given
     # _VALID_INTENTS gating in the classifier, but be defensive).
     logger.warning(
@@ -135,16 +141,25 @@ def _build_low_confidence_prompt(
     acting. Phrases each intent in the admin's natural verb so the
     confirmation reply is unambiguous."""
     intent_phrasing = {
-        "start_planning": "start planning a recruitment campaign",
-        "approve": "approve the pending recruitment plan",
-        "delete_campaign": "delete a recruitment campaign",
+        "start_planning": "start a muster",
+        "approve": "approve the pending muster plan",
+        "delete_muster": "delete a muster",
+        "cancel_muster": "cancel a muster",
+        "restart_muster": "restart a cancelled muster",
         "list_events": "see your upcoming events",
-        "status": "see active recruitment campaigns",
+        "status": "see active musters",
     }
     action = intent_phrasing.get(decision.intent, "do that")
     event_part = (
         f" for {decision.event_reference}"
-        if decision.event_reference and decision.intent in {"start_planning", "delete_campaign"}
+        if decision.event_reference
+        and decision.intent
+        in {
+            "start_planning",
+            "delete_muster",
+            "cancel_muster",
+            "restart_muster",
+        }
         else ""
     )
     return (
@@ -161,24 +176,182 @@ def _build_destructive_confirmation_prompt(
     phrase matches the Tier 1 regex router so the second turn dispatches
     cleanly without going through the classifier again.
     """
-    if decision.intent == "delete_campaign":
+    if decision.intent == "delete_muster":
         if decision.event_reference:
             return (
-                f"You want to delete the recruitment campaign for "
+                f"You want to delete the muster for "
                 f"{decision.event_reference}? This cancels any pending "
-                f"outreach waves and removes the campaign permanently.\n\n"
+                f"outreach waves and removes the muster permanently.\n\n"
                 f"To confirm, reply: "
-                f"'delete the campaign for {decision.event_reference}'"
+                f"'delete the muster for {decision.event_reference}'"
             )
         return (
-            "You want to delete a recruitment campaign? This cancels any "
-            "pending outreach waves and removes the campaign permanently.\n\n"
-            "To confirm, reply: 'delete this campaign' "
+            "You want to delete a muster? This cancels any pending "
+            "outreach waves and removes the muster permanently.\n\n"
+            "To confirm, reply: 'delete this muster' "
             "(if there's only one active) — or tell me which event the "
-            "campaign is for."
+            "muster is for."
         )
     # Future destructive intents land here.
     return (
         "That looks like a destructive action. Could you tell me explicitly "
         "what you want to delete or cancel?"
+    )
+
+
+async def _resolve_active_muster(
+    db, tenant, event_ref: str, *, include_terminal: bool = False
+):
+    """Resolve the campaign + slot the admin's event reference points at.
+
+    Returns (campaign, slot, error_string). When error_string is set,
+    the caller should send it back as the SMS reply verbatim — it's
+    either "no match" or "multiple, please disambiguate".
+    """
+    from sqlalchemy import select
+    from app.agents.recruiter.chat_tools import (
+        _extract_status_filter,
+        _filter_campaigns_by_event,
+    )
+    from app.models.availability import SpecificDateSlot
+    from app.models.recruitment_campaign import (
+        CampaignStatus,
+        RecruitmentCampaign,
+    )
+
+    if include_terminal:
+        status_set = [
+            CampaignStatus.CANCELLED,
+            CampaignStatus.FAILED,
+        ]
+    else:
+        status_set = [
+            CampaignStatus.DRAFT,
+            CampaignStatus.AWAITING_APPROVAL,
+            CampaignStatus.ACTIVE,
+            CampaignStatus.PAUSED,
+        ]
+
+    rows = list((await db.execute(
+        select(RecruitmentCampaign, SpecificDateSlot)
+        .join(
+            SpecificDateSlot,
+            SpecificDateSlot.id == RecruitmentCampaign.event_slot_id,
+        )
+        .where(
+            RecruitmentCampaign.tenant_id == tenant.id,
+            RecruitmentCampaign.status.in_(status_set),
+        )
+    )).all())
+    if not rows:
+        return (
+            None,
+            None,
+            (
+                "No cancelled or failed muster found to restart."
+                if include_terminal
+                else "No active muster found to cancel."
+            ),
+        )
+
+    filter_date, filter_label = _extract_status_filter(event_ref or "")
+    if filter_date or filter_label:
+        filtered = _filter_campaigns_by_event(rows, filter_date, filter_label)
+        if filtered:
+            rows = filtered
+
+    if len(rows) > 1:
+        lines = []
+        for c, s in rows[:5]:
+            lines.append(
+                f"  • {s.label or 'event'} on "
+                f"{s.date.isoformat() if s.date else '?'} "
+                f"({c.status.value})"
+            )
+        return (
+            None,
+            None,
+            "Multiple match. Which one?\n"
+            + "\n".join(lines)
+            + "\nReply with the date (YYYY-MM-DD) or the event name.",
+        )
+
+    c, s = rows[0]
+    return (c, s, None)
+
+
+async def _dispatch_cancel_muster(db, tenant, event_ref: str) -> str:
+    from app.models.recruitment_campaign import (
+        CampaignStatus,
+        RecruitmentWave,
+        WaveStatus,
+    )
+    from sqlalchemy import update as _sa_update
+
+    campaign, slot, err = await _resolve_active_muster(
+        db, tenant, event_ref, include_terminal=False
+    )
+    if err:
+        return err
+
+    campaign.status = CampaignStatus.CANCELLED
+    await db.execute(
+        _sa_update(RecruitmentWave)
+        .where(
+            RecruitmentWave.campaign_id == campaign.id,
+            RecruitmentWave.status == WaveStatus.PLANNED,
+        )
+        .values(status=WaveStatus.CANCELLED)
+    )
+    await db.flush()
+    return (
+        f"Cancelled muster for {slot.label or 'event'} on "
+        f"{slot.date.isoformat()}. No further SMS will go out. "
+        f"Reply 'restart muster for {slot.label or 'event'}' to bring it back."
+    )
+
+
+async def _dispatch_restart_muster(db, tenant, event_ref: str) -> str:
+    from datetime import datetime, timezone
+    from app.models.recruitment_campaign import (
+        CampaignStatus,
+        RecruitmentWave,
+        WaveStatus,
+    )
+    from sqlalchemy import select
+
+    campaign, slot, err = await _resolve_active_muster(
+        db, tenant, event_ref, include_terminal=True
+    )
+    if err:
+        return err
+
+    if slot.date < datetime.now(timezone.utc).date():
+        return (
+            f"Event for {slot.label or 'event'} on "
+            f"{slot.date.isoformat()} has already passed; create a new "
+            "muster instead."
+        )
+
+    campaign.status = CampaignStatus.ACTIVE
+    now = datetime.now(timezone.utc)
+    revived = (await db.execute(
+        select(RecruitmentWave).where(
+            RecruitmentWave.campaign_id == campaign.id,
+            RecruitmentWave.status == WaveStatus.CANCELLED,
+            RecruitmentWave.scheduled_at > now,
+        )
+    )).scalars().all()
+    for w in revived:
+        w.status = WaveStatus.PLANNED
+    await db.flush()
+    n = len(revived)
+    return (
+        f"Restarted muster for {slot.label or 'event'} on "
+        f"{slot.date.isoformat()}. "
+        + (
+            f"{n} future wave{'s' if n != 1 else ''} re-queued."
+            if n
+            else "No future waves to re-queue — you may need to re-plan."
+        )
     )

@@ -22,6 +22,7 @@ from app.api.service_log import router as service_log_router
 from app.api.conversations import router as conversations_router
 from app.api.customers import router as customers_router
 from app.api.dashboard import router as dashboard_router
+from app.api.eval_cases import router as eval_cases_router
 from app.api.reminders import router as reminders_router
 from app.api.settings import router as settings_router
 from app.api.suspensions import router as suspensions_router
@@ -218,6 +219,7 @@ app.include_router(observability_router)
 app.include_router(service_log_router)
 app.include_router(reviews_router)
 app.include_router(recognition_router)
+app.include_router(eval_cases_router)
 
 
 @app.get("/health")

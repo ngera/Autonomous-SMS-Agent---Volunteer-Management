@@ -3,6 +3,7 @@ import { NavLink, useLocation } from "react-router-dom";
 import {
   Activity,
   BarChart3,
+  Beaker,
   Bell,
   Building2,
   Calendar,
@@ -134,6 +135,12 @@ const SECTIONS: NavSection[] = [
         to: "/tenants",
         label: "Tenants",
         icon: Building2,
+        requiresRole: AdminRole.SUPER_ADMIN,
+      },
+      {
+        to: "/evals",
+        label: "AI Evals",
+        icon: Beaker,
         requiresRole: AdminRole.SUPER_ADMIN,
       },
     ],

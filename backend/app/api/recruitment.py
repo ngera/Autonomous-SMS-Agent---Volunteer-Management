@@ -319,6 +319,70 @@ async def resume_campaign(
     return campaign
 
 
+@router.post("/campaigns/{campaign_id}/restart", response_model=CampaignResponse)
+async def restart_campaign(
+    campaign_id: uuid.UUID,
+    db: DbSession,
+    current_user: ManagerUser,
+    tenant: CurrentTenant,
+):
+    """Bring a CANCELLED or FAILED muster back to ACTIVE.
+
+    Flips any still-future CANCELLED wave shards back to PLANNED so
+    the next scheduler tick picks them up. Past-scheduled cancelled
+    waves stay cancelled — those were missed opportunities, not
+    things we want to fire late. If no future waves remain after
+    restoration, the muster will sit at ACTIVE with nothing to do
+    until an admin re-plans.
+
+    COMPLETED musters can't be restarted (the goal was met) and
+    in-progress musters don't need it.
+    """
+    from datetime import datetime, timezone
+    from app.models.availability import SpecificDateSlot
+
+    campaign = await _get_campaign(db, tenant.id, campaign_id)
+    if campaign.status not in (
+        CampaignStatus.CANCELLED,
+        CampaignStatus.FAILED,
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Only cancelled or failed musters can be restarted "
+                f"(this one is {campaign.status.value})."
+            ),
+        )
+
+    # If the event has already passed there's no point bringing the
+    # muster back — refuse cleanly instead of leaving the admin
+    # confused about why nothing happens.
+    slot = await db.get(SpecificDateSlot, campaign.event_slot_id)
+    if slot is not None and slot.date < datetime.now(timezone.utc).date():
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Event date has already passed; create a new muster "
+                "for the next occurrence instead."
+            ),
+        )
+
+    campaign.status = CampaignStatus.ACTIVE
+    now = datetime.now(timezone.utc)
+    revived = (await db.execute(
+        select(RecruitmentWave).where(
+            RecruitmentWave.campaign_id == campaign.id,
+            RecruitmentWave.status == WaveStatus.CANCELLED,
+            RecruitmentWave.scheduled_at > now,
+        )
+    )).scalars().all()
+    for w in revived:
+        w.status = WaveStatus.PLANNED
+    await db.flush()
+    await db.refresh(campaign)
+    return campaign
+
+
 @router.post("/campaigns/{campaign_id}/cancel", response_model=CampaignResponse)
 async def cancel_campaign(
     campaign_id: uuid.UUID,

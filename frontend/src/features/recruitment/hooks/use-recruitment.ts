@@ -11,6 +11,7 @@ import {
   listCampaigns,
   pauseCampaign,
   regenerateCampaignPlan,
+  restartCampaign,
   resumeCampaign,
   type ListCampaignsParams,
 } from "../api";
@@ -112,6 +113,17 @@ export function useCancelCampaign() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => cancelCampaign(id),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["recruitment-campaigns"] });
+      void qc.invalidateQueries({ queryKey: ["recruitment-campaign"] });
+    },
+  });
+}
+
+export function useRestartCampaign() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => restartCampaign(id),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["recruitment-campaigns"] });
       void qc.invalidateQueries({ queryKey: ["recruitment-campaign"] });

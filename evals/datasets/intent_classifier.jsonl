@@ -1,0 +1,10 @@
+{"id": "start-planning-explicit-001", "input": "can you start planning for the food drive on saturday", "target": "start_planning", "metadata": {"expected_event_reference": "food drive", "confidence_floor": 0.7}}
+{"id": "cancel-muster-with-event-001", "input": "cancel the muster for awareness seminar", "target": "cancel_muster", "metadata": {"expected_event_reference": "awareness seminar", "confidence_floor": 0.7}}
+{"id": "restart-muster-001", "input": "restart the muster for books drive", "target": "restart_muster", "metadata": {"expected_event_reference": "books drive", "confidence_floor": 0.7}}
+{"id": "delete-muster-explicit-001", "input": "delete the muster for the gala permanently", "target": "delete_muster", "metadata": {"expected_event_reference": "the gala", "confidence_floor": 0.8, "destructive": true}}
+{"id": "ambiguous-bare-cancel-001", "input": "cancel the campaign", "target": "other", "metadata": {"note": "bare campaign with no muster clue — should not auto-route"}}
+{"id": "ambiguous-fundraising-001", "input": "start a fundraising campaign for q3", "target": "other", "metadata": {"note": "fundraising backend not wired; classifier must refuse to coerce into muster"}}
+{"id": "status-001", "input": "what musters are running right now", "target": "status", "metadata": {}}
+{"id": "list-events-001", "input": "show me upcoming events", "target": "list_events", "metadata": {}}
+{"id": "approve-001", "input": "ok approved go ahead", "target": "approve", "metadata": {}}
+{"id": "approve-embedded-in-prose-001", "input": "yes that all looks reasonable and the plan is what i had in mind, ship it", "target": "other", "metadata": {"note": "long message with embedded yes should not auto-approve"}}

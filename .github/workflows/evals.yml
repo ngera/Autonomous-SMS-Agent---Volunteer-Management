@@ -1,0 +1,98 @@
+name: evals
+
+on:
+  pull_request:
+    paths:
+      - "backend/app/agents/**"
+      - "evals/**"
+      - ".github/workflows/evals.yml"
+  schedule:
+    # 03:00 UTC every day = nightly run.
+    - cron: "0 3 * * *"
+    # 04:00 UTC Monday = weekly production replay.
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+
+jobs:
+  pr-set:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install deps
+        run: |
+          pip install -r backend/requirements.txt
+          pip install -r evals/requirements.txt
+      - name: Run PR evals (Layers 1, 2, 5)
+        env:
+          PYTHONPATH: ${{ github.workspace }}/backend
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: bash evals/runners/run_pr_evals.sh
+      - name: Upload eval logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-eval-logs
+          path: logs/pr
+
+  nightly:
+    if: github.event_name == 'schedule' && github.event.schedule == '0 3 * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install deps
+        run: |
+          pip install -r backend/requirements.txt
+          pip install -r evals/requirements.txt
+      - name: Run nightly evals (Layers 1-5)
+        env:
+          PYTHONPATH: ${{ github.workspace }}/backend
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: bash evals/runners/run_nightly.sh
+      - name: Upload eval logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-eval-logs
+          path: logs/nightly
+
+  weekly-replay:
+    if: github.event_name == 'schedule' && github.event.schedule == '0 4 * * 1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install deps
+        run: |
+          pip install -r backend/requirements.txt
+          pip install -r evals/requirements.txt
+      - name: Harvest production sample
+        env:
+          PYTHONPATH: ${{ github.workspace }}/backend
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python evals/runners/harvest_production.py
+      - name: Run production replay (Layer 6)
+        env:
+          PYTHONPATH: ${{ github.workspace }}/backend
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: inspect eval evals/tasks/production_replay.py --model anthropic/claude-haiku-4-5 --log-dir logs/weekly
+      - name: Upload eval logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-eval-logs
+          path: logs/weekly

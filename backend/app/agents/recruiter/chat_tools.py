@@ -19,10 +19,16 @@ import json
 import re
 import uuid
 from datetime import date, datetime, timezone
+from typing import TYPE_CHECKING
 
 from sqlalchemy import desc, select
 
-from app.agents.recruiter import executor, planner
+# `executor` and `planner` are imported lazily inside the functions that
+# need them. They both pull in `app.modules.tool_executor` -> `tool_handlers`,
+# and tool_handlers in turn imports from this module at module-bottom to
+# register handlers. The cycle resolves at runtime in the live app boot,
+# but cold imports (e.g. from the eval framework) hit a partial-init error.
+# Lazy imports inside callers break the cycle without behavior change.
 from app.core.database import async_session_factory
 from app.core.logging import get_logger
 from app.models.admin_user import AdminUser
@@ -34,7 +40,15 @@ from app.models.recruitment_campaign import (
     WaveStatus,
 )
 from app.models.tenant import Tenant
-from app.modules.tool_handlers import ToolContext
+
+# ToolContext is imported only for type annotations. With
+# `from __future__ import annotations` (above) all annotations are
+# strings at runtime, so we can defer this to TYPE_CHECKING and break
+# the chat_tools <-> tool_handlers import cycle. The cycle resolves at
+# runtime in the live app, but cold imports (e.g. from the eval
+# framework) hit a partial-init error otherwise.
+if TYPE_CHECKING:
+    from app.modules.tool_handlers import ToolContext
 
 logger = get_logger("recruiter.chat_tools")
 
@@ -81,6 +95,8 @@ async def _kick_off_planner_task(
     after planning and would have to discover the awaiting_approval
     campaign by browsing the Campaigns page.
     """
+    from app.agents.recruiter import executor, planner
+
     logger.info(
         "Planner task starting for campaign %s (admin_phone=%s)",
         campaign_id, admin_phone,
@@ -561,6 +577,8 @@ async def handle_start_recruitment_campaign(
 async def handle_approve_recruitment_campaign(
     ctx: ToolContext, tool_input: dict
 ) -> str:
+    from app.agents.recruiter import executor
+
     if not ctx.is_admin:
         return json.dumps({"error": "Recruitment is an admin-only feature."})
 
@@ -706,6 +724,8 @@ async def maybe_handle_approval_directly(
     actually invoking ``approve_recruitment_campaign`` despite explicit
     routing rules. Server-side routing makes approval reliable.
     """
+    from app.agents.recruiter import executor
+
     if not message or not admin_user:
         return None
     text = message.strip().lower()
@@ -1144,14 +1164,17 @@ async def maybe_handle_start_campaign_directly(
 # All require the explicit "delete" verb at the start.
 _DELETE_CAMPAIGN_PATTERNS = [
     # Bare-pronoun forms: "delete it", "delete this", "delete that",
-    # "delete this campaign", "delete that one", "delete the campaign".
-    # Subject is empty/pronoun → router falls back to unique-active lookup.
+    # "delete this muster", "delete that one", "delete the muster".
+    # Subject is empty/pronoun → router falls back to unique-active
+    # lookup. "campaign" is kept for backward compatibility but is
+    # ambiguous once Fundraising / Recruiting Campaigns ship — admins
+    # should prefer "muster" in new phrasing.
     _re.compile(r"^(?:please\s+)?delete\s+(?:it|this|that|the\s+one|that\s+one)$"),
-    _re.compile(r"^(?:please\s+)?delete\s+(?:this|that|the)\s+(?:recruitment\s+)?campaign\.?$"),
+    _re.compile(r"^(?:please\s+)?delete\s+(?:this|that|the)\s+(?:recruitment\s+)?(?:muster|campaign)\.?$"),
     _re.compile(r"^(?:please\s+)?delete\s+(?:this|that|the)\s+(?:recruitment|planning|plan)\.?$"),
-    # "delete (the) X campaign", "delete (the) campaign for X"
-    _re.compile(r"^(?:please\s+)?delete\s+(?:the\s+)?(?:recruitment\s+)?campaign\s+(?:for\s+|on\s+|to\s+)?(.+)$"),
-    _re.compile(r"^(?:please\s+)?delete\s+(?:the\s+)?(.+?)\s+(?:recruitment\s+)?campaign\b.*$"),
+    # "delete (the) X muster", "delete (the) muster for X"
+    _re.compile(r"^(?:please\s+)?delete\s+(?:the\s+)?(?:recruitment\s+)?(?:muster|campaign)\s+(?:for\s+|on\s+|to\s+)?(.+)$"),
+    _re.compile(r"^(?:please\s+)?delete\s+(?:the\s+)?(.+?)\s+(?:recruitment\s+)?(?:muster|campaign)\b.*$"),
     # "delete planning for X" / "delete the plan for X"
     _re.compile(r"^(?:please\s+)?delete\s+(?:the\s+)?planning\s+(?:for\s+)?(.+)$"),
     _re.compile(r"^(?:please\s+)?delete\s+(?:the\s+)?plan\s+(?:for\s+)?(.+)$"),
@@ -1159,10 +1182,11 @@ _DELETE_CAMPAIGN_PATTERNS = [
     _re.compile(r"^(?:please\s+)?delete\s+(?:the\s+)?recruitment\s+(?:for\s+)?(.+)$"),
 ]
 
-# Subjects that mean "the unique active campaign in this tenant" — used
+# Subjects that mean "the unique active muster in this tenant" — used
 # by the pronoun fallback. Lowercased, no punctuation.
 _DELETE_PRONOUN_SUBJECTS = {
     "", "this", "that", "it", "the one", "that one",
+    "this muster", "that muster", "the muster",
     "this campaign", "that campaign", "the campaign",
     "this recruitment", "that recruitment", "the recruitment",
     "this planning", "that planning", "the planning",
@@ -2777,6 +2801,8 @@ async def handle_delete_recruitment_campaign(
 async def handle_recruitment_status(
     ctx: ToolContext, tool_input: dict
 ) -> str:
+    from app.agents.recruiter import executor
+
     if not ctx.is_admin:
         return json.dumps({"error": "Recruitment is an admin-only feature."})
 

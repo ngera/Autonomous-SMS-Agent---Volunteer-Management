@@ -30,6 +30,7 @@ import {
   useApproveCampaign,
   useCampaign,
   useCancelCampaign,
+  useRestartCampaign,
   useCancelWave,
   useDeleteCampaign,
   useEditPlan,
@@ -48,6 +49,7 @@ import {
 import { CampaignStatus, WaveStatus } from "@/types/enums";
 import { useAppointmentTypes } from "@/features/appointment-types/hooks/use-appointment-types";
 import { useSpecificSlotEventRoster } from "@/features/bookings/hooks/use-bookings";
+import { CapacityBars } from "@/features/dashboard/components/capacity-pulse";
 
 const STATUS_VARIANT: Record<
   string,
@@ -84,6 +86,7 @@ export default function CampaignDetailPage() {
   const pause = usePauseCampaign();
   const resume = useResumeCampaign();
   const cancel = useCancelCampaign();
+  const restart = useRestartCampaign();
   const remove = useDeleteCampaign();
   const regenerate = useRegeneratePlan();
   const editPlan = useEditPlan();
@@ -320,6 +323,35 @@ export default function CampaignDetailPage() {
                 Resume
               </Button>
             )}
+            {(campaign.status === CampaignStatus.CANCELLED ||
+              campaign.status === CampaignStatus.FAILED) && (
+              <Button
+                onClick={() => {
+                  if (
+                    confirm(
+                      "Restart this muster? Future cancelled waves will be re-queued."
+                    )
+                  ) {
+                    restart.mutate(campaign.id, {
+                      onError: (err: unknown) => {
+                        const detail =
+                          (err as {
+                            response?: { data?: { detail?: string } };
+                          })?.response?.data?.detail ??
+                          "Could not restart muster.";
+                        alert(detail);
+                      },
+                    });
+                  }
+                }}
+                variant="outline"
+                size="sm"
+                disabled={restart.isPending}
+              >
+                <PlayCircle className="mr-2 h-3 w-3" />
+                {restart.isPending ? "Restarting…" : "Restart"}
+              </Button>
+            )}
             {!isTerminal && (
               <Button
                 onClick={() => {
@@ -362,46 +394,6 @@ export default function CampaignDetailPage() {
             status={campaign.status as CampaignStatus}
             waves={campaign.waves}
           />
-
-          {campaign.plan_summary && (
-            <details className="text-sm">
-              <summary className="cursor-pointer text-xs font-medium uppercase tracking-wide text-muted-foreground hover:text-foreground">
-                Planner notes
-              </summary>
-              <p className="mt-2 whitespace-pre-wrap text-sm text-muted-foreground">
-                {campaign.plan_summary}
-              </p>
-            </details>
-          )}
-
-          {/* Per-service breakdown — goal progress on top, then the
-              waves targeting that service with sent count + signups
-              attributed in each wave. Replaces the standalone Goals
-              progress + standalone Waves table for a single coherent
-              "what was planned and what came in" view. */}
-          <div className="space-y-4">
-            {goals.map((g) => {
-              const signed = liveCountForService(g.appointment_type_id);
-              const min = g.min_required;
-              const max = g.max_allowed ?? null;
-              const serviceWaves = campaign.waves
-                .filter((w) => w.appointment_type_id === g.appointment_type_id)
-                .sort((a, b) => a.wave_number - b.wave_number);
-              return (
-                <ServiceWaveBreakdown
-                  key={g.appointment_type_id}
-                  label={serviceName(g.appointment_type_id)}
-                  signups={signed}
-                  min={min}
-                  max={max}
-                  waves={serviceWaves}
-                  campaignStatus={campaign.status as CampaignStatus}
-                  onCancelWave={(id) => cancelWave.mutate(id)}
-                  onViewRecipients={(id) => setRecipientsWaveId(id)}
-                />
-              );
-            })}
-          </div>
         </CardContent>
       </Card>
 
@@ -831,12 +823,19 @@ function MusterStatusHeadline({
     0,
   );
   const totalMin = goals.reduce((s, g) => s + (g.min_required ?? 0), 0);
+  // Uncapped services (max_allowed null/undefined) → treat as min for the
+  // total max, and flag so we widen the bar's scale the same way the
+  // Musters list does ("filling, more is welcome").
+  const hasUncapped = goals.some(
+    (g) => g.max_allowed === null || g.max_allowed === undefined,
+  );
   const totalMax = goals.reduce((s, g) => {
     const max = g.max_allowed ?? g.min_required ?? 0;
     return s + (max > 0 ? max : g.min_required ?? 0);
   }, 0);
-  const totalNeed = Math.max(0, totalMin - totalSigned);
-  const overallPct = totalMax > 0 ? Math.min(1, totalSigned / totalMax) : 0;
+  const scaledMax = hasUncapped
+    ? Math.max(totalMin * 2, totalSigned + 5, totalMax)
+    : Math.max(totalMax, totalMin, 1);
 
   const isCompleted = status === CampaignStatus.COMPLETED;
   const lastSentWaveNum = waves.reduce<number | null>((acc, w) => {
@@ -844,11 +843,13 @@ function MusterStatusHeadline({
     if (acc == null || w.wave_number > acc) return w.wave_number;
     return acc;
   }, null);
-  const cancelledOrPlanned = waves.filter((w) =>
-    isCompleted
-      ? w.status === WaveStatus.CANCELLED || w.status === WaveStatus.PLANNED
-      : false,
-  ).length;
+  const cancelledOrPlanned = isCompleted
+    ? waves.filter(
+        (w) =>
+          w.status === WaveStatus.CANCELLED ||
+          w.status === WaveStatus.PLANNED,
+      ).length
+    : 0;
 
   return (
     <div className="space-y-3">
@@ -872,213 +873,17 @@ function MusterStatusHeadline({
         </div>
       )}
 
-      <div className="grid gap-4 sm:grid-cols-2">
-        <div>
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-            Signups
-          </p>
-          <p className="mt-1 text-2xl font-bold tabular-nums">
-            {totalSigned}
-            <span className="ml-1 text-base font-normal text-muted-foreground">
-              / {totalMin} min · {totalMax} max
-            </span>
-          </p>
-        </div>
-        <div>
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-            Fill
-          </p>
-          <p className="mt-1 text-2xl font-bold tabular-nums">
-            {Math.round(overallPct * 100)}%
-            <span
-              className={cn(
-                "ml-2 text-base font-normal",
-                totalNeed > 0
-                  ? "text-amber-700 dark:text-amber-400"
-                  : "text-emerald-700 dark:text-emerald-400",
-              )}
-            >
-              {totalNeed > 0 ? `${totalNeed} more needed` : "min met"}
-            </span>
-          </p>
-        </div>
-      </div>
+      {/* Same Capacity-bar visual the Musters list uses for this event,
+          so the detail page opens with the exact picture admins
+          already recognize from the list. */}
+      <CapacityBars
+        booked={totalSigned}
+        min={totalMin}
+        max={scaledMax}
+        showLegend
+      />
     </div>
   );
 }
 
-interface ServiceBreakdownWave {
-  id: string;
-  wave_number: number;
-  scheduled_at: string | null;
-  status: string;
-  sent_count: number;
-  signups_attributed: number;
-}
-
-function ServiceWaveBreakdown({
-  label,
-  signups,
-  min,
-  max,
-  waves,
-  campaignStatus,
-  onCancelWave,
-  onViewRecipients,
-}: {
-  label: string;
-  signups: number;
-  min: number;
-  max: number | null;
-  waves: ServiceBreakdownWave[];
-  campaignStatus: CampaignStatus;
-  onCancelWave: (waveId: string) => void;
-  onViewRecipients: (waveId: string) => void;
-}) {
-  const scale = max && max > 0 ? max : Math.max(min, 1);
-  const fillPct = Math.max(0, Math.min(100, (signups / scale) * 100));
-  const minPct =
-    max && max > min ? Math.max(0, Math.min(100, (min / scale) * 100)) : null;
-  const minMet = signups >= min;
-  const maxMet = max != null && signups >= max;
-  const totalContacted = waves.reduce((s, w) => s + (w.sent_count ?? 0), 0);
-  const attributedSignups = waves.reduce(
-    (s, w) => s + (w.signups_attributed ?? 0),
-    0,
-  );
-
-  return (
-    <div className="rounded-md border bg-card/40 p-3">
-      <div className="mb-1.5 flex items-baseline justify-between gap-2">
-        <p className="text-sm font-semibold">{label}</p>
-        <p className="text-xs tabular-nums text-muted-foreground">
-          <span className="font-semibold text-foreground">{signups}</span>
-          {" / "}min {min}
-          {max != null && max > 0 && (
-            <>
-              {" · "}max {max}
-            </>
-          )}
-        </p>
-      </div>
-      <div className="relative mb-3 h-2 w-full overflow-hidden rounded-full bg-muted">
-        <div
-          className={cn(
-            "h-full transition-all",
-            maxMet
-              ? "bg-emerald-600 dark:bg-emerald-500"
-              : minMet
-                ? "bg-emerald-500 dark:bg-emerald-600"
-                : "bg-amber-500 dark:bg-amber-600",
-          )}
-          style={{ width: `${fillPct}%` }}
-        />
-        {minPct !== null && (
-          <div
-            className="pointer-events-none absolute top-0 h-full w-0.5 bg-foreground/60"
-            style={{ left: `${minPct}%` }}
-            title={`Min: ${min}`}
-          />
-        )}
-      </div>
-
-      {waves.length === 0 ? (
-        <p className="text-xs text-muted-foreground">
-          No waves planned for this service yet.
-        </p>
-      ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="h-8 text-[10px] uppercase tracking-wider">
-                Wave
-              </TableHead>
-              <TableHead className="h-8 text-[10px] uppercase tracking-wider">
-                Scheduled
-              </TableHead>
-              <TableHead className="h-8 text-[10px] uppercase tracking-wider">
-                Status
-              </TableHead>
-              <TableHead className="h-8 text-right text-[10px] uppercase tracking-wider">
-                Contacted
-              </TableHead>
-              <TableHead className="h-8 text-right text-[10px] uppercase tracking-wider">
-                Signups
-              </TableHead>
-              <TableHead className="h-8" />
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {waves.map((w) => {
-              const effStatus = effectiveWaveStatus(w.status, campaignStatus);
-              const autoCancelled =
-                effStatus !== w.status && effStatus === WaveStatus.CANCELLED;
-              return (
-                <TableRow key={w.id}>
-                  <TableCell className="text-xs tabular-nums">
-                    #{w.wave_number}
-                  </TableCell>
-                  <TableCell className="text-xs">
-                    {w.scheduled_at
-                      ? format(parseISO(w.scheduled_at), "MMM d HH:mm")
-                      : "—"}
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant={WAVE_VARIANT[effStatus] ?? "outline"}>
-                      {effStatus}
-                    </Badge>
-                    {autoCancelled && (
-                      <span
-                        className="ml-1 text-[10px] text-muted-foreground"
-                        title="Auto-cancelled because the muster completed before this wave fired."
-                      >
-                        auto
-                      </span>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-right text-xs tabular-nums">
-                    {w.sent_count}
-                  </TableCell>
-                  <TableCell className="text-right text-xs tabular-nums">
-                    {w.signups_attributed}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex justify-end gap-1">
-                      {w.sent_count > 0 && (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-7 px-2 text-[11px]"
-                          onClick={() => onViewRecipients(w.id)}
-                        >
-                          Recipients
-                        </Button>
-                      )}
-                      {effStatus === WaveStatus.PLANNED && (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-7 px-2 text-[11px]"
-                          onClick={() => onCancelWave(w.id)}
-                        >
-                          Cancel
-                        </Button>
-                      )}
-                    </div>
-                  </TableCell>
-                </TableRow>
-              );
-            })}
-          </TableBody>
-        </Table>
-      )}
-      {waves.length > 0 && (
-        <p className="mt-2 text-[11px] text-muted-foreground">
-          Total contacted: {totalContacted} · signups attributed:{" "}
-          {attributedSignups}
-        </p>
-      )}
-    </div>
-  );
-}
 

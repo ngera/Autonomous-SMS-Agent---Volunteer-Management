@@ -1,0 +1,6 @@
+{"id": "muster-start-explicit-001", "input": "let's start planning for the food drive", "target": "start_campaign", "metadata": {"expected_extract": {"label": "the food drive", "date": null}}}
+{"id": "muster-start-bare-001", "input": "start planning", "target": "start_campaign_bare", "metadata": {"expected_extract": null}}
+{"id": "muster-delete-explicit-001", "input": "delete the muster for the gala", "target": "delete_campaign", "metadata": {"expected_extract": {"subject": "the gala"}}}
+{"id": "muster-delete-pronoun-001", "input": "delete this muster", "target": "delete_campaign_pronoun", "metadata": {"expected_extract": {"subject": "this muster"}}}
+{"id": "list-events-001", "input": "list upcoming events", "target": "list_events", "metadata": {}}
+{"id": "negative-soft-mention-001", "input": "we should plan for the gala next quarter", "target": "no_match", "metadata": {"note": "future-tense aspirational language, not a command"}}

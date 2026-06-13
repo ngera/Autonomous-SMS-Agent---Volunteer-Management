@@ -713,11 +713,21 @@ async def _recruitment_tick_for_tenant(db, tenant: Tenant) -> None:
             if current < min_int:
                 min_phase_service_ids.add(str(sid))
 
-        event_dt = _dt.combine(
-            slot.date,
-            slot.start_time or _dt.min.time(),
-            tzinfo=timezone.utc,
+        # Combine slot.date + slot.start_time IN TENANT-LOCAL TIME
+        # and convert to UTC for comparison with `now`. Earlier this
+        # was stamping local time as tzinfo=UTC, which silently moved
+        # the event up to the tenant's UTC offset earlier — and made
+        # the scheduler decide the event had already "passed" hours
+        # before its real start, triggering ABANDON on future events.
+        import pytz
+        try:
+            local_tz = pytz.timezone(tenant.business_timezone or "UTC")
+        except Exception:
+            local_tz = pytz.UTC
+        naive_local = _dt.combine(
+            slot.date, slot.start_time or _dt.min.time()
         )
+        event_dt = local_tz.localize(naive_local).astimezone(timezone.utc)
         snapshots.append((campaign, slot, fill, event_dt, waves))
 
     fired = 0
@@ -748,7 +758,11 @@ async def _recruitment_tick_for_tenant(db, tenant: Tenant) -> None:
             await executor.mark_campaign_completed(db, campaign, action.reason)
             completed += 1
         elif action.kind == scheduler_engine.ActionKind.ABANDON:
-            await executor.mark_campaign_completed(
+            # ABANDON = event passed without meeting min staffing →
+            # FAILED, not COMPLETED. The earlier code mis-routed this
+            # through mark_campaign_completed, parading failed musters
+            # as completions and silently cancelling every wave.
+            await executor.mark_campaign_failed(
                 db, campaign, action.reason
             )
             completed += 1

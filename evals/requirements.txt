@@ -1,0 +1,4 @@
+# Eval framework deps. Layered on top of backend/requirements.txt.
+inspect-ai>=0.3.50,<0.4
+anthropic>=0.40
+jsonschema>=4.21

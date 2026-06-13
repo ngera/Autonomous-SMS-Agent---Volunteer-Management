@@ -54,3 +54,7 @@ AI-Engineering-Coach/
 # Internal-only collateral (pitch decks, architecture briefs, demo
 # scripts, generated visuals). Kept locally but not pushed.
 docs/
+
+# Eval run artifacts. The .eval files are regenerable by re-running the
+# suite — kept locally for the in-app history viewer, not in git.
+logs/
