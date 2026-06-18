@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import {
   AlertTriangle,
+  ArrowDown,
   ArrowUp,
   Ban,
   Calendar,
@@ -8,9 +9,13 @@ import {
   ClipboardList,
   Cpu,
   Heart,
+  Mail,
   MessageSquare,
   Plug,
   Shield,
+  Sheet,
+  Sparkles,
+  Users,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -40,8 +45,13 @@ function Wordmark({
   variant?: "blue" | "white";
   className?: string;
 }) {
+  // Light-mode lockup uses the primary brand blue on transparent — the
+  // canonical blue mark. The dark/`white` variant uses the inverted
+  // white-transparent for placement on darker backgrounds.
   const src =
-    variant === "white" ? "/brand/wordmark-white.svg" : "/brand/wordmark-blue.svg";
+    variant === "white"
+      ? "/brand/mustr-white-transparent.svg"
+      : "/brand/mustr-primary-blue-transparent.svg";
   return (
     <img
       src={src}
@@ -55,9 +65,6 @@ function TopNav() {
   return (
     <nav className="sticky top-0 z-50 border-b border-zinc-200/80 bg-white/85 backdrop-blur">
       <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-        <Link to="/" className="text-zinc-900">
-          <Wordmark />
-        </Link>
         <div className="hidden items-center gap-7 text-sm text-zinc-600 md:flex">
           <a href="#agents" className="hover:text-zinc-900">
             Product
@@ -94,16 +101,20 @@ function Hero() {
       <div className="mx-auto grid max-w-6xl items-center gap-12 lg:grid-cols-2">
         <div>
           <Wordmark className="h-32 w-auto" />
-          <h1 className="mt-8 text-7xl font-extrabold leading-[1.02] tracking-tight">
-            Your outreach team,{" "}
+          <h1 className="mt-8 text-6xl font-extrabold leading-[1.02] tracking-tight">
+            Your non-profit&apos;s coordination agents,{" "}
             <em className="text-[#1c2d4a]">on autopilot.</em>
           </h1>
           <p className="mt-5 max-w-xl text-lg leading-relaxed text-zinc-600">
-            <span className="font-semibold text-zinc-900">mustr</span> reaches
-            out to volunteers, fills shifts, sends reminders/annoucements, and
-            runs donation campaigns &mdash; all over plain SMS. No app for your
-            volunteers. No spreadsheet for you.
+            <span className="font-semibold text-zinc-900">mustr</span> plans
+            events with you, reaches out to volunteers, fills shifts, sends
+            reminders/announcements, and runs donation campaigns &mdash; all
+            via plain SMS or voice calls.
           </p>
+          <ul className="mt-4 max-w-xl list-disc pl-6 text-lg leading-relaxed text-zinc-900">
+            <li className="font-semibold">No app for your volunteers or donors.</li>
+            <li className="font-semibold">No spreadsheet for you.</li>
+          </ul>
           <div className="mt-8 flex flex-wrap gap-3">
             <a
               href="#cta"
@@ -234,8 +245,8 @@ function LogoStrip() {
 const AGENTS = [
   {
     icon: Cpu,
-    name: "Recruiter",
-    tag: "Fills empty events while you sleep.",
+    name: "Planner",
+    tag: "Plans and fills empty events while you sleep.",
     body: "Plans outreach in waves, targets the right volunteers, escalates only when it can't close the gap.",
   },
   {
@@ -352,145 +363,74 @@ function AdminDashboardSection() {
             Every event, every volunteer, every alert &mdash; at a glance.
           </p>
         </div>
-        <div className="mt-12">
-          <FakeAdminDashboard />
+        <div className="mt-14 space-y-16">
+          <DashboardRow
+            src="/screenshots/Dashboard1.png"
+            alt="mustr admin dashboard — events and campaigns"
+            heading="Manage events and campaigns"
+            points={[
+              "Live Event Roster",
+              "Status of upcoming events",
+              "Donation Tracker",
+              "Alerts for events falling behind, decisions needed now, upcoming events, and more",
+            ]}
+          />
+          <DashboardRow
+            src="/screenshots/Dashboard2.png"
+            alt="mustr admin dashboard — organization health"
+            heading="Monitor your org's health"
+            points={[
+              "Volunteer recruiting trends, walk-ups, and no-shows",
+              "Donor base growth and engagement",
+              "Complaints, feedback, and issues — surfaced and addressable",
+            ]}
+          />
         </div>
       </div>
     </section>
   );
 }
 
-function FakeAdminDashboard() {
+function DashboardRow({
+  src,
+  alt,
+  heading,
+  points,
+  reverse = false,
+}: {
+  src: string;
+  alt: string;
+  heading: string;
+  points: string[];
+  reverse?: boolean;
+}) {
   return (
-    <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-2xl">
-      <div className="flex items-center gap-2 border-b border-zinc-200 bg-zinc-50 px-4 py-3">
-        <span className="h-3 w-3 rounded-full bg-red-400" />
-        <span className="h-3 w-3 rounded-full bg-yellow-400" />
-        <span className="h-3 w-3 rounded-full bg-green-400" />
-        <span className="ml-3 text-xs text-zinc-500">mustr — Dashboard</span>
+    <div
+      className={cn(
+        "grid items-center gap-10 lg:grid-cols-[1.6fr_1fr]",
+        reverse && "lg:[&>*:first-child]:order-2"
+      )}
+    >
+      <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-2xl">
+        <img
+          src={src}
+          alt={alt}
+          className="block h-auto w-full"
+          loading="lazy"
+        />
       </div>
-
-      <div className="space-y-6 p-6">
-        <div>
-          <p className="text-sm text-zinc-500">Good morning, Sarah 👋</p>
-          <p className="text-lg font-semibold text-zinc-900">
-            7 events this week.{" "}
-            <span className="text-amber-600">2 still need volunteers.</span>
-          </p>
-        </div>
-
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          {ADMIN_KPIS.map((k) => (
-            <div
-              key={k.label}
-              className="rounded-xl border border-zinc-200 bg-white p-3"
-            >
-              <p className="text-[10px] uppercase tracking-wider text-zinc-500">
-                {k.label}
-              </p>
-              <p className="mt-1 text-xl font-bold text-zinc-900">{k.value}</p>
-              <p className="text-[10px] text-zinc-500">{k.trend}</p>
-            </div>
+      <div>
+        <h3 className="text-2xl font-bold tracking-tight text-zinc-900">
+          {heading}
+        </h3>
+        <ul className="mt-5 space-y-3 text-zinc-700">
+          {points.map((p) => (
+            <li key={p} className="flex gap-2.5">
+              <CheckCircle2 className="mt-0.5 h-5 w-5 flex-shrink-0 text-[#007AFF]" />
+              <span>{p}</span>
+            </li>
           ))}
-        </div>
-
-        <div className="grid gap-4 lg:grid-cols-3">
-          <div className="rounded-xl border border-zinc-200 bg-white p-4 lg:col-span-2">
-            <p className="text-sm font-semibold text-zinc-900">This week</p>
-            <div className="mt-3 space-y-3">
-              {ADMIN_WEEK.map((ev) => {
-                const pct = Math.round((ev.booked / ev.max) * 100);
-                const full = ev.booked >= ev.max;
-                return (
-                  <div key={ev.name} className="flex items-center gap-3 text-xs">
-                    <div className="flex-1">
-                      <div className="flex items-baseline justify-between">
-                        <p className="font-medium text-zinc-800">{ev.name}</p>
-                        <p className="text-zinc-500">
-                          {ev.booked}/{ev.max}
-                        </p>
-                      </div>
-                      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-zinc-100">
-                        <div
-                          className={cn(
-                            "h-full rounded-full",
-                            full ? "bg-emerald-500" : "bg-[#007AFF]"
-                          )}
-                          style={{ width: `${pct}%` }}
-                        />
-                      </div>
-                    </div>
-                    {!full && (
-                      <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold uppercase text-amber-700">
-                        needs vols
-                      </span>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="rounded-xl border border-zinc-200 bg-white p-4">
-            <p className="text-sm font-semibold text-zinc-900">
-              Needs attention
-            </p>
-            <div className="mt-3 space-y-2">
-              {ADMIN_ALERTS.map((a) => {
-                const Icon = a.icon;
-                const isAmber = a.tone === "amber";
-                return (
-                  <div
-                    key={a.title}
-                    className={cn(
-                      "flex items-start gap-2 rounded-lg border p-2 text-xs",
-                      isAmber
-                        ? "border-amber-200 bg-amber-50"
-                        : "border-zinc-200 bg-zinc-50"
-                    )}
-                  >
-                    <Icon
-                      className={cn(
-                        "mt-0.5 h-3.5 w-3.5 flex-shrink-0",
-                        isAmber ? "text-amber-600" : "text-zinc-500"
-                      )}
-                    />
-                    <div>
-                      <p
-                        className={cn(
-                          "font-medium",
-                          isAmber ? "text-amber-900" : "text-zinc-900"
-                        )}
-                      >
-                        {a.title}
-                      </p>
-                      <p
-                        className={cn(
-                          "text-[10px]",
-                          isAmber ? "text-amber-700" : "text-zinc-500"
-                        )}
-                      >
-                        {a.body}
-                      </p>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            <p className="mt-4 text-[10px] uppercase tracking-wider text-zinc-500">
-              Active campaigns
-            </p>
-            <div className="mt-2 space-y-1.5 text-xs">
-              {ADMIN_CAMPAIGNS.map((c) => (
-                <div key={c.name} className="flex items-center justify-between">
-                  <p className="text-zinc-700">{c.name}</p>
-                  <span className={cn("font-medium", c.color)}>{c.value}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
+        </ul>
       </div>
     </div>
   );
@@ -502,118 +442,99 @@ function DashboardSection() {
       <div className="mx-auto grid max-w-6xl items-center gap-12 lg:grid-cols-2">
         <div>
           <h2 className="text-4xl font-bold tracking-tight">
-            Inside every conversation
+            One platform for volunteers <em className="text-[#7BA9F0]">and</em>{" "}
+            donors
           </h2>
           <p className="mt-3 text-lg text-zinc-300">
-            Every thread. Every AI decision. One screen.
+            Drop the volunteer-signup tool, the email blaster, the donation
+            page, and the spreadsheet that holds them together.
           </p>
-          <ul className="mt-8 space-y-4 text-zinc-300">
+          <ul className="mt-8 space-y-5 text-zinc-300">
             {[
-              "One screen for every conversation — see every volunteer thread and every AI decision in real time.",
-              "One-click takeover when a thread needs a human.",
-              "Replayable trace tab — know exactly why the agent said what it said.",
-            ].map((line) => (
-              <li key={line} className="flex gap-3">
-                <CheckCircle2 className="h-5 w-5 flex-shrink-0 text-[#7BA9F0]" />
-                <span>{line}</span>
+              {
+                title: "One contact record, not three.",
+                body: "When Maria signs up for Saturday's food drive, mustr already knows she gave at year-end. Same person, same context — without anyone retyping anything.",
+              },
+              {
+                title: "One outreach engine for events and campaigns.",
+                body: "Fundraising Campaigns reuse the same wave-based engine that fills events — calibrated waves, not mass-blast spam that burns goodwill.",
+              },
+              {
+                title: "One phone number. One inbox. One bill.",
+                body: "Replace four tools and the spreadsheet with one $99/mo subscription. Your supporters reply right in their texts. No app, no link, no install.",
+              },
+              {
+                title: "Save up to 90% of your time.",
+                body: "Coordinators get hours back every week. That time goes back to the work you actually started the non-profit to do.",
+              },
+            ].map((feat) => (
+              <li key={feat.title} className="flex gap-3">
+                <CheckCircle2 className="mt-1 h-5 w-5 flex-shrink-0 text-[#7BA9F0]" />
+                <div>
+                  <div className="font-semibold text-white">{feat.title}</div>
+                  <div className="mt-0.5 text-sm leading-relaxed text-zinc-400">
+                    {feat.body}
+                  </div>
+                </div>
               </li>
             ))}
           </ul>
         </div>
-        <FakeDashboard />
+        <PlatformConsolidationVisual />
       </div>
     </section>
   );
 }
 
-function FakeDashboard() {
-  const inbox = [
-    "Maya Lopez",
-    "Daniel Reyes",
-    "Ava Chen",
-    "Marcus Patel",
-    "Lily Brooks",
+function PlatformConsolidationVisual() {
+  const replaced = [
+    { icon: Users, label: "Volunteer signups" },
+    { icon: Heart, label: "Donation page" },
+    { icon: Mail, label: "Email blasts" },
+    { icon: Sheet, label: "Spreadsheet" },
   ];
   return (
-    <div className="overflow-hidden rounded-2xl border border-zinc-700 bg-zinc-900 shadow-2xl">
-      <div className="flex items-center gap-2 border-b border-zinc-700 bg-zinc-800/80 px-4 py-3">
-        <span className="h-3 w-3 rounded-full bg-red-400" />
-        <span className="h-3 w-3 rounded-full bg-yellow-400" />
-        <span className="h-3 w-3 rounded-full bg-green-400" />
-        <span className="ml-3 text-xs text-zinc-400">mustr — Conversations</span>
+    <div className="rounded-2xl border border-zinc-700/60 bg-gradient-to-br from-zinc-900 via-[#13213b] to-zinc-900 p-7 shadow-2xl">
+      <div className="text-center text-[10px] uppercase tracking-[0.2em] text-zinc-500">
+        Replaces
       </div>
-      <div className="grid grid-cols-3 divide-x divide-zinc-700">
-        <div className="space-y-1 p-3 text-xs">
-          <p className="px-1 pb-1 text-[10px] uppercase tracking-wider text-zinc-500">
-            Inbox
-          </p>
-          {inbox.map((n, i) => (
-            <div
-              key={n}
-              className={cn(
-                "rounded-md px-2 py-2",
-                i === 0 ? "bg-zinc-700/60" : "hover:bg-zinc-800"
-              )}
+      <div className="mt-3 grid grid-cols-2 gap-3">
+        {replaced.map((tool) => (
+          <div
+            key={tool.label}
+            className="flex items-center gap-2 rounded-lg border border-zinc-700/70 bg-zinc-900/70 px-3 py-3 text-zinc-400"
+          >
+            <tool.icon className="h-4 w-4 flex-shrink-0 opacity-70" />
+            <span className="text-sm line-through decoration-zinc-500 decoration-2">
+              {tool.label}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      <div className="my-4 flex justify-center">
+        <ArrowDown className="h-7 w-7 text-[#7BA9F0]" strokeWidth={2.5} />
+      </div>
+
+      <div className="rounded-xl border border-[#7BA9F0]/40 bg-gradient-to-br from-[#1c2d4a] to-[#0F172A] p-5 shadow-lg">
+        <div className="flex items-center justify-center gap-2">
+          <Sparkles className="h-5 w-5 text-[#7BA9F0]" />
+          <span className="text-xl font-bold tracking-tight text-white">
+            mustr
+          </span>
+        </div>
+        <div className="mt-1 text-center text-xs text-zinc-400">
+          One inbox · one phone number · one bill
+        </div>
+        <div className="mt-4 flex flex-wrap justify-center gap-1.5">
+          {["Volunteers", "Donors", "Outreach", "Reporting"].map((cap) => (
+            <span
+              key={cap}
+              className="rounded-full border border-[#7BA9F0]/30 bg-[#1c2d4a]/60 px-2.5 py-0.5 text-[10px] font-medium text-zinc-200"
             >
-              <p className="font-medium text-zinc-200">{n}</p>
-              <p className="truncate text-[10px] text-zinc-500">
-                {i === 0
-                  ? "Sun is a stretch. Got anything Sat?"
-                  : "Can't make it this week — sorry!"}
-              </p>
-            </div>
+              {cap}
+            </span>
           ))}
-        </div>
-        <div className="space-y-2 p-3 text-xs">
-          <p className="px-1 pb-1 text-[10px] uppercase tracking-wider text-zinc-500">
-            Conversation
-          </p>
-          <div className="space-y-1.5 text-[11px]">
-            <div className="rounded-lg bg-zinc-700/50 px-2 py-1.5 text-zinc-200">
-              3 short for Sun 8am food drive — swing by?
-            </div>
-            <div className="ml-6 rounded-lg bg-[#1f2c50] px-2 py-1.5 text-zinc-100">
-              Sun is a stretch. Got anything Sat?
-            </div>
-            <div className="rounded-lg bg-zinc-700/50 px-2 py-1.5 text-zinc-200">
-              Yes — Sat 9am. Reply Y to lock it in.
-            </div>
-            <div className="ml-6 rounded-lg bg-[#1f2c50] px-2 py-1.5 text-zinc-100">
-              Y
-            </div>
-            <div className="rounded-lg bg-zinc-700/50 px-2 py-1.5 text-zinc-200">
-              Locked in. See you Saturday 🙌
-            </div>
-          </div>
-        </div>
-        <div className="space-y-2 p-3 text-xs">
-          <p className="px-1 pb-1 text-[10px] uppercase tracking-wider text-zinc-500">
-            Trace
-          </p>
-          <div className="space-y-1 font-mono text-[10px] text-zinc-400">
-            <p>
-              <span className="text-[#7BA9F0]">▸ recruiter</span> matched 12
-              candidates
-            </p>
-            <p>
-              <span className="text-[#7BA9F0]">▸ engagement</span> sent SMS · 0.4s
-            </p>
-            <p>
-              <span className="text-[#7BA9F0]">▸ scheduler</span> proposed Sat 9am
-            </p>
-            <p>
-              <span className="text-[#7BA9F0]">▸ scheduler</span> booked slot
-              #4821
-            </p>
-            <p>
-              <span className="text-[#7BA9F0]">▸ engagement</span> sent
-              confirmation
-            </p>
-            <p>
-              <span className="text-[#7BA9F0]">▸ orchestrator</span> closed turn
-              · 1.2s
-            </p>
-          </div>
         </div>
       </div>
     </div>
