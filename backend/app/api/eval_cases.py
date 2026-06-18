@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -289,7 +290,7 @@ async def list_cases(
     return EvalCaseList(layer=layer, count=len(cases), cases=cases)
 
 
-@router.get("/{layer}/{case_id}", response_model=EvalCase)
+@router.get("/cases/{layer}/{case_id}", response_model=EvalCase)
 async def get_case(
     layer: str,
     case_id: str,
@@ -303,7 +304,7 @@ async def get_case(
     raise HTTPException(404, f"Case '{case_id}' not found in {layer}")
 
 
-@router.post("/{layer}", response_model=EvalCase, status_code=201)
+@router.post("/cases/{layer}", response_model=EvalCase, status_code=201)
 async def create_case(
     layer: str,
     case: EvalCase,
@@ -322,7 +323,7 @@ async def create_case(
     return case
 
 
-@router.put("/{layer}/{case_id}", response_model=EvalCase)
+@router.put("/cases/{layer}/{case_id}", response_model=EvalCase)
 async def update_case(
     layer: str,
     case_id: str,
@@ -351,7 +352,7 @@ async def update_case(
     raise HTTPException(404, f"Case '{case_id}' not found in {layer}")
 
 
-@router.delete("/{layer}/{case_id}", status_code=204)
+@router.delete("/cases/{layer}/{case_id}", status_code=204)
 async def delete_case(
     layer: str,
     case_id: str,
@@ -808,35 +809,59 @@ async def _run_subprocess(run_id: str, layer: str, model: str) -> None:
 
     _ACTIVE_RUNS[run_id]["status"] = "running"
 
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
+    # Sync subprocess.run wrapped in a thread instead of
+    # asyncio.create_subprocess_exec. The async variant raises
+    # NotImplementedError on Windows when uvicorn picks the Selector
+    # event loop. The threaded sync version works on every loop policy.
+    def _blocking_run() -> tuple[int, bytes, bytes]:
+        result = subprocess.run(
+            cmd,
             cwd=str(_REPO_ROOT),
             env=env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            capture_output=True,
+            check=False,
         )
-        _stdout, stderr = await proc.communicate()
-        rc = proc.returncode or 0
+        return result.returncode, result.stdout, result.stderr
+
+    try:
+        rc, stdout, stderr = await asyncio.to_thread(_blocking_run)
     except Exception as e:  # noqa: BLE001
         _ACTIVE_RUNS[run_id].update({
             "status": "error",
             "finished_at": datetime.now(timezone.utc).isoformat(),
-            "error": f"subprocess spawn failed: {e}",
+            "error": f"subprocess spawn failed: {type(e).__name__}: {e}",
         })
         return
+
+    # Persist full stdout / stderr next to the (maybe-empty) log dir so
+    # failures are debuggable without re-running. Inspect AI sometimes
+    # writes its error to stdout (e.g. unparseable task), so we capture
+    # both.
+    try:
+        (log_dir_abs / "stdout.txt").write_bytes(stdout or b"")
+        (log_dir_abs / "stderr.txt").write_bytes(stderr or b"")
+    except OSError as e:
+        logger.warning("Could not persist subprocess output: %s", e)
 
     produced = sorted(log_dir_abs.glob("*.eval"))
     log_path = str(produced[-1]) if produced else None
 
     if rc != 0:
-        err_tail = (stderr or b"").decode("utf-8", "replace")[-1500:]
-        logger.warning("Eval subprocess failed (rc=%d): %s", rc, err_tail)
+        stdout_text = (stdout or b"").decode("utf-8", "replace")
+        stderr_text = (stderr or b"").decode("utf-8", "replace")
+        # Log both in full at backend so the operator can grep.
+        logger.warning(
+            "Eval subprocess failed (rc=%d)\n--- STDOUT ---\n%s\n--- STDERR ---\n%s",
+            rc, stdout_text[-3000:], stderr_text[-3000:],
+        )
+        # For the UI error message, take the non-empty tail (Inspect AI
+        # often dumps to one or the other depending on the failure mode).
+        tail = stderr_text.strip() or stdout_text.strip()
         _ACTIVE_RUNS[run_id].update({
             "status": "error",
             "finished_at": datetime.now(timezone.utc).isoformat(),
             "log_path": log_path,
-            "error": f"rc={rc}; stderr tail: {err_tail[-500:]}",
+            "error": f"rc={rc}: {tail[-800:] if tail else '(no output)'}",
         })
         return
 

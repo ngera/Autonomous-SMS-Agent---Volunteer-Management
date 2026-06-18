@@ -1543,6 +1543,22 @@ _STATUS_TRIGGER_PAIRS: list[tuple[tuple[str, ...], tuple[str, ...]]] = [
             "how many",
         ),
     ),
+    # Time-window phrasings — "this week's status", "today's status",
+    # "what's happening tomorrow" — without requiring the word "campaign".
+    # Admins routinely ask in time-window form; the previous trigger set
+    # silently fell through to the LLM, which would happily render any
+    # active campaign as the answer.
+    (
+        (
+            "this week",
+            "next week",
+            "today",
+            "tomorrow",
+            "this month",
+            "next month",
+        ),
+        ("status", "happening", "going on", "scheduled", "events"),
+    ),
 ]
 
 
@@ -1663,6 +1679,18 @@ async def maybe_handle_status_directly(
     if not _looks_like_status_query(message):
         return None
 
+    # Relative-time short-circuit. "this week's status" / "today's status"
+    # asks about the EVENTS in a time window, not the campaigns. Render
+    # the per-event roll-up (one campaign block per event that has one,
+    # one needs-and-signups block per event that doesn't). This avoids
+    # the LLM hallucinating an unrelated campaign as the answer.
+    relative_range = _extract_relative_date_range(message)
+    if relative_range is not None:
+        if admin_id is not None:
+            await _clear_pending_status_list(db, tenant.id, admin_id)
+        start, end = relative_range
+        return await _render_events_in_range_block(db, tenant, start, end)
+
     # Pull all non-terminal campaigns + their slots
     q = await db.execute(
         select(RecruitmentCampaign, SpecificDateSlot)
@@ -1696,10 +1724,18 @@ async def maybe_handle_status_directly(
     # When this narrows the result we go straight to full-block render
     # (no numbered list needed — admin already named their event).
     filter_date, filter_label = _extract_status_filter(message)
+    no_match_for_filter = False
     if filter_date or filter_label:
         filtered = _filter_campaigns_by_event(rows, filter_date, filter_label)
         if filtered:
             rows = filtered
+        else:
+            # Admin named a specific event but we found no campaign matching
+            # it. Don't silently fall back to "the only other campaign" —
+            # the admin would interpret that as the status of *their* event
+            # and act on the wrong information. Flag and produce an honest
+            # response below.
+            no_match_for_filter = True
 
     # Service-name lookup (used only for the full-block path)
     type_ids = {
@@ -1717,17 +1753,46 @@ async def maybe_handle_status_directly(
         )
         type_names = {str(tid): name for tid, name in nq.all()}
 
-    # Single campaign — full block, clear any stale pending list.
-    if len(rows) == 1:
+    # Single campaign matching the admin's filter — full block.
+    # Skip this fast-path when the filter found nothing; we want to be
+    # honest about the miss instead of rendering an unrelated campaign.
+    if len(rows) == 1 and not no_match_for_filter:
         c, slot = rows[0]
         block = await _render_campaign_status_block(db, c, slot, type_names)
         if admin_id is not None:
             await _clear_pending_status_list(db, tenant.id, admin_id)
         return block
 
-    # Multiple campaigns — short numbered list. Persist for follow-up
-    # selection when we know which admin asked.
-    list_lines = [f"{len(rows)} active campaign(s):"]
+    # Multiple campaigns (or filter missed) — show a short numbered list.
+    # Persist for follow-up selection when we know which admin asked.
+    if no_match_for_filter:
+        # Admin named a specific event but no campaign exists. Try to
+        # show the EVENT's current state (services needed + current
+        # signups) — that's what the admin actually wants. Fall through
+        # to the campaign listing only if we can't pin down a unique
+        # event match.
+        event_block = await _render_event_no_campaign_block(
+            db, tenant, filter_date, filter_label
+        )
+        if event_block is not None:
+            if admin_id is not None:
+                await _clear_pending_status_list(db, tenant.id, admin_id)
+            return event_block
+
+        bits: list[str] = []
+        if filter_label:
+            bits.append(f"'{filter_label}'")
+        if filter_date:
+            bits.append(f"on {filter_date}")
+        target = " ".join(bits) if bits else "that event"
+        list_lines = [
+            f"No active campaign or matching event found for {target}.",
+            "",
+            f"{len(rows)} active campaign(s):",
+        ]
+    else:
+        list_lines = [f"{len(rows)} active campaign(s):"]
+
     entries_for_pending: list[dict] = []
     for idx, (c, slot) in enumerate(rows, start=1):
         label = slot.label or "event"
@@ -1966,6 +2031,323 @@ def _fmt_short_date(dt) -> str:
     if not dt:
         return "?"
     return f"{dt.strftime('%b')} {dt.day}"
+
+
+def _extract_relative_date_range(message: str) -> tuple[date, date] | None:
+    """Detect relative time-window phrases and return an inclusive date
+    range. Returns None when no phrase matches.
+
+    Supported:
+      today, tomorrow         -> single-day range
+      this week, next week    -> Monday..Sunday (ISO week)
+      this month, next month  -> 1st..last of month
+      next 7 days             -> today..today+6
+
+    Checked before the explicit YYYY-MM-DD / month-name extractor so
+    "this week" wins over a chance digit match.
+    """
+    from datetime import timedelta
+
+    text = (message or "").lower()
+    if not text:
+        return None
+    today = date.today()
+
+    if "tomorrow" in text:
+        t = today + timedelta(days=1)
+        return (t, t)
+    if "today" in text:
+        return (today, today)
+    if "this week" in text:
+        monday = today - timedelta(days=today.weekday())
+        sunday = monday + timedelta(days=6)
+        return (monday, sunday)
+    if "next week" in text:
+        next_monday = today + timedelta(days=(7 - today.weekday()))
+        next_sunday = next_monday + timedelta(days=6)
+        return (next_monday, next_sunday)
+    if "this month" in text:
+        from calendar import monthrange
+        last_day = monthrange(today.year, today.month)[1]
+        return (today.replace(day=1), today.replace(day=last_day))
+    if "next month" in text:
+        from calendar import monthrange
+        if today.month == 12:
+            year, month = today.year + 1, 1
+        else:
+            year, month = today.year, today.month + 1
+        last_day = monthrange(year, month)[1]
+        return (date(year, month, 1), date(year, month, last_day))
+    if "next 7 days" in text or "next seven days" in text:
+        return (today, today + timedelta(days=6))
+    return None
+
+
+async def _render_events_in_range_block(
+    db,
+    tenant: Tenant,
+    start: date,
+    end: date,
+) -> str:
+    """Multi-event status for a date range. Used when the admin asks
+    'this week's status' / 'what's happening tomorrow' etc.
+
+    For each event in the range:
+      - If a campaign exists -> render the full campaign block
+      - Otherwise -> render the event's needs + current signups
+
+    When there are no events at all in the range, returns a short
+    'no events scheduled' message.
+    """
+    from app.agents.recruiter.executor import current_signups_per_service
+    from app.models.appointment_type import AppointmentType
+    from app.models.availability import SpecificDateSlot
+
+    eq = await db.execute(
+        select(SpecificDateSlot)
+        .where(
+            SpecificDateSlot.tenant_id == tenant.id,
+            SpecificDateSlot.is_active.is_(True),
+            SpecificDateSlot.date >= start,
+            SpecificDateSlot.date <= end,
+        )
+        .order_by(SpecificDateSlot.date.asc())
+    )
+    events = list(eq.scalars().all())
+
+    range_label = (
+        start.isoformat() if start == end
+        else f"{start.isoformat()} to {end.isoformat()}"
+    )
+
+    if not events:
+        return f"No events scheduled for {range_label}."
+
+    # Pull campaigns attached to any of these events.
+    slot_ids = [s.id for s in events]
+    cq = await db.execute(
+        select(RecruitmentCampaign).where(
+            RecruitmentCampaign.tenant_id == tenant.id,
+            RecruitmentCampaign.event_slot_id.in_(slot_ids),
+            RecruitmentCampaign.status.in_(
+                [
+                    CampaignStatus.DRAFT,
+                    CampaignStatus.AWAITING_APPROVAL,
+                    CampaignStatus.ACTIVE,
+                    CampaignStatus.PAUSED,
+                ]
+            ),
+        )
+    )
+    campaigns_by_slot: dict[uuid.UUID, RecruitmentCampaign] = {}
+    for c in cq.scalars().all():
+        campaigns_by_slot[c.event_slot_id] = c
+
+    # Collect every service id referenced (event needs + campaign goals)
+    # so we can do one batched name lookup.
+    all_service_ids: set[uuid.UUID] = set()
+    for slot in events:
+        for g in slot.service_config or []:
+            sid = g.get("appointment_type_id")
+            if sid:
+                try:
+                    all_service_ids.add(uuid.UUID(sid))
+                except (ValueError, TypeError):
+                    pass
+    type_names: dict[str, str] = {}
+    if all_service_ids:
+        nq = await db.execute(
+            select(AppointmentType.id, AppointmentType.name).where(
+                AppointmentType.id.in_(list(all_service_ids))
+            )
+        )
+        type_names = {str(tid): name for tid, name in nq.all()}
+
+    # Render per-event blocks.
+    blocks: list[str] = [f"Status for {range_label}: {len(events)} event(s)"]
+    for slot in events:
+        camp = campaigns_by_slot.get(slot.id)
+        if camp is not None:
+            blocks.append("")
+            blocks.append(
+                await _render_campaign_status_block(db, camp, slot, type_names)
+            )
+            continue
+
+        # No campaign — render the event's needs + signups.
+        service_config = slot.service_config or []
+        service_ids = [
+            uuid.UUID(g["appointment_type_id"])
+            for g in service_config
+            if g.get("appointment_type_id")
+        ]
+        signups = (
+            await current_signups_per_service(db, slot, service_ids)
+            if service_ids else {}
+        )
+
+        def _min_of(g: dict) -> int:
+            return int(g.get("min_required") or 0)
+
+        total_signed = sum(int(signups.get(sid, 0)) for sid in signups)
+        total_min = sum(_min_of(g) for g in service_config)
+        needed = max(0, total_min - total_signed)
+        needed_part = (
+            f" ({needed} more needed)" if total_min > 0 and needed > 0
+            else " (target hit)" if total_min > 0
+            else ""
+        )
+
+        label = slot.label or "event"
+        event_date = slot.date.isoformat() if slot.date else "?"
+        block_lines = [
+            "",
+            f"**{label}** — {event_date} [no campaign yet]",
+            f"Total: {total_signed} of {total_min} signed up{needed_part}",
+        ]
+        if service_config:
+            block_lines.append("Volunteer needs:")
+            for g in service_config:
+                sid_raw = g.get("appointment_type_id")
+                if not sid_raw:
+                    continue
+                name = type_names.get(sid_raw, "service")
+                sg = int(signups.get(sid_raw, 0))
+                mn = _min_of(g)
+                if mn > 0:
+                    svc_needed = max(0, mn - sg)
+                    svc_needed_part = (
+                        f" ({svc_needed} more needed)" if svc_needed > 0
+                        else " (target hit)"
+                    )
+                else:
+                    svc_needed_part = ""
+                block_lines.append(f"  • {name} — {sg}/{mn}{svc_needed_part}")
+        blocks.extend(block_lines)
+
+    return "\n".join(blocks)
+
+
+async def _render_event_no_campaign_block(
+    db,
+    tenant: Tenant,
+    filter_date: str | None,
+    filter_label: str | None,
+) -> str | None:
+    """Look up the event itself when no campaign matches.
+
+    Used by the status flow's miss-path: admin named a specific event,
+    no campaign exists for it. If the EVENT exists, render its current
+    state — services needed, signups so far, and the suggested next
+    action. Returns None when 0 or >1 events match (caller falls back
+    to listing active campaigns so the admin can still get unstuck).
+    """
+    from datetime import date as _date
+
+    from app.agents.recruiter.executor import current_signups_per_service
+    from app.models.appointment_type import AppointmentType
+    from app.models.availability import SpecificDateSlot
+
+    if not (filter_date or filter_label):
+        return None
+
+    q = select(SpecificDateSlot).where(
+        SpecificDateSlot.tenant_id == tenant.id,
+        SpecificDateSlot.is_active.is_(True),
+    )
+    if filter_date:
+        try:
+            q = q.where(SpecificDateSlot.date == _date.fromisoformat(filter_date))
+        except ValueError:
+            return None
+    if filter_label:
+        # ILIKE so the substring match is case-insensitive and runs in PG.
+        q = q.where(SpecificDateSlot.label.ilike(f"%{filter_label}%"))
+
+    rows = list(
+        (await db.execute(q.order_by(SpecificDateSlot.date.asc()))).scalars().all()
+    )
+    if len(rows) != 1:
+        return None
+
+    slot = rows[0]
+    service_config = slot.service_config or []
+    service_ids: list[uuid.UUID] = []
+    for g in service_config:
+        sid_raw = g.get("appointment_type_id")
+        if not sid_raw:
+            continue
+        try:
+            service_ids.append(uuid.UUID(sid_raw))
+        except (ValueError, TypeError):
+            continue
+
+    type_names: dict[str, str] = {}
+    if service_ids:
+        nq = await db.execute(
+            select(AppointmentType.id, AppointmentType.name).where(
+                AppointmentType.id.in_(service_ids)
+            )
+        )
+        type_names = {str(tid): name for tid, name in nq.all()}
+
+    signups = (
+        await current_signups_per_service(db, slot, service_ids)
+        if service_ids else {}
+    )
+
+    def _min_of(g: dict) -> int:
+        return int(g.get("min_required") or 0)
+
+    total_signed = sum(int(signups.get(sid, 0)) for sid in signups)
+    total_min = sum(_min_of(g) for g in service_config)
+    needed = max(0, total_min - total_signed)
+
+    label = slot.label or "event"
+    event_date = slot.date.isoformat() if slot.date else "?"
+
+    if total_min > 0:
+        needed_part = (
+            f" ({needed} more needed)" if needed > 0 else " (target hit)"
+        )
+    else:
+        needed_part = ""
+
+    lines = [
+        f"**{label}** — {event_date} [no campaign yet]",
+        f"Total: {total_signed} of {total_min} signed up{needed_part}",
+    ]
+
+    if service_config:
+        lines.append("")
+        lines.append("Volunteer needs:")
+        for g in service_config:
+            sid_raw = g.get("appointment_type_id")
+            if not sid_raw:
+                continue
+            name = type_names.get(sid_raw, "service")
+            sg = int(signups.get(sid_raw, 0))
+            mn = _min_of(g)
+            if mn > 0:
+                svc_needed = max(0, mn - sg)
+                svc_needed_part = (
+                    f" ({svc_needed} more needed)" if svc_needed > 0
+                    else " (target hit)"
+                )
+            else:
+                svc_needed_part = ""
+            lines.append(f"  • {name} — {sg}/{mn}{svc_needed_part}")
+    else:
+        lines.append("")
+        lines.append("(No service requirements configured for this event.)")
+
+    lines.append("")
+    lines.append(
+        f"No active recruitment campaign for this event. "
+        f"Say 'plan recruitment for {label}' to start one."
+    )
+
+    return "\n".join(lines)
 
 
 async def _render_campaign_status_block(

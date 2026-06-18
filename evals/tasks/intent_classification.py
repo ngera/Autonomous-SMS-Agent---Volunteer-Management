@@ -35,23 +35,38 @@ if str(BACKEND_ROOT) not in sys.path:
 
 @solver
 def classifier_solver():
-    """Calls the production classifier. DB + Tenant are passed as
-    lightweight mocks since the classifier only needs them for
-    audit logging — it doesn't query state."""
+    """Calls the production classifier. The DB + Tenant args are stubbed:
+    `classify()` only awaits `resolve_model(db, tenant, ...)`, which we
+    monkey-patch to return the same Haiku model the seam would resolve
+    to in prod — bypassing all DB lookups so the eval can run without
+    a real Supabase connection."""
 
     async def solve(state: TaskState, generate: Generate) -> TaskState:
-        from unittest.mock import AsyncMock, MagicMock
+        from unittest.mock import MagicMock
 
-        from app.agents.orchestrator.intent_classifier import classify  # type: ignore
+        # Patch resolve_model BEFORE classify imports it (classify uses
+        # a deferred import on first call). Patching the source module
+        # is the durable spot since the deferred import re-reads it.
+        from app.services import agent_models  # type: ignore
 
-        fake_db = MagicMock()
-        fake_db.add = MagicMock()
-        fake_db.commit = AsyncMock()
-        fake_tenant = MagicMock()
-        fake_tenant.id = "00000000-0000-0000-0000-000000000000"
-        fake_tenant.anthropic_api_key = None  # falls through to env
+        original_resolve = agent_models.resolve_model
 
-        decision = await classify(state.input_text, fake_db, fake_tenant)
+        async def fake_resolve(_db, _tenant, _seam):
+            return "claude-haiku-4-5"
+
+        agent_models.resolve_model = fake_resolve  # type: ignore[assignment]
+        try:
+            from app.agents.orchestrator.intent_classifier import classify  # type: ignore
+
+            fake_db = MagicMock()
+            fake_tenant = MagicMock()
+            fake_tenant.id = "00000000-0000-0000-0000-000000000000"
+            fake_tenant.anthropic_api_key = None  # falls through to env
+
+            decision = await classify(state.input_text, fake_db, fake_tenant)
+        finally:
+            agent_models.resolve_model = original_resolve  # type: ignore[assignment]
+
         if decision is None:
             state.output.completion = "other"
             state.metadata["confidence"] = 0.0

@@ -10,7 +10,6 @@ import { RoleGate } from "@/components/guards/role-gate";
 import { AppLayout } from "@/components/layout/app-layout";
 import { LoginPage } from "@/pages/login-page";
 import { LandingPage } from "@/features/marketing/pages/landing-page";
-import { CoordinatorCharacterPage } from "@/features/video/coordinator-character-page";
 import { DashboardPage } from "@/features/dashboard/pages/dashboard-page";
 import { TenantDashboardPage } from "@/features/tenants/pages/tenant-dashboard-page";
 import { BookingsPage } from "@/features/bookings/pages/bookings-page";
@@ -49,7 +48,6 @@ export default function App() {
       <Routes>
         <Route path="/" element={<LandingPage />} />
         <Route path="/login" element={<LoginPage />} />
-        <Route path="/video/coordinator-character" element={<CoordinatorCharacterPage />} />
 
         <Route element={<ProtectedRoute />}>
           <Route element={<AppLayout />}>

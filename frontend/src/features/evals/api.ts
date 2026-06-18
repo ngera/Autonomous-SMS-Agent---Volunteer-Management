@@ -45,7 +45,7 @@ export async function listCases(layer: string): Promise<EvalCaseListResponse> {
 
 export async function getCase(layer: string, caseId: string): Promise<EvalCase> {
   const { data } = await api.get<EvalCase>(
-    `/eval-cases/${layer}/${encodeURIComponent(caseId)}`
+    `/eval-cases/cases/${layer}/${encodeURIComponent(caseId)}`
   );
   return data;
 }
@@ -54,7 +54,10 @@ export async function createCase(
   layer: string,
   body: EvalCase
 ): Promise<EvalCase> {
-  const { data } = await api.post<EvalCase>(`/eval-cases/${layer}`, body);
+  const { data } = await api.post<EvalCase>(
+    `/eval-cases/cases/${layer}`,
+    body
+  );
   return data;
 }
 
@@ -64,14 +67,14 @@ export async function updateCase(
   body: EvalCase
 ): Promise<EvalCase> {
   const { data } = await api.put<EvalCase>(
-    `/eval-cases/${layer}/${encodeURIComponent(caseId)}`,
+    `/eval-cases/cases/${layer}/${encodeURIComponent(caseId)}`,
     body
   );
   return data;
 }
 
 export async function deleteCase(layer: string, caseId: string): Promise<void> {
-  await api.delete(`/eval-cases/${layer}/${encodeURIComponent(caseId)}`);
+  await api.delete(`/eval-cases/cases/${layer}/${encodeURIComponent(caseId)}`);
 }
 
 export async function draftCaseFromProse(
