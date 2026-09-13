@@ -203,7 +203,7 @@ booking-system/
 │   │   ├── lib/            # API client, utilities
 │   │   └── types/          # TypeScript type definitions
 │   └── package.json
-└── requirements/           # Functional & technical specs
+└── README.md
 ```
 
 ## Getting Started
