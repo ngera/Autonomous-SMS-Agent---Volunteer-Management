@@ -133,6 +133,11 @@ A few structural choices that shape how the system behaves:
 - **#15 Per-tenant LLM rate limit.** Hard request-per-minute ceiling at the application layer, not just the upstream provider's. Prevents any one tenant from exhausting global quota — and surfaces 429s cleanly with retry-after.
 - **#14 / #13 Bounded conversation history.** History is sliced before every LLM send (per-turn cost cap) AND FIFO-trimmed in storage (per-row size cap). Bound every dimension explicitly at the application layer.
 
+## Documentation
+
+- [Architecture](docs/architecture.md) — end-to-end system architecture across HTTP, agents, tools, scheduler, and data layers.
+- [Eval Framework](docs/eval-framework.md) — six-layer AI eval suite (regex → intent classifier → tool correctness → message quality → privacy → production replay).
+
 ## Tech Stack
 
 ### Backend

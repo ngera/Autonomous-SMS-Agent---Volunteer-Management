@@ -52,8 +52,9 @@ AI-Engineering-Coach/
 *.vsix
 
 # Internal-only collateral (pitch decks, architecture briefs, demo
-# scripts, generated visuals). Kept locally but not pushed.
-docs/
+# scripts, generated visuals) archived locally under docs/archive/.
+# Only the two curated docs at the top of docs/ are published.
+docs/archive/
 
 # Eval run artifacts. The .eval files are regenerable by re-running the
 # suite — kept locally for the in-app history viewer, not in git.
