@@ -1,6 +1,17 @@
 # AI-Powered Volunteer Management System
 
-A full-stack, multi-tenant volunteer management system with an AI-powered SMS chatbot, built for service businesses. Volunteers book appointments via natural SMS conversations, while staff manage everything through a React admin panel.
+An autonomous assistant that manages volunteer coordination for a Volunteer Coordinator — handling the day-to-day work of keeping events staffed, on its own.
+
+The system is designed to:
+
+- **Recruit volunteers** for open shifts and events, matching people to work based on their history and preferences
+- **Remind and confirm** — nudge volunteers before events and track who's coming
+- **Adjust automatically** when someone reschedules or cancels, backfilling the shift without you stepping in
+- **Answer volunteers' questions** directly, around the clock
+- **Keep you in the loop** — flagging events at risk of going understaffed, reporting progress, and surfacing anything that needs your attention
+- **Give you a live dashboard** — see staffing status, volunteer activity, and progress across all your events at a glance, anytime
+
+It runs on its own and only comes to you when there's a real issue — not for the routine work. And it works entirely over text, since that's what volunteers actually respond to.
 
 ## Features
 
