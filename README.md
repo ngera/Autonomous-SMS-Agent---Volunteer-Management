@@ -108,7 +108,7 @@ Every inbound SMS flows through a supervisor layer (`app/agents/orchestrator/`) 
 
 ### Design Decisions (selected)
 
-A few structural choices that shape how the system behaves — full list in [memory/design_decisions.md](memory/design_decisions.md):
+A few structural choices that shape how the system behaves:
 
 - **#1 Two-seam Recruitment Agent.** Planner runs once per campaign (~2 LLM calls/day/campaign), Executor is plain Python iterating over candidates. Keeps the agent debuggable, cheap, and race-resistant.
 - **#7 / #20 / #21 Server-side intent routers.** Explicit recruitment verbs ("approve", "plan for X", "delete the X campaign") never fall through to the LLM. Regex catches the verb, dispatches to the handler. Closes the silent-tool-omission failure mode where the LLM emits "Approved!" without invoking the tool.
@@ -188,7 +188,6 @@ booking-system/
 │   │   ├── lib/            # API client, utilities
 │   │   └── types/          # TypeScript type definitions
 │   └── package.json
-├── docs/                   # Architecture documentation + screenshots
 └── requirements/           # Functional & technical specs
 ```
 
@@ -291,4 +290,7 @@ The backend exposes 80+ endpoints across 19 routers:
 
 ## License
 
-Private project — all rights reserved.
+MIT — see [LICENSE](LICENSE).
+
+This is a personal portfolio project. It is functional end-to-end but not
+maintained as a product. Feel free to read, fork, or borrow ideas.

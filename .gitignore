@@ -58,3 +58,8 @@ docs/
 # Eval run artifacts. The .eval files are regenerable by re-running the
 # suite — kept locally for the in-app history viewer, not in git.
 logs/
+
+# Local-only artifacts not part of the public repo.
+ai_prompts_export.json
+scripts/
+frontend/public/screenshots/
