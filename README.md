@@ -1,4 +1,4 @@
-# AI-Powered Volunteer Management System
+# Autonomous SMS Agent — Volunteer Management
 
 ## Intro video
 
