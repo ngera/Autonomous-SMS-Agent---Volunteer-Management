@@ -1,5 +1,9 @@
 # AI-Powered Volunteer Management System
 
+## Intro video
+
+[![Watch the intro](https://img.youtube.com/vi/NU_NMDMl1-I/maxresdefault.jpg)](https://youtu.be/NU_NMDMl1-I)
+
 An autonomous assistant that manages volunteer coordination for a Volunteer Coordinator — handling the day-to-day work of keeping events staffed, on its own.
 
 The system is designed to:
