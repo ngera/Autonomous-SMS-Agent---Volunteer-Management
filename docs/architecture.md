@@ -21,93 +21,47 @@ Cross-cutting: per-tenant credentials for external services (Twilio, Anthropic, 
 
 ## End-to-end diagram
 
-```
-+----------------------------------------------------------------------+
-| 1. Channels & surfaces                                               |
-|                                                                      |
-|   Volunteer SMS         Admin Web (React)         Admin SMS          |
-|   (Twilio)              (React + Vite + tanstack) (Twilio)           |
-+--------|--------------------|-----------------------|----------------+
-         v                    v                       v
-+----------------------------------------------------------------------+
-| 2. HTTP layer  --  FastAPI                                           |
-|                                                                      |
-|   Webhook  /api/v1/webhook       REST  /api/v1/*                     |
-|                                                                      |
-|   Multi-tenant resolution:                                           |
-|     - Webhook: Twilio "To" phone number  ->  tenant                  |
-|     - REST:    JWT tenant_id claim       ->  tenant                  |
-|                                                                      |
-|   Returns 200 immediately; heavy work runs in BackgroundTasks.       |
-+----------------------------------|-----------------------------------+
-                                   v
-+----------------------------------------------------------------------+
-| 3. Agent architecture  --  Orchestrator + BaseAgent                  |
-|                                                                      |
-|   Orchestrator  --  hybrid intent stack:                             |
-|                     Tier 1 regex   ->  Tier 2 Haiku classifier ->    |
-|                     Tier 3 full Sonnet conversation                  |
-|                                                                      |
-|     +-------------------+---------------------+-------------------+  |
-|     v                   v                     v                   v  |
-|  Recruiter          Recruiter             Engagement          Screener|
-|  Scheduler          (waves, escalation,   (day-of, check-in,  (Stage 1|
-|  (event design,     reschedule cascade)   post-event, reviews)+ Haiku)|
-|   service mix)                                                       |
-|                                                                      |
-|  Each agent = planner.py + executor.py + reporter.py + intents.py    |
-|  Per-seam model resolver (Sonnet for reasoning, Haiku for routing)   |
-|  Graph-style agent_call_log audit table (shared turn_id per trace)   |
-+----------------------------------|-----------------------------------+
-                                   v
-+----------------------------------------------------------------------+
-| 4. Tool layer  --  Anthropic tool_use loop                           |
-|                                                                      |
-|  Volunteer tools: list_services, check_availability,                 |
-|                   get_event_roster, book_appointment,                |
-|                   cancel_appointment, reschedule_appointment,        |
-|                   set_roster_visibility                              |
-|                                                                      |
-|  Admin tools:     manage_service, manage_availability,               |
-|                   manage_volunteer, suspend / unsuspend,             |
-|                   start_recruitment_campaign, approve_campaign,      |
-|                   campaign_status, send_announcement,                |
-|                   search_bookings                                    |
-|                                                                      |
-|  All tools run server-side with full transactional context.          |
-+----------------------------------|-----------------------------------+
-                                   v
-+----------------------------------------------------------------------+
-| 5. Domain services + scheduler  --  APScheduler cron                 |
-|                                                                      |
-|  Inbound pipeline (screener  ->  agent loop  ->  outbound router)    |
-|  Recruitment wave dispatch (per-campaign tick)                       |
-|  Reminder dispatch (T-24h, T-1h)                                     |
-|  Event status pings to admin (T-30 through T+60)                     |
-|  Auto-close forgotten checkouts (T+end+1h)                           |
-|  Daily KPI SMS digest (per-tenant schedule)                          |
-|  Pending review + no-show review                                     |
-|  Strike decay, conversation expiry                                   |
-+----------------------------------|-----------------------------------+
-                                   v
-+----------------------------------------------------------------------+
-| 6. Data + persistence  --  PostgreSQL (Supabase) via asyncpg         |
-|                                                                      |
-|  Row-level isolation: tenant_id FK on every table                    |
-|                                                                      |
-|  Core tables:                                                        |
-|    Tenants          (per-tenant Twilio/Anthropic/Google/Resend creds)|
-|    AdminUsers       (incl. SUPER_ADMIN role, tenant_id=NULL)         |
-|    Contacts         (UUID PK; UNIQUE(tenant_id, phone))              |
-|    Conversations, Messages, AgentCallLog                             |
-|    AppointmentTypes, AvailabilityRules, SpecificDateSlots, Bookings  |
-|    RecruitmentCampaigns, RecruitmentWaves, WaveSignups               |
-|    Announcements, Reminders, Suspensions                             |
-|    BookingReview, BookingServiceLog, RosterStatusPingLog             |
-|    AwardDefinition, VolunteerRecognition                             |
-|    SystemSetting (per-tenant prompt overrides, agent_models config)  |
-|    TokenUsage    (per-call Anthropic accounting)                     |
-+----------------------------------------------------------------------+
+```mermaid
+flowchart TB
+  subgraph L1["1 · Channels & surfaces"]
+    direction LR
+    smsV["Volunteer SMS<br/>Twilio"]
+    web["Admin Web<br/>React · Vite · TanStack"]
+    smsA["Admin SMS<br/>Twilio"]
+  end
+
+  subgraph L2["2 · HTTP layer — FastAPI"]
+    direction LR
+    webhook["Webhook /api/v1/webhook<br/>Twilio To → tenant"]
+    rest["REST /api/v1/*<br/>JWT tenant_id → tenant"]
+  end
+
+  subgraph L3["3 · Agent architecture — Orchestrator + BaseAgent"]
+    orch["Orchestrator<br/>Tier 1 regex → Tier 2 Haiku → Tier 3 Sonnet"]
+    sched["Recruiter Scheduler<br/>event design · service mix"]
+    recruit["Recruiter<br/>waves · escalation · reschedule"]
+    engage["Engagement<br/>day-of · check-in · reviews"]
+    screen["Screener<br/>Stage 1 + Haiku"]
+    orch --> sched & recruit & engage & screen
+  end
+
+  subgraph L4["4 · Tool layer — Anthropic tool_use"]
+    tools["Volunteer + admin tools<br/>server-side · transactional"]
+  end
+
+  subgraph L5["5 · Domain services + scheduler — APScheduler"]
+    jobs["Inbound pipeline · recruitment waves · reminders<br/>event pings · KPI digest · reviews · strike decay"]
+  end
+
+  subgraph L6["6 · Data + persistence — PostgreSQL / Supabase"]
+    db["Row-level isolation via tenant_id<br/>Contacts · Bookings · Campaigns · AgentCallLog · …"]
+  end
+
+  smsV & web & smsA --> webhook & rest
+  webhook & rest --> orch
+  sched & recruit & engage & screen --> tools
+  tools --> jobs
+  jobs --> db
 ```
 
 ---
@@ -147,47 +101,25 @@ Cross-cutting: per-tenant credentials for external services (Twilio, Anthropic, 
 
 ## Detail: Agent layer
 
-```
-                   Inbound message (SMS or REST)
-                              |
-                              v
-                    +---------------------+
-                    |    Orchestrator     |
-                    +---------------------+
-                              |
-              +---------------+---------------+
-              |               |               |
-              v               v               v
-        regex (Tier 1)  Haiku (Tier 2)  Sonnet (Tier 3)
-        sub-millisecond ~200ms          ~1-2s
-              |               |               |
-              +-------+-------+-------+-------+
-                      |               |
-                      v               v
-                Intent +         Destructive-intent
-                event_ref        confirmation gate
-                      |               |
-                      v               v
-              +-----------------------------+
-              |  Route to owning agent      |
-              +-----------------------------+
-                      |
-   +------------------+------------------+------------------+
-   v                  v                  v                  v
- Recruiter        Recruiter          Engagement         Screener
- Scheduler        - wave plan        - day-of intents   (pre-filter,
- - event design   - escalation       - check-in/out     runs before
- - service mix    - reschedule       - post-event       any agent)
-                    cascade          - reviews
-                  - approval flow
-   |                  |                  |                  |
-   +------------------+------------------+------------------+
-                      |
-                      v
-              +-----------------------------+
-              |  Tool execution layer       |
-              |  + audit to agent_call_log  |
-              +-----------------------------+
+```mermaid
+flowchart TB
+  inbound["Inbound message<br/>SMS or REST"] --> orch["Orchestrator"]
+
+  orch --> t1["Tier 1 · regex<br/>sub-millisecond"]
+  orch --> t2["Tier 2 · Haiku<br/>~200ms"]
+  orch --> t3["Tier 3 · Sonnet<br/>~1–2s"]
+
+  t1 & t2 --> intent["Intent + event_ref"]
+  t3 --> confirm["Destructive-intent<br/>confirmation gate"]
+
+  intent & confirm --> route["Route to owning agent"]
+
+  route --> a1["Recruiter Scheduler<br/>event design · service mix"]
+  route --> a2["Recruiter<br/>waves · escalation · reschedule"]
+  route --> a3["Engagement<br/>day-of · check-in · reviews"]
+  route --> a4["Screener<br/>pre-filter before any agent"]
+
+  a1 & a2 & a3 & a4 --> tools["Tool execution layer<br/>+ audit to agent_call_log"]
 ```
 
 Each agent ships with the same four-file shape: `planner.py` (decides what to do), `executor.py` (does it), `reporter.py` (renders the result), `intents.py` (declares which intents it owns). Code lives under [backend/app/agents/](../backend/app/agents/).
@@ -196,22 +128,16 @@ Each agent ships with the same four-file shape: `planner.py` (decides what to do
 
 ## Detail: Data isolation
 
-```
-HTTP request    --->    CurrentTenant dependency    --->    DB query
-                            |
-                            v
-                      tenant_id resolved from JWT (REST)
-                      or Twilio "To" number (webhook)
+```mermaid
+flowchart LR
+  req["HTTP request"] --> dep["CurrentTenant<br/>dependency"]
+  dep --> db["DB query"]
 
-Every tenant-scoped table:
-  - tenant_id FK to tenants.id, NOT NULL
-  - Composite UNIQUE indexes per tenant where appropriate
-    (e.g. contacts: UNIQUE(tenant_id, phone))
-  - Application-side filter via query dependency
+  dep --> resolve["tenant_id from<br/>JWT claim or Twilio To"]
 
-SUPER_ADMIN role:
-  - tenant_id = NULL
-  - Optionally passes X-Tenant-Id header to act as a tenant
+  resolve --> rules["Tenant-scoped tables<br/>tenant_id FK · NOT NULL<br/>composite UNIQUE per tenant<br/>app-side query filter"]
+
+  resolve --> super["SUPER_ADMIN<br/>tenant_id = NULL<br/>optional X-Tenant-Id"]
 ```
 
 ---
